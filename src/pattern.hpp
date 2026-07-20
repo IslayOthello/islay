@@ -91,9 +91,33 @@ namespace islay {
   // older set keeps working as a self-play teacher with the 2x5 zeroed.
   inline constexpr int kC2x5Instances   = 8;
   inline constexpr int kPatternInstances = 4 + 4 + 4 + 4 + 4 + 2 + 4 + 4 + 4 + 4 + 8; // = 46
-  // Corner2x4 was appended here and MEASURED NEUTRAL (+8 Elo, CI [-26,43], isolated,
-  // 300 games) -- it is a strict subset of Corner2x5, which already subsumes it. A new
-  // pattern must be BIGGER than what exists to add anything; a subset is redundant.
+  // TWO capacity experiments were appended here and both MEASURED NEUTRAL. Read this
+  // before adding a third -- the pattern set looks saturated, and the rule that
+  // survived both is sharper than the one either produced alone.
+  //
+  //   Corner2x4 (8 sq):  +8 Elo, CI [-26, 43], isolated, 300 games.
+  //   Corner2x6 (12 sq): +3.5 Elo, CI [-14, 21], isolated, 600 pairs.
+  //
+  // Corner2x4 failed for the obvious reason: it is a strict SUBSET of Corner2x5, so it
+  // carries nothing 2x5 does not already have. That produced the first rule -- a new
+  // pattern must be BIGGER than what exists.
+  //
+  // Corner2x6 satisfied that rule (a strict SUPERSET of the 2x5 that won +62) and was
+  // still neutral, so bigger is NECESSARY BUT NOT SUFFICIENT. The added squares must
+  // lie where nothing else already looks. The 2x6 spans rows 1-2, files a-f, and every
+  // one of those squares is already covered: Edge2X sees all of row 1, Row2 sees all of
+  // row 2, and Corner3x3 + Corner2x5 see the corner end. Only the JOINT configuration
+  // was new, and that turned out to be worth nothing measurable.
+  //
+  // The data explanation was raised and FALSIFIED rather than assumed. 3^12 = 531441
+  // cells is 9x the 2x5's table, and at 150K games only 8.5% of cells were ever touched
+  // (~97 samples each, against the 2x5's ~326) -- so "too sparse to learn" was the
+  // natural suspect. Retraining both arms at 500K games lifted that to ~216 samples per
+  // touched cell and the result did not move: +2.3 Elo, CI [-15, 20]. More data does not
+  // rescue information that is not there.
+  //
+  // It also was not free: 8 more instances per leaf, indexing a 531441-entry table,
+  // cost about 6% of nps (9.8M -> 9.2M) with the node count byte-identical.
   inline constexpr int kMaxPatternSquares = 10;
 
   /**
