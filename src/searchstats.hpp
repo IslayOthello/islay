@@ -52,6 +52,10 @@ namespace islay {
       std::uint64_t lmr_try = 0, lmr_re = 0;
       std::uint64_t fut_try = 0, fut_cut = 0;
       std::uint64_t pc_try = 0, pc_cut = 0, pc_probe_nodes = 0;
+      // The lo-probe (prove <= alpha) separately from the hi-probe, because they are
+      // NOT symmetric in cost: hi runs first and returns on success, so lo is only ever
+      // paid on nodes where hi already missed. hi_cuts = pc_cut - pc_lo_cut.
+      std::uint64_t pc_lo_try = 0, pc_lo_cut = 0, pc_lo_nodes = 0;
       std::uint64_t pvs_scout = 0, pvs_re = 0;
 
       void add(const Cell &o) noexcept {
@@ -62,6 +66,7 @@ namespace islay {
         lmr_try += o.lmr_try; lmr_re += o.lmr_re;
         fut_try += o.fut_try; fut_cut += o.fut_cut;
         pc_try += o.pc_try; pc_cut += o.pc_cut; pc_probe_nodes += o.pc_probe_nodes;
+        pc_lo_try += o.pc_lo_try; pc_lo_cut += o.pc_lo_cut; pc_lo_nodes += o.pc_lo_nodes;
         pvs_scout += o.pvs_scout; pvs_re += o.pvs_re;
       }
     };
@@ -106,7 +111,8 @@ namespace islay {
       std::uint32_t lmr_try = 0, lmr_re = 0;
       std::uint32_t fut_try = 0, fut_cut = 0;
       std::uint32_t pc_try = 0, pc_cut = 0;
-      std::uint64_t pc_probe_nodes = 0;
+      std::uint32_t pc_lo_try = 0, pc_lo_cut = 0;
+      std::uint64_t pc_probe_nodes = 0, pc_lo_nodes = 0;
       std::uint32_t pvs_scout = 0, pvs_re = 0;
       std::uint32_t moves_searched = 0;
       int           cut_idx = -1; // move index that produced the fail-high, -1 = none
@@ -124,6 +130,7 @@ namespace islay {
       c.lmr_try += a.lmr_try; c.lmr_re += a.lmr_re;
       c.fut_try += a.fut_try; c.fut_cut += a.fut_cut;
       c.pc_try += a.pc_try; c.pc_cut += a.pc_cut; c.pc_probe_nodes += a.pc_probe_nodes;
+      c.pc_lo_try += a.pc_lo_try; c.pc_lo_cut += a.pc_lo_cut; c.pc_lo_nodes += a.pc_lo_nodes;
       c.pvs_scout += a.pvs_scout; c.pvs_re += a.pvs_re;
       if (a.cut_idx >= 0) {
         ++c.fh;

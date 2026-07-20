@@ -614,6 +614,16 @@ namespace islay {
       << gtot.pc_try << " attempts, " << gtot.pc_cut << " cut ("
       << std::fixed << std::setprecision(1) << pct(gtot.pc_probe_nodes, total_nodes)
       << "% of all " << total_nodes << " search nodes).\n";
+    // hi vs lo split. They are not symmetric: hi runs first and returns on success, so
+    // the lo-probe is only ever paid at nodes where hi already missed. If lo buys few
+    // cuts for many nodes, it is the next thing to cut.
+    o << "  hi-probe: " << (gtot.pc_cut - gtot.pc_lo_cut) << " cuts of " << gtot.pc_try
+      << " attempts (" << pct(gtot.pc_cut - gtot.pc_lo_cut, gtot.pc_try) << "%), "
+      << (gtot.pc_probe_nodes - gtot.pc_lo_nodes) << " nodes\n"
+      << "  lo-probe: " << gtot.pc_lo_cut << " cuts of " << gtot.pc_lo_try
+      << " attempts (" << pct(gtot.pc_lo_cut, gtot.pc_lo_try) << "%), "
+      << gtot.pc_lo_nodes << " nodes = " << pct(gtot.pc_lo_nodes, total_nodes)
+      << "% of the whole search\n";
 
     // LMR calibration: re-search rate per (remaining depth x move ordinal). This is the
     // fit input for a reduction table -- a bucket whose reduced scouts almost never come
@@ -849,10 +859,19 @@ namespace islay {
       // v_d <= alpha  <=  a*v_{d-2} + b + t*sigma <= alpha
       const int lo = static_cast<int>((static_cast<float>(alpha) - probcut_t_ * f.sigma - f.b) / f.a);
       const bool try_lo = !probcut_gate_enabled_ || (predf - gate <= static_cast<float>(lo));
+      const std::uint64_t lo0 = kStats ? nodes_ : 0; // the lo-probe's own cost
+      if constexpr (kStats)
+        if (try_lo && lo > -kScoreMax) ++sacc.pc_lo_try;
       if (try_lo && lo > -kScoreMax && pvs<R, Pat>(b, d2, lo, lo + 1, ply, stm) <= lo) {
-        if constexpr (kStats) { ++sacc.pc_cut; sacc.pc_probe_nodes += nodes_ - pc0; stats_->flush(depth, sg, SearchStats::All, sacc); }
+        if constexpr (kStats) {
+          ++sacc.pc_cut; ++sacc.pc_lo_cut;
+          sacc.pc_lo_nodes += nodes_ - lo0;
+          sacc.pc_probe_nodes += nodes_ - pc0;
+          stats_->flush(depth, sg, SearchStats::All, sacc);
+        }
         return alpha;
       }
+      if constexpr (kStats) sacc.pc_lo_nodes += nodes_ - lo0;
 
       // No cut: both probes ran and bought nothing -- charge their nodes to this node,
       // which will be flushed later at the move-loop exit.
@@ -860,6 +879,15 @@ namespace islay {
 
       if (stopped_)
         return 0;
+
+      // TRIED AND REJECTED: re-reading the TT here to "salvage" the best move the failed
+      // probe just stored (the table is read above, BEFORE the probes run, so that move
+      // is discarded). It sounds free -- a d-2/d-4 search picked it -- and it measured
+      // 8.0% MORE nodes at depth 13 over 18 positions and 0.1% at depth 15. The reason
+      // is the window: a probe searches [hi-1, hi], a band ABOVE beta, so when it fails
+      // to cut it failed LOW there and its stored move is only the least-bad under a
+      // window nobody asked about. Overriding ordering that already gets a first-move
+      // cutoff 82.7% of the time with that move makes it worse, not better.
     }
 
     // Futility: at shallow depth, if even a generous swing above the static score
