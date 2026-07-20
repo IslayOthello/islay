@@ -213,21 +213,34 @@ namespace islay {
       float a, b, sigma;
     };
     constexpr int        kProbCutMaxFitDepth = 12;
-    // FITTED ON weights/v12.pat (`pcdata 500 12`). This is the eval ProbCut ships
+    // RE-FITTED ON weights/v16.pat (`pcdata 800 12`), the eval now shipped. The fit is
+    // slightly tighter than v12's (margin 16.0-31.5% of an SD against 16.4-35.6%) and
+    // measured NEUTRAL in play: -3.9 Elo, 95% CI [-17, 9], 800 games at equal time.
+    // Kept anyway, because a table fitted on an eval the engine no longer ships is a
+    // latent inconsistency, and neutral means keeping it costs nothing. The neutrality
+    // itself is consistent with the flat t-sweep recorded below: this machinery is
+    // insensitive to calibration within a wide band.
+    //
+    // Also tested and NEUTRAL: lowering kProbCutGap4MinDepth from 9 to 8, which v16's
+    // tighter d-4 fit appears to justify (its d=8 margin is 25.9%, inside the band that
+    // has won here). Measured +3.9 Elo, 95% CI [-10, 17], 800 games. Left at 9.
+    //
+    // Historically FITTED ON weights/v12.pat (`pcdata 500 12`). This is the eval ProbCut ships
     // against, and it matters: on v12 the shallow->deep correlation is r=0.99 and a
     // 1.5-sigma margin eats only 17-26% of a score SD, versus 29-47% on the earlier
     // v5 and 36-45% on the hand-written eval. Re-fit here if the shipped eval changes.
     constexpr ProbCutFit kProbCutFit[kProbCutMaxFitDepth + 1] = {
-            {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, // 0..3: unused, never consulted
-            {0.998f, 85.5f, 380.2f},                            // d=4
-            {0.971f, 7.3f, 336.2f},                             // d=5
-            {0.982f, 66.8f, 324.8f},                            // d=6
-            {0.998f, -14.8f, 274.8f},                           // d=7
-            {1.003f, 18.3f, 270.3f},                            // d=8
-            {1.001f, -2.6f, 273.7f},                            // d=9
-            {1.006f, 21.8f, 257.7f},                            // d=10
-            {1.010f, 10.7f, 254.7f},                            // d=11
-            {1.014f, -0.5f, 226.0f},                            // d=12
+            {1, 0, 999}, {1, 0, 999}, {1, 0, 999},               // 0..2: unused, never consulted
+            {1.010f, -114.1f, 397.8f},                           // d=3
+            {0.997f, 46.5f, 332.8f},                             // d=4
+            {1.000f, -17.1f, 314.9f},                            // d=5
+            {0.996f, 28.7f, 250.7f},                             // d=6
+            {0.992f, 6.0f, 235.9f},                              // d=7
+            {1.007f, 9.9f, 234.0f},                              // d=8
+            {1.001f, 1.2f, 242.0f},                              // d=9
+            {1.002f, -3.0f, 213.9f},                             // d=10
+            {1.004f, 15.3f, 207.9f},                             // d=11
+            {1.004f, 18.6f, 209.7f},                             // d=12
     };
     constexpr int   kProbCutMinDepth = 5; // needs room for a d-2 search worth the saving
 
@@ -263,13 +276,14 @@ namespace islay {
      */
     constexpr int kProbCutGap4MinDepth = 9;
     constexpr ProbCutFit kProbCutFit4[kProbCutMaxFitDepth + 1] = {
-            {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, // 0..3: unused
-            {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, // 4..7: gap 2 is used there
-            {0.990f, 45.4f, 374.5f},                            // d=8
-            {0.995f, -20.0f, 344.5f},                           // d=9
-            {1.016f, 8.2f, 311.8f},                             // d=10
-            {1.018f, -0.6f, 300.6f},                            // d=11
-            {1.023f, -1.7f, 290.9f},                            // d=12
+            {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, {1, 0, 999},  // 0..3: unused
+            {1, 0, 999}, {1, 0, 999}, {1, 0, 999},               // 4..6: gap 2 is used there
+            {0.992f, -11.3f, 386.0f},                            // d=7
+            {1.004f, 38.1f, 332.8f},                             // d=8
+            {0.995f, 6.1f, 316.5f},                              // d=9
+            {1.010f, 5.8f, 295.5f},                              // d=10
+            {1.007f, 15.6f, 301.3f},                             // d=11
+            {1.008f, 12.8f, 271.9f},                             // d=12
     };
 
     /**
@@ -308,19 +322,11 @@ namespace islay {
      */
     constexpr float kProbCutGateT = 0.5f; // gate confidence in sigmas; larger = skip fewer
     constexpr ProbCutFit kProbCutGateFit[kProbCutMaxFitDepth + 1] = {
-            {0.978f, 317.6f, 509.5f}, // d2=0 (unused; falls back safely)
-            {0.978f, 317.6f, 509.5f}, // d2=1
-            {0.972f, 108.0f, 585.5f}, // d2=2
-            {0.970f, 212.6f, 701.7f}, // d2=3
-            {0.960f, 186.3f, 722.1f}, // d2=4
-            {0.954f, 209.0f, 777.2f}, // d2=5
-            {0.941f, 216.6f, 788.1f}, // d2=6
-            {0.940f, 194.5f, 826.6f}, // d2=7
-            {0.938f, 234.8f, 851.2f}, // d2=8
-            {0.941f, 191.1f, 873.5f}, // d2=9
-            {0.947f, 231.7f, 889.3f}, // d2=10
-            {0.948f, 200.9f, 922.9f}, // d2=11
-            {0.944f, 235.4f, 949.8f}, // d2=12
+            {0.983f, 279.5f, 549.4f}, {0.983f, 279.5f, 549.4f}, {0.992f, 126.5f, 612.5f},
+            {0.986f, 171.4f, 716.4f}, {0.980f, 176.6f, 736.9f}, {0.981f, 155.8f, 798.1f},
+            {0.969f, 207.6f, 804.8f}, {0.970f, 162.2f, 840.6f}, {0.974f, 219.7f, 849.5f},
+            {0.970f, 164.0f, 879.4f}, {0.975f, 217.4f, 880.4f}, {0.977f, 178.8f, 897.7f},
+            {0.973f, 228.2f, 910.9f},
     };
 
     // Late move PRUNING (drop the tail of the move list unsearched in a scout node).
