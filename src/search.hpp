@@ -110,6 +110,10 @@ namespace islay {
     /** Late move reduction, at runtime -- for an equal-time A/B of LMR itself. */
     void set_lmr_enabled(bool on) noexcept { lmr_enabled_ = on; }
 
+    /** CALIBRATED reduction table (fitted from the engine's own re-search profile)
+     *  instead of the old fixed rule. `match lmrc` is the A/B. */
+    void set_lmr_calibrated(bool on) noexcept { lmr_calibrated_ = on; }
+
     /** Late move PRUNING (drop tail of list). Default off; being re-tested on v12. */
     void set_lmp_enabled(bool on) noexcept { lmp_enabled_ = on; }
 
@@ -169,6 +173,7 @@ namespace islay {
     float              probcut_t_         = 1.5f;
     bool               probcut_gate_enabled_ = true;  // MEASURED +25 Elo; see kProbCutGateFit
     bool               lmr_enabled_       = true;
+    bool               lmr_calibrated_    = false; // MEASURED WORSE -- see lmr_reduction
     bool               lmp_enabled_       = false;
     bool               endgame_enabled_   = true;
     bool               aspiration_enabled_ = true;

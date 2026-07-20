@@ -83,6 +83,64 @@ namespace islay {
     constexpr bool kUseAspiration   = false;
     constexpr int  kAspWindow       = 500; // centi-discs; ~2 sigma of the d-2 -> d fit
     constexpr int  kAspMinDepth     = 4;
+    /**
+     * Calibrated LMR reduction. BUILT, MEASURED, AND REJECTED (`lmr_calibrated_` is
+     * false; the shipped rule is still the fixed one at the call site). Kept, like
+     * aspiration and LMP, so that nobody re-derives it from the same tempting premise.
+     *
+     * THE TEMPTING PREMISE, and why it was wrong. `searchstats` profiles the re-search
+     * rate -- how often a reduced scout comes back above alpha and has to be redone --
+     * per (remaining depth x move ordinal). On v12 at depth 14 that rate is 0-3% for
+     * every ordinal past 6, against the 5-15% a healthy LMR is usually said to run. The
+     * obvious reading is "reductions are far too timid". Three schedules were fitted to
+     * the profile and every one measured MORE nodes at fixed depth 14 than the fixed
+     * rule it replaced (baseline 1964094 over four positions):
+     *     v1  1 + (i-3)/3 + (depth-3)/6                       2130113   +8.5%
+     *     v2  ordinal steps + a parity give-back at i < 6      2119912   +7.9%
+     *     v3  ordinal steps only (the code below)              1987401   +1.2%
+     *
+     * TWO HYPOTHESES WERE RAISED AND BOTH FALSIFIED, which is the useful part:
+     *   1. "Late ordinals are too rare for a deeper reduction to matter." FALSE -- the
+     *      ordinal traffic is nearly flat: i=3..8 carry 16/15/15/14/13/10% of reduced
+     *      moves and i>=9 still carries 16.8%.
+     *   2. "Reducing deeper buys re-searches that cost more than the saving." FALSE --
+     *      under v3 the overall re-search rate moved 3.2% -> 3.1%, i.e. not at all.
+     *
+     * WHAT IS ACTUALLY GOING ON. The low re-search rate is not slack; it is a symptom
+     * of how narrow this tree already is. Ordering gets a first-move cutoff 82.7% of
+     * the time and the effective branching factor is 2.27, so a late move is genuinely
+     * bad and the null-window scout refutes it at ANY reduction depth -- the subtree
+     * being reduced was already nearly empty, so taking another ply off it saves close
+     * to nothing. And the budget is not LMR's to win in the first place: ProbCut probes
+     * are 68-78% of all searched nodes, so LMR governs roughly a quarter of the tree
+     * and even a large relative gain there cannot approach the ~33% total saving the
+     * EBF threshold (see kProbCutGateFit) demands before a match can be won.
+     *
+     * The genuinely new observation, worth keeping even though the schedule failed: the
+     * re-search rate splits hard by the PARITY of the remaining depth. At ordinal 3,
+     * odd depths re-searched 8.8% (d3, n=47337), 11.0% (d5), 8.0% (d7); even depths
+     * 1.9% (d4, n=14543), 1.9% (d6), 4.8% (d8) -- a 4-5x gap on large samples, and the
+     * same parity that makes ProbCut predict across d-2 and never d-1. Acting on it
+     * (v2's give-back) cost 6.7% of nodes, so it is a real effect that is not
+     * profitable to exploit HERE; it may matter to a future technique that is not
+     * competing with ProbCut for the same quarter of the tree.
+     */
+    constexpr int kLmrMax = 4;
+
+    [[nodiscard]] ISLAY_FORCEINLINE int lmr_reduction(int depth, int i) noexcept {
+      int r = 1;
+      if (i >= 6) ++r;  // re-search rate here is 0.1-3.0%
+      if (i >= 9) ++r;  // 0-1.8%
+      if (i >= 12) ++r; // ~0
+      if (r > kLmrMax)
+        r = kLmrMax;
+      // Never reduce into the leaf: the child must keep at least one ply, or the
+      // "reduced scout" degenerates into a static eval and proves nothing.
+      if (r > depth - 2)
+        r = depth - 2;
+      return r < 0 ? 0 : r;
+    }
+
     // Endgame stability cutoff (exact; oracle-checked). Strong fixpoint in stability.hpp.
     constexpr bool kUseStabilityCut = true;
     // Endgame parity move ordering (reorders only -> exact; oracle-checked).
@@ -516,6 +574,35 @@ namespace islay {
       << std::fixed << std::setprecision(1) << pct(gtot.pc_probe_nodes, total_nodes)
       << "% of all " << total_nodes << " search nodes).\n";
 
+    // LMR calibration: re-search rate per (remaining depth x move ordinal). This is the
+    // fit input for a reduction table -- a bucket whose reduced scouts almost never come
+    // back above alpha is a bucket that is being reduced too little.
+    o << "LMR re-search rate by depth x move ordinal (pct; '.' = no samples, n = tries):\n";
+    o << "   d \\ i ";
+    for (int i = 0; i < 14; ++i) o << std::setw(6) << i;
+    o << "        n\n";
+    for (int d = 0; d < kD; ++d) {
+      std::uint64_t dn = 0;
+      for (int i = 0; i < kIdx; ++i) dn += lmr_try[d][i];
+      if (!dn) continue;
+      o << "   d" << std::setw(2) << std::left << d << std::right << "   ";
+      for (int i = 0; i < 14; ++i) {
+        if (!lmr_try[d][i]) { o << std::setw(6) << "."; continue; }
+        o << std::setw(6) << std::fixed << std::setprecision(1) << pct(lmr_re[d][i], lmr_try[d][i]);
+      }
+      o << std::setw(9) << dn << "\n";
+    }
+    // Column totals: how much traffic each ordinal actually carries. A reduction
+    // schedule can only save where the moves ARE.
+    {
+      std::uint64_t col[kIdx] = {}, all = 0;
+      for (int d = 0; d < kD; ++d)
+        for (int i = 0; i < kIdx; ++i) { col[i] += lmr_try[d][i]; all += lmr_try[d][i]; }
+      o << "   share ";
+      for (int i = 0; i < 14; ++i) o << std::setw(6) << std::fixed << std::setprecision(1) << pct(col[i], all);
+      o << std::setw(9) << all << "\n";
+    }
+
     if (full) {
       o << "full (depth x stage) node counts, nonzero cells only:\n";
       for (int d = 0; d < kD; ++d)
@@ -838,7 +925,7 @@ namespace islay {
       int red = 0;
       if (kUsePruning && lmr_enabled_ && selective_enabled_ && !solving && !ext && kUseOrdering && depth >= 3 && i >= 3 &&
           sm.sq != tt_move)
-        red = 1 + (i >= 6 && depth >= 5 ? 1 : 0);
+        red = lmr_calibrated_ ? lmr_reduction(depth, i) : 1 + (i >= 6 && depth >= 5 ? 1 : 0);
       if constexpr (kStats) if (red) ++sacc.lmr_try;
 
       // Incremental pattern features for the child: copy the parent's vector and
@@ -856,6 +943,9 @@ namespace islay {
       } else {
         if constexpr (kStats) ++sacc.pvs_scout;
         s = -pvs<R, Pat>(sm.child, depth - 1 + ext - red, -alpha - 1, -alpha, ply + 1, ~stm);
+        // Calibration sample: was reducing THIS move at THIS (depth, ordinal) a mistake?
+        if constexpr (kStats)
+          if (red) stats_->lmr_sample(depth, i, s > alpha);
         // A reduced scout that beats alpha proved nothing -- redo it at full depth
         // before trusting it.
         if (red && s > alpha) {

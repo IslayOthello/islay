@@ -73,6 +73,29 @@ namespace islay {
     std::uint64_t total_nodes = 0;
 
     /**
+     * LMR calibration profile, the input to a fitted reduction table.
+     *
+     * For every reduced move: how often did the reduced scout come back ABOVE alpha,
+     * i.e. how often was reducing this move a mistake we had to pay to undo? Bucketed
+     * by remaining depth and by the move's ordinal, because that is exactly the pair a
+     * reduction formula is a function of. A low re-search rate in a bucket means the
+     * reduction there is too timid and can be deepened; a high one means it is already
+     * past the point where it pays.
+     *
+     * Recorded directly rather than through Acc: this is per-MOVE, not per-node.
+     */
+    static constexpr int kIdx = 36; // max legal moves in Othello
+    std::uint64_t        lmr_try[kD][kIdx];
+    std::uint64_t        lmr_re[kD][kIdx];
+
+    void lmr_sample(int depth, int idx, bool researched) noexcept {
+      const int d = depth < 0 ? 0 : (depth >= kD ? kD - 1 : depth);
+      const int i = idx < 0 ? 0 : (idx >= kIdx ? kIdx - 1 : idx);
+      ++lmr_try[d][i];
+      if (researched) ++lmr_re[d][i];
+    }
+
+    /**
      * Per-node accumulator. One lives on the stack of a single pvs() invocation and
      * is flushed once, at the node's exit, into the bucket its resolved type selects.
      * A per-node scratch (not direct global writes) keeps the counters correct across

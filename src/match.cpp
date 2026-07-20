@@ -182,6 +182,8 @@ namespace islay {
     sb.set_endgame_enabled(cfg.eg_b);
     sa.set_probcut_gate_enabled(cfg.pcg_a);
     sb.set_probcut_gate_enabled(cfg.pcg_b);
+    sa.set_lmr_calibrated(cfg.lmrc_a);
+    sb.set_lmr_calibrated(cfg.lmrc_b);
 
     double sum = 0.0, sumsq = 0.0;         // over individual games -- diagnostic only
     double psum = 0.0, psumsq = 0.0;       // over PAIR means -- this is what the stats use

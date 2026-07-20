@@ -64,6 +64,8 @@ namespace islay {
     bool          si_b = false;
     bool          pcg_a = false;    // ProbCut probe gate per side (skip hopeless probes)
     bool          pcg_b = false;
+    bool          lmrc_a = false;   // calibrated LMR reduction table per side
+    bool          lmrc_b = false;
   };
 
   struct MatchResult {
