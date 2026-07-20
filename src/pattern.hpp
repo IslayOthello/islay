@@ -40,7 +40,7 @@
  *     v3 (taught by v2)                   : +152 Elo over v2, z = 4.1
  * The loop works and is decelerating (+247 -> +152), which is what convergence looks
  * like. Shipped sets live in weights/; nothing auto-loads, so `pattern_enabled()` is
- * still false until `setoption name EvalFile value weights/v3.pat`, and eval.cpp
+ * still false until `setoption name EvalFile value weights/v12.pat`, and eval.cpp
  * remains the default for anyone who does not ask.
  *
  * Note the training loss is NOT the signal: v1 finished at rmse 2118 cd against a

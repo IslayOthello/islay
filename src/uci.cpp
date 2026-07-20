@@ -2,21 +2,35 @@
  * @file uci.cpp
  * @brief A small chess-UCI-flavoured protocol for Othello.
  *
- * Supported commands:
- *   uci                         -> id + "uciok"
+ * The surface is deliberately split in two. RELEASE commands are what UCI.md
+ * documents and what a GUI may rely on; DEVELOPMENT commands exist only while
+ * `debug on` is in effect and are absent from the documentation. While debug is
+ * off they answer with the ordinary "unknown command" error, so a client cannot
+ * tell a hidden command from a typo and the shipped protocol is exactly the
+ * documented one.
+ *
+ * Release:
+ *   uci                         -> id + options + "uciok"
  *   isready                     -> "readyok"
- *   ucinewgame                  -> reset to the opening, clear the perft cache
+ *   ucinewgame                  -> reset to the opening, clear all tables
  *   position startpos [moves ..]        set the opening (optionally play moves)
  *   position fen <64> <stm> [moves ..]  set an arbitrary diagram
- *   d | display                 -> pretty-print the board
- *   go perft <depth> [nocache]  -> perft with bulk-counting (cache on by default)
  *   setoption name <N> value <V>-> set an engine option (e.g. name Rule value Reversi)
- *   bench [depth]               -> timed perft sweep from the opening
- *   test                        -> self-check move generation and known perft
- *   pcdata [n] [maxdepth]       -> CSV (stage,depth,score) to fit ProbCut against
- *   train [games] [epochs] [depth] [solve_empties] [lr] [l2] [out] -> fit pattern weights from self-play
- *   backend                     -> report the active SIMD back-end
+ *   go [depth N] [movetime MS] [nodes N] -> search, ends with "bestmove"
+ *   debug [ on | off ]          -> toggle the development surface below
  *   quit | exit                 -> leave
+ *
+ * Development (requires `debug on`; see is_debug_command / dispatch_debug):
+ *   d | display | board         -> pretty-print the board
+ *   go perft <depth> [nocache]  -> perft with bulk-counting (cache on by default)
+ *   bench [depth]               -> timed perft sweep from the opening
+ *   test | selftest             -> run every self-check (movegen, eval, search oracle)
+ *   match ...                   -> engine-vs-engine A/B harness
+ *   features                    -> dump the eval's feature indices for this position
+ *   pcdata [n] [maxdepth]       -> CSV (stage,depth,score,standpat) to fit ProbCut against
+ *   train [games] [epochs] ...  -> fit pattern weights from self-play
+ *   backend                     -> report the active SIMD back-end
+ *   searchstats [full]          -> search telemetry for the last `go`
  */
 #include "uci.hpp"
 
@@ -91,6 +105,7 @@ namespace islay {
       int      search_tt_mib_ = 256; // tracks Options::hash_mib
       PerftTT  tt_{256};
       Searcher searcher_{256};
+      bool     debug_ = false; // `debug on` unlocks the development commands
 
       void dispatch(const std::string &cmd, std::istringstream &is) {
         if (cmd == "uci") {
@@ -108,10 +123,37 @@ namespace islay {
           cmd_position(is);
         } else if (cmd == "setoption") {
           cmd_setoption(is);
-        } else if (cmd == "d" || cmd == "display" || cmd == "board") {
-          board_.print(stm_, std::cout);
+        } else if (cmd == "debug") {
+          cmd_debug(is);
         } else if (cmd == "go") {
           cmd_go(is);
+        } else if (is_debug_command(cmd)) {
+          // Development surface. Hidden unless `debug on`, and when hidden it must be
+          // INDISTINGUISHABLE from a typo -- same error as any unknown word -- so the
+          // release protocol is exactly what UCI.md documents and nothing more.
+          if (!debug_)
+            unknown(cmd);
+          else
+            dispatch_debug(cmd, is);
+        } else {
+          unknown(cmd);
+        }
+      }
+
+      void unknown(const std::string &cmd) {
+        std::cout << "info error: unknown command '" << cmd << "'\n";
+      }
+
+      /** The commands that exist only while `debug on` is in effect. */
+      [[nodiscard]] static bool is_debug_command(const std::string &c) noexcept {
+        return c == "d" || c == "display" || c == "board" || c == "bench" || c == "test" ||
+               c == "selftest" || c == "match" || c == "features" || c == "pcdata" ||
+               c == "train" || c == "backend" || c == "searchstats";
+      }
+
+      void dispatch_debug(const std::string &cmd, std::istringstream &is) {
+        if (cmd == "d" || cmd == "display" || cmd == "board") {
+          board_.print(stm_, std::cout);
         } else if (cmd == "bench") {
           cmd_bench(is);
         } else if (cmd == "test" || cmd == "selftest") {
@@ -133,9 +175,27 @@ namespace islay {
             s->dump(std::cout, full);
           else
             std::cout << "info string search telemetry is compiled out (set kStats=true in search.cpp, rebuild, then `go`)\n";
-        } else {
-          std::cout << "info error: unknown command '" << cmd << "'\n";
         }
+      }
+
+      // debug [ on | off ] -- the UCI-standard switch. Here it also gates the whole
+      // development command surface (see is_debug_command). A bare `debug` reports the
+      // current state rather than guessing at one.
+      void cmd_debug(std::istringstream &is) {
+        std::string tok;
+        if (!(is >> tok)) {
+          std::cout << "info string debug " << (debug_ ? "on" : "off") << '\n';
+          return;
+        }
+        if (tok == "on") {
+          debug_ = true;
+        } else if (tok == "off") {
+          debug_ = false;
+        } else {
+          std::cout << "info error: expected 'debug on' or 'debug off'\n";
+          return;
+        }
+        std::cout << "info string debug " << (debug_ ? "on" : "off") << '\n';
       }
 
       // setoption name <Name...> value <Value...>  (both may contain spaces)
@@ -261,6 +321,12 @@ namespace islay {
         std::string tok;
         is >> tok;
         if (tok == "perft") {
+          // Node-count verification, not play: part of the development surface, so it
+          // is hidden along with the rest unless `debug on`.
+          if (!debug_) {
+            std::cout << "info error: unknown go argument 'perft'\n";
+            return;
+          }
           int depth = 0;
           if (!(is >> depth)) {
             std::cout << "info error: 'go perft' needs a depth\n";
