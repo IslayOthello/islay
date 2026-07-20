@@ -23,7 +23,7 @@ When the executable starts, it prints a banner before accepting commands:
 
 ```text
 islay 0.1.0 - Othello/Reversi engine (movegen backend: <backend>)
-type 'uci', 'position', 'go depth <N>', 'debug on', or 'quit'
+type 'uci', 'position', 'go depth <N>', 'go perft <N>', or 'quit'
 ```
 
 The protocol loop is synchronous. A search command blocks the command loop
@@ -201,7 +201,7 @@ setoption name <name> value <value>
 | `EvalFile` | `string` | Empty | Path to an ISLAYPAT pattern-weight file; an empty value restores the built-in evaluation |
 | `StageInterpolation` | `check` | `true` | Linearly interpolates the pattern evaluation across game-stage boundaries |
 | `Hash` | `spin` | `256` | Search transposition-table size in MiB; range `1`–`65536` |
-| `PerftHash` | `spin` | `256` | Size in MiB of the auxiliary node-counting table; range `1`–`65536` |
+| `PerftHash` | `spin` | `256` | Transposition-table size in MiB for `go perft`; range `1`–`65536` |
 
 Examples:
 
@@ -317,6 +317,41 @@ If the game is over:
 info string game over (final score <score-in-discs>)
 bestmove --
 ```
+
+#### Node counting
+
+`perft` is an argument of `go` rather than a separate command. It counts the
+leaf nodes of the move tree to the given depth from the current position, which
+is the standard way to verify move generation.
+
+```text
+go perft <depth>
+go perft <depth> nocache
+```
+
+Results are transposition-cached by default; `nocache` disables the cache, which
+is slower but independent of it. The response lists the node count for each root
+move, then the totals:
+
+```text
+d3: 14
+c4: 14
+f5: 14
+e6: 14
+
+Nodes searched: 56
+Time: 0 ms
+Speed: 3873288 N/s
+```
+
+A missing depth is rejected:
+
+```text
+info error: 'go perft' needs a depth
+```
+
+The `Rule` option affects the counts, since Othello passes and Reversi does not.
+The size of the cache is set by `PerftHash`.
 
 ### `debug`
 

@@ -17,12 +17,12 @@
  *   position fen <64> <stm> [moves ..]  set an arbitrary diagram
  *   setoption name <N> value <V>-> set an engine option (e.g. name Rule value Reversi)
  *   go [depth N] [movetime MS] [nodes N] -> search, ends with "bestmove"
+ *   go perft <depth> [nocache]  -> perft with bulk-counting (cache on by default)
  *   debug [ on | off ]          -> toggle the development surface below
  *   quit | exit                 -> leave
  *
  * Development (requires `debug on`; see is_debug_command / dispatch_debug):
  *   d | display | board         -> pretty-print the board
- *   go perft <depth> [nocache]  -> perft with bulk-counting (cache on by default)
  *   bench [depth]               -> timed perft sweep from the opening
  *   test | selftest             -> run every self-check (movegen, eval, search oracle)
  *   match ...                   -> engine-vs-engine A/B harness
@@ -316,17 +316,13 @@ namespace islay {
         stm_   = ts;
       }
 
-      // go perft <depth> [nocache] | go [depth N] [movetime MS] [nodes N]
+      // go [depth N] [movetime MS] [nodes N] | go perft <depth> [nocache]
+      // `perft` is an argument of `go`, not a separate command, so it stays on the
+      // release surface with the rest of `go`.
       void cmd_go(std::istringstream &is) {
         std::string tok;
         is >> tok;
         if (tok == "perft") {
-          // Node-count verification, not play: part of the development surface, so it
-          // is hidden along with the rest unless `debug on`.
-          if (!debug_) {
-            std::cout << "info error: unknown go argument 'perft'\n";
-            return;
-          }
           int depth = 0;
           if (!(is >> depth)) {
             std::cout << "info error: 'go perft' needs a depth\n";
