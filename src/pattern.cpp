@@ -271,12 +271,17 @@ namespace islay {
     constexpr std::size_t kStab  = static_cast<std::size_t>(kStabBuckets);
     constexpr std::size_t kBStabBase = kC2x5Base + kC2x5Size;
     constexpr std::size_t kWStabBase = kBStabBase + kStab;
-    constexpr std::size_t kPerStage  = kWStabBase + kStab;
+    // Region parity, appended last. One table with the side to move folded into the
+    // index, which is what makes an otherwise colour-even quantity antisymmetric.
+    constexpr std::size_t kPar     = static_cast<std::size_t>(kParityBuckets);
+    constexpr std::size_t kParBase = kWStabBase + kStab;
+    constexpr std::size_t kPerStage = kParBase + 2 * kPar;
     // Older files load as a prefix of the current stage: v1 = patterns+bias,
     // v2 = +mobility. Both are valid teachers with the newer tables zeroed.
     constexpr std::size_t kPerStageV1 = kBiasBase + 1;
     constexpr std::size_t kPerStageV2 = kWMobBase + kMob;
     constexpr std::size_t kPerStageV3 = kC2x5Base + kC2x5Size; // before the stability tables (v1-v12)
+    constexpr std::size_t kPerStageV4 = kWStabBase + kStab;    // before the parity table (v16)
 
     // Per-instance weight base: the kBases block for the 38 type instances, and each
     // appended block's own shared table.
@@ -315,6 +320,14 @@ namespace islay {
     m.white_mob  = (stm == Color::Black) ? opp_mob : my_mob;
     m.black_stab = (stm == Color::Black) ? my_st : opp_st;
     m.white_stab = (stm == Color::Black) ? opp_st : my_st;
+    // Parity: global empty parity plus how many quadrants hold an odd empty count,
+    // with the side to move folded in so the term can be antisymmetric at all.
+    const Bitboard empties = ~(b.player | b.opponent);
+    int            oddq    = 0;
+    for (int q = 0; q < 4; ++q)
+      oddq += (popcount(empties & kQuadrant[q]) & 1);
+    const int bucket = (popcount(empties) & 1) + 2 * oddq;
+    m.parity = (stm == Color::Black ? 0 : kParityBuckets) + bucket;
     return m;
   }
 
@@ -392,6 +405,7 @@ namespace islay {
     acc += w[kWMobBase + static_cast<std::size_t>(mob_clamp(mc.white_mob))];
     acc += w[kBStabBase + static_cast<std::size_t>(stab_clamp(mc.black_stab))];
     acc += w[kWStabBase + static_cast<std::size_t>(stab_clamp(mc.white_stab))];
+    acc += w[kParBase + static_cast<std::size_t>(mc.parity)];
     return acc;
   }
 
@@ -406,6 +420,7 @@ namespace islay {
     out[n++] = static_cast<std::uint32_t>(off + kWMobBase + static_cast<std::size_t>(mob_clamp(mc.white_mob)));
     out[n++] = static_cast<std::uint32_t>(off + kBStabBase + static_cast<std::size_t>(stab_clamp(mc.black_stab)));
     out[n++] = static_cast<std::uint32_t>(off + kWStabBase + static_cast<std::size_t>(stab_clamp(mc.white_stab)));
+    out[n++] = static_cast<std::uint32_t>(off + kParBase + static_cast<std::size_t>(mc.parity));
     return n;
   }
 
@@ -448,10 +463,11 @@ namespace islay {
     // it into the front of each (wider) stage and leave the newer tables zeroed.
     // That one rule loads v1, v2, v3, ... with no per-version branch -- a teacher
     // from before a feature existed simply runs with that feature off.
-    const bool known = (per == kPerStageV1 || per == kPerStageV2 || per == kPerStageV3 || per == kPerStage);
+    const bool known = (per == kPerStageV1 || per == kPerStageV2 || per == kPerStageV3 || per == kPerStageV4 ||
+                        per == kPerStage);
     if (stages != static_cast<std::uint32_t>(kStageCount) || !known || per > kPerStage) {
       log << "info error: pattern weights shape mismatch (ver " << ver << ", stages " << stages << ", per " << per
-          << "; expected " << kStageCount << " stages x {" << kPerStageV1 << ',' << kPerStageV2 << ',' << kPerStageV3 << ',' << kPerStage
+          << "; expected " << kStageCount << " stages x {" << kPerStageV1 << ',' << kPerStageV2 << ',' << kPerStageV3 << ',' << kPerStageV4 << ',' << kPerStage
           << "})\n";
       return false;
     }
@@ -475,7 +491,7 @@ namespace islay {
       log << "info error: cannot write '" << path << "'\n";
       return false;
     }
-    const std::uint32_t ver = 4, stages = kStageCount;
+    const std::uint32_t ver = 5, stages = kStageCount;
     const std::uint64_t per = pattern_weights_per_stage();
     os.write("ISLAYPAT", 8);
     os.write(reinterpret_cast<const char *>(&ver), 4);
@@ -563,9 +579,9 @@ namespace islay {
       st.set(b, Color::Black);
       if (w.score(st, pattern_stage(b.count()), mob_counts(b, Color::Black)) != 0)
         return false; // zeroed weights must score exactly 0
-      std::uint32_t idx[kPatternInstances + 5];
+      std::uint32_t idx[kPatternInstances + 6];
       const int     n = pattern_features(b, Color::Black, idx);
-      if (n != kPatternInstances + 5)
+      if (n != kPatternInstances + 6)
         return false;
       for (int i = 0; i < n; ++i)
         if (idx[i] >= static_cast<std::uint32_t>(kStageCount * pattern_weights_per_stage()))

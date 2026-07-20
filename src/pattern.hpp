@@ -40,7 +40,7 @@
  *     v3 (taught by v2)                   : +152 Elo over v2, z = 4.1
  * The loop works and is decelerating (+247 -> +152), which is what convergence looks
  * like. Shipped sets live in weights/; nothing auto-loads, so `pattern_enabled()` is
- * still false until `setoption name EvalFile value weights/v16.pat`, and eval.cpp
+ * still false until `setoption name EvalFile value weights/v17.pat`, and eval.cpp
  * remains the default for anyone who does not ask.
  *
  * Note the training loss is NOT the signal: v1 finished at rmse 2118 cd against a
@@ -153,6 +153,30 @@ namespace islay {
   inline constexpr int kStabBuckets = 65; // stable disc counts 0..64
 
   /**
+   * REGION PARITY, as a trained feature. Who gets the LAST move of an empty region is
+   * a first-order Othello concept, and this eval provably cannot express it: the score
+   * is LINEAR in per-instance weights, and parity is an XOR-like function of the board,
+   * which no weighted sum of independent windows can represent -- no matter how many
+   * windows there are. That is the same structural argument mobility (+52) and
+   * stability (+12.7) won on, and it is why this is worth a table rather than a bigger
+   * pattern.
+   *
+   * WHY THIS IS NOT THE "IMPOSSIBLE GLOBAL PARITY TERM". The hand-written eval could
+   * not carry one: parity depends only on the EMPTY squares, so it is unchanged by the
+   * p<->o swap, i.e. EVEN, while antisymmetry demands ODD. The escape is to index by
+   * WHOSE TURN IT IS. Swapping p<->o also swaps the side to move, so the index moves to
+   * the other half of the table and antisymmetry is satisfied by w_white ~= -w_black --
+   * exactly the approximate antisymmetry mobility and stability already learn.
+   *
+   * The bucket folds the two cheap parities that matter: the global empty parity (who
+   * is on track for the last move overall) and how many QUADRANTS hold an odd number of
+   * empties (a cheap stand-in for true connected-region parity, already used for
+   * endgame move ordering in search.cpp). Both are a few instructions, so unlike
+   * stability this feature is essentially free.
+   */
+  inline constexpr int kParityBuckets = 10; // (empties & 1) + 2 * odd-quadrant count, 0..9
+
+  /**
    * Legal move counts of each colour. (Potential mobility -- empties next to the
    * enemy -- was tried here as a second trained feature and measured NEUTRAL, so it
    * is not carried; the struct stays for the clean two-count API.)
@@ -160,6 +184,7 @@ namespace islay {
   struct MobCounts {
     int black_mob = 0, white_mob = 0;
     int black_stab = 0, white_stab = 0; // provably-unflippable discs; see kStabBuckets
+    int parity = 0;                     // 0..2*kParityBuckets-1, side-to-move folded in
   };
 
   /** Both move counts from a mover-relative board + whose turn it is. */
@@ -254,8 +279,8 @@ namespace islay {
    * plus the bias. THIS is the training hook: the score is their weights summed,
    * so a design row is just these indices with coefficient 1 (repeats count).
    *
-   * `out` must hold kPatternInstances + 5 entries (patterns + bias + 2 mobility
-   * + 2 stability).
+   * `out` must hold kPatternInstances + 6 entries (patterns + bias + 2 mobility
+   * + 2 stability + 1 parity).
    * Returns how many were written.
    */
   int pattern_features(const Board &b, Color stm, std::uint32_t *out) noexcept;

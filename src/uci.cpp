@@ -784,13 +784,15 @@ namespace islay {
           cfg.lr = 0.0005;
         if (!(is >> cfg.l2) || cfg.l2 < 0.0)
           cfg.l2 = 1e-6;
-        int mob = 1, c2x5 = 1, stab = 1; // gate each feature so its value can be A/B'd cleanly
+        int mob = 1, c2x5 = 1, stab = 1, par = 1; // gate each feature so its value can be A/B'd cleanly
         if (is >> mob)
           cfg.use_mobility = (mob != 0);
         if (is >> c2x5)
           cfg.use_c2x5 = (c2x5 != 0);
         if (is >> stab)
           cfg.use_stab = (stab != 0);
+        if (is >> par)
+          cfg.use_par = (par != 0);
         std::string out;
         if (is >> out && !out.empty())
           cfg.out = out;
