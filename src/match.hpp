@@ -66,6 +66,8 @@ namespace islay {
     bool          pcg_b = false;
     bool          lmrc_a = false;   // calibrated LMR reduction table per side
     bool          lmrc_b = false;
+    bool          pcg4_a = false;   // wider (4-ply) ProbCut probe gap at deep nodes
+    bool          pcg4_b = false;
   };
 
   struct MatchResult {

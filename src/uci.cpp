@@ -485,6 +485,19 @@ namespace islay {
           run_match(cfg, std::cout);
           return;
         }
+        if (first == "pcg4") { // 4-ply ProbCut probe gap at deep nodes vs the usual 2, equal time
+          int ms = 50;
+          if (!(is >> cfg.pairs) || cfg.pairs < 1) cfg.pairs = 50;
+          if (!(is >> ms) || ms < 1) ms = 50;
+          cfg.depth = 0; cfg.movetime_ms = ms;
+          cfg.pcg4_a = true; cfg.pcg4_b = false;
+          std::string ev;
+          if (is >> ev && ev != "-") cfg.eval_a = cfg.eval_b = ev;
+          std::uint64_t sd = 0;
+          if (is >> sd) cfg.seed = sd;
+          run_match(cfg, std::cout);
+          return;
+        }
         if (first == "lmrc") { // CALIBRATED LMR table vs the old fixed rule, equal time
           int ms = 50;
           if (!(is >> cfg.pairs) || cfg.pairs < 1) cfg.pairs = 50;

@@ -107,6 +107,14 @@ namespace islay {
      *  probabilistic cut only ever makes a node more accurate. */
     void set_probcut_gate_enabled(bool on) noexcept { probcut_gate_enabled_ = on; }
 
+    /** Probe across 4 plies instead of 2 at deep nodes: same parity, ~5x cheaper probe.
+     *  MEASURED +19 Elo, 95% CI [4, 34], z=2.47 over 600 pairs, all six seeds positive,
+     *  and it raises completed depth at equal time at both 50ms and 500ms. The node
+     *  saving GROWS with depth (-13% at d14, -41% at d16) because the wider gap only
+     *  fires from depth 9 up, so it should be worth more at longer time controls than
+     *  the 50ms this was measured at. Default ON; `match pcg4` is the A/B. */
+    void set_probcut_gap4(bool on) noexcept { probcut_gap4_ = on; }
+
     /** Late move reduction, at runtime -- for an equal-time A/B of LMR itself. */
     void set_lmr_enabled(bool on) noexcept { lmr_enabled_ = on; }
 
@@ -171,6 +179,7 @@ namespace islay {
     bool               selective_enabled_ = true;
     bool               probcut_enabled_   = true;
     float              probcut_t_         = 1.5f;
+    bool               probcut_gap4_         = true;  // MEASURED +19 Elo; see kProbCutFit4
     bool               probcut_gate_enabled_ = true;  // MEASURED +25 Elo; see kProbCutGateFit
     bool               lmr_enabled_       = true;
     bool               lmr_calibrated_    = false; // MEASURED WORSE -- see lmr_reduction

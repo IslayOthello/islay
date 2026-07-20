@@ -232,6 +232,47 @@ namespace islay {
     constexpr int   kProbCutMinDepth = 5; // needs room for a d-2 search worth the saving
 
     /**
+     * WIDER PROBE GAP at deep nodes. The telemetry says ProbCut probes are 68-78% of
+     * every node the engine searches, so the probe itself -- not the cut rate -- is the
+     * budget. A d-4 probe costs about 1/EBF^2 = 1/2.27^2 ~ 19% of a d-2 probe, so if the
+     * prediction still holds up the saving is large where it is worth most.
+     *
+     * Gap 4, never 3, for the same reason ProbCut uses d-2 and not d-1: it preserves the
+     * PARITY of the remaining depth, and Othello scores swing hard with that parity.
+     *
+     * Fitted alongside the d-2 table from the same `pcdata 800 12` sample on v12, and
+     * judged on the RATIO 1.5*sigma / SD(v_d) -- never on sigma, which is not scale-free
+     * (that mistake is recorded at kProbCutFit). The d-4 prediction is weaker but stays
+     * inside the band that has actually been shown to win here:
+     *     d-2:  r = 0.971-0.994,  margin 16-36% of an SD
+     *     d-4:  r = 0.954-0.988,  margin 23-45% of an SD
+     * The margin only enters the proven range once the node is deep, so gap 4 is used
+     * from kProbCutGap4MinDepth up (d>=9: r>=0.983, margin <=27.8%) and gap 2 below it,
+     * where d-4 would be a 37-45% margin -- wider than anything that has worked.
+     *
+     * MEASURED: +19 Elo, 95% CI [4, 34], z = 2.47 (600 pairs / 1200 games, equal time
+     * 50ms, v12, `match pcg4`), all six seeds positive, and completed depth at equal
+     * time rises on 4 of 6 positions at BOTH 50ms and 500ms.
+     *
+     * The saving GROWS with depth -- -13.2% nodes at fixed depth 14 but -41.3% at depth
+     * 16 -- because the wider gap only fires from depth 9 up, so a deeper search has a
+     * larger share of nodes eligible for it. That puts the 50ms figure above at the
+     * PESSIMISTIC end: at a longer time control this should be worth more, not less.
+     * It also means the EBF screen has to be applied at the depth the engine will
+     * actually reach, not at a convenient one.
+     */
+    constexpr int kProbCutGap4MinDepth = 9;
+    constexpr ProbCutFit kProbCutFit4[kProbCutMaxFitDepth + 1] = {
+            {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, // 0..3: unused
+            {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, // 4..7: gap 2 is used there
+            {0.990f, 45.4f, 374.5f},                            // d=8
+            {0.995f, -20.0f, 344.5f},                           // d=9
+            {1.016f, 8.2f, 311.8f},                             // d=10
+            {1.018f, -0.6f, 300.6f},                            // d=11
+            {1.023f, -1.7f, 290.9f},                            // d=12
+    };
+
+    /**
      * ProbCut PROBE GATE, motivated by the telemetry (searchstats.hpp): on v12 only
      * ~38% of ProbCut attempts actually cut, so ~62% pay for one or both d-2 probes and
      * buy nothing -- and the probes are 68% of ALL search nodes. This gate skips a probe
@@ -777,8 +818,11 @@ namespace islay {
         beta == alpha + 1 && beta < kScoreMax && alpha > -kScoreMax) {
       const int         di = depth < kProbCutMaxFitDepth ? depth : kProbCutMaxFitDepth;
       const int         sg = pattern_stage(b.count());
-      const ProbCutFit &f  = mpc_perstage_ ? kMpcFit[sg][di] : kProbCutFit[di];
-      const int         d2 = depth - 2;
+      // A deep node probes across 4 plies instead of 2: same parity, ~5x cheaper, and
+      // on v12 the prediction is still inside the band that wins (see kProbCutFit4).
+      const bool        g4 = probcut_gap4_ && depth >= kProbCutGap4MinDepth;
+      const ProbCutFit &f  = g4 ? kProbCutFit4[di] : (mpc_perstage_ ? kMpcFit[sg][di] : kProbCutFit[di]);
+      const int         d2 = depth - (g4 ? 4 : 2);
       const std::uint64_t pc0 = kStats ? nodes_ : 0; // probe cost = nodes the probes spend
       if constexpr (kStats) ++sacc.pc_try;
 
