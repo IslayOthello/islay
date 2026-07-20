@@ -9,6 +9,8 @@
  */
 #include "pattern.hpp"
 
+#include "stability.hpp"
+
 #include <array>
 #include <cstring>
 #include <fstream>
@@ -265,11 +267,16 @@ namespace islay {
     constexpr std::size_t kWMobBase = kBMobBase + kMob;
     constexpr std::size_t kC2x5Base = kWMobBase + kMob;                 // shared 2x5 table
     constexpr std::size_t kC2x5Size = static_cast<std::size_t>(ipow3(10)); // 3^10 = 59049
-    constexpr std::size_t kPerStage = kC2x5Base + kC2x5Size;
+    // Stability tables, appended LAST so every earlier file stays a loadable prefix.
+    constexpr std::size_t kStab  = static_cast<std::size_t>(kStabBuckets);
+    constexpr std::size_t kBStabBase = kC2x5Base + kC2x5Size;
+    constexpr std::size_t kWStabBase = kBStabBase + kStab;
+    constexpr std::size_t kPerStage  = kWStabBase + kStab;
     // Older files load as a prefix of the current stage: v1 = patterns+bias,
     // v2 = +mobility. Both are valid teachers with the newer tables zeroed.
     constexpr std::size_t kPerStageV1 = kBiasBase + 1;
     constexpr std::size_t kPerStageV2 = kWMobBase + kMob;
+    constexpr std::size_t kPerStageV3 = kC2x5Base + kC2x5Size; // before the stability tables (v1-v12)
 
     // Per-instance weight base: the kBases block for the 38 type instances, and each
     // appended block's own shared table.
@@ -296,9 +303,18 @@ namespace islay {
   MobCounts mob_counts(const Board &b, Color stm, Bitboard mover_moves) noexcept {
     const int my_mob  = popcount(mover_moves);
     const int opp_mob = popcount(b.passed().moves());
+    // Stability is the same shape of feature as mobility -- a whole-board count no
+    // pattern window can see -- so it is gathered here alongside it. The fixpoint is
+    // the expensive part of the leaf (~+9% search time for both colours), and it is
+    // deliberately the real one: a cheap corner-anchored approximation would be a
+    // function of the edge configuration that Edge2X already encodes exactly.
+    const int my_st  = stable_count(b.player, b.opponent);
+    const int opp_st = stable_count(b.opponent, b.player);
     MobCounts m;
-    m.black_mob = (stm == Color::Black) ? my_mob : opp_mob;
-    m.white_mob = (stm == Color::Black) ? opp_mob : my_mob;
+    m.black_mob  = (stm == Color::Black) ? my_mob : opp_mob;
+    m.white_mob  = (stm == Color::Black) ? opp_mob : my_mob;
+    m.black_stab = (stm == Color::Black) ? my_st : opp_st;
+    m.white_stab = (stm == Color::Black) ? opp_st : my_st;
     return m;
   }
 
@@ -358,6 +374,12 @@ namespace islay {
   void pattern_set_stage_interp(bool on) noexcept { g_stage_interp = on; }
   bool pattern_stage_interp() noexcept { return g_stage_interp; }
 
+  namespace {
+    [[nodiscard]] ISLAY_FORCEINLINE int stab_clamp(int v) noexcept {
+      return v < 0 ? 0 : (v >= kStabBuckets ? kStabBuckets - 1 : v);
+    }
+  }
+
   int PatternWeights::score(const PatternState &s, int stage, const MobCounts &mc) const noexcept {
     if (!loaded_)
       return 0;
@@ -368,6 +390,8 @@ namespace islay {
     acc += w[kBiasBase]; // bias
     acc += w[kBMobBase + static_cast<std::size_t>(mob_clamp(mc.black_mob))];
     acc += w[kWMobBase + static_cast<std::size_t>(mob_clamp(mc.white_mob))];
+    acc += w[kBStabBase + static_cast<std::size_t>(stab_clamp(mc.black_stab))];
+    acc += w[kWStabBase + static_cast<std::size_t>(stab_clamp(mc.white_stab))];
     return acc;
   }
 
@@ -380,6 +404,8 @@ namespace islay {
     out[n++] = static_cast<std::uint32_t>(off + kBiasBase); // bias
     out[n++] = static_cast<std::uint32_t>(off + kBMobBase + static_cast<std::size_t>(mob_clamp(mc.black_mob)));
     out[n++] = static_cast<std::uint32_t>(off + kWMobBase + static_cast<std::size_t>(mob_clamp(mc.white_mob)));
+    out[n++] = static_cast<std::uint32_t>(off + kBStabBase + static_cast<std::size_t>(stab_clamp(mc.black_stab)));
+    out[n++] = static_cast<std::uint32_t>(off + kWStabBase + static_cast<std::size_t>(stab_clamp(mc.white_stab)));
     return n;
   }
 
@@ -422,10 +448,10 @@ namespace islay {
     // it into the front of each (wider) stage and leave the newer tables zeroed.
     // That one rule loads v1, v2, v3, ... with no per-version branch -- a teacher
     // from before a feature existed simply runs with that feature off.
-    const bool known = (per == kPerStageV1 || per == kPerStageV2 || per == kPerStage);
+    const bool known = (per == kPerStageV1 || per == kPerStageV2 || per == kPerStageV3 || per == kPerStage);
     if (stages != static_cast<std::uint32_t>(kStageCount) || !known || per > kPerStage) {
       log << "info error: pattern weights shape mismatch (ver " << ver << ", stages " << stages << ", per " << per
-          << "; expected " << kStageCount << " stages x {" << kPerStageV1 << ',' << kPerStageV2 << ',' << kPerStage
+          << "; expected " << kStageCount << " stages x {" << kPerStageV1 << ',' << kPerStageV2 << ',' << kPerStageV3 << ',' << kPerStage
           << "})\n";
       return false;
     }
@@ -449,7 +475,7 @@ namespace islay {
       log << "info error: cannot write '" << path << "'\n";
       return false;
     }
-    const std::uint32_t ver = 3, stages = kStageCount;
+    const std::uint32_t ver = 4, stages = kStageCount;
     const std::uint64_t per = pattern_weights_per_stage();
     os.write("ISLAYPAT", 8);
     os.write(reinterpret_cast<const char *>(&ver), 4);
@@ -537,9 +563,9 @@ namespace islay {
       st.set(b, Color::Black);
       if (w.score(st, pattern_stage(b.count()), mob_counts(b, Color::Black)) != 0)
         return false; // zeroed weights must score exactly 0
-      std::uint32_t idx[kPatternInstances + 3];
+      std::uint32_t idx[kPatternInstances + 5];
       const int     n = pattern_features(b, Color::Black, idx);
-      if (n != kPatternInstances + 3)
+      if (n != kPatternInstances + 5)
         return false;
       for (int i = 0; i < n; ++i)
         if (idx[i] >= static_cast<std::uint32_t>(kStageCount * pattern_weights_per_stage()))

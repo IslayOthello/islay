@@ -92,6 +92,7 @@ namespace islay {
     double        val_frac      = 0.1;   // games held out to measure generalisation; SPLIT BY GAME
     bool          use_mobility  = true;  // false = don't train the mobility tables (A/B control)
     bool          use_c2x5      = true;  // false = don't train the Corner2x5 table (A/B control)
+    bool          use_stab      = true;  // ditto for the two stability tables (feature under test)
     bool          interp        = false; // fit for stage interpolation (self-play + blended gradient)
     std::uint64_t seed          = 0;
     Rule          rule          = Rule::Othello;

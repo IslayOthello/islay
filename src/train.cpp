@@ -175,8 +175,8 @@ namespace islay {
 
     /** One pass over [begin,end). `update` off = pure measurement, weights untouched. */
     const auto pass = [&](std::size_t begin, std::size_t end, bool update, std::uint64_t *out_count) {
-      std::uint32_t idx[kPatternInstances + 3];
-      std::uint32_t idxhi[kPatternInstances + 3];
+      std::uint32_t idx[kPatternInstances + 5];
+      std::uint32_t idxhi[kPatternInstances + 5];
       double        sse   = 0.0;
       std::uint64_t count = 0;
       for (std::size_t gi = begin; gi < end; ++gi) {
@@ -200,9 +200,11 @@ namespace islay {
           // instance layout, not from `n`, so appended patterns never shift the mob gate.
           const int kType    = kPatternInstances - kC2x5Instances;                          // 38
           const int c2x5_lo  = kType, c2x5_hi = kPatternInstances;                          // [38,46)
-          const int nmob     = n - 2;                                                        // last 2
+          const int nstab    = n - 2;                                                        // last 2
+          const int nmob     = n - 4;                                                        // the 2 before those
           const auto gated = [&](int k) {
-            if (!cfg.use_mobility && k >= nmob) return true;
+            if (!cfg.use_stab && k >= nstab) return true;
+            if (!cfg.use_mobility && k >= nmob && k < nstab) return true;
             if (!cfg.use_c2x5 && k >= c2x5_lo && k < c2x5_hi) return true;
             return false;
           };

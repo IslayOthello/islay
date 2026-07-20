@@ -40,7 +40,7 @@
  *     v3 (taught by v2)                   : +152 Elo over v2, z = 4.1
  * The loop works and is decelerating (+247 -> +152), which is what convergence looks
  * like. Shipped sets live in weights/; nothing auto-loads, so `pattern_enabled()` is
- * still false until `setoption name EvalFile value weights/v12.pat`, and eval.cpp
+ * still false until `setoption name EvalFile value weights/v16.pat`, and eval.cpp
  * remains the default for anyone who does not ask.
  *
  * Note the training loss is NOT the signal: v1 finished at rmse 2118 cd against a
@@ -133,12 +133,33 @@ namespace islay {
   inline constexpr int kMobBuckets = 33; // move counts 0..32, capped
 
   /**
+   * STABILITY, as a trained feature -- the same bet mobility won (+52 Elo), for the
+   * same reason. An n-tuple pattern sees a fixed WINDOW of squares, so it is blind to
+   * any property that depends on the whole board. "How many of my discs are provably
+   * unflippable" is exactly such a property: it comes from a fixpoint over full lines
+   * and edge anchors across all 64 squares (stability.hpp), and two positions with
+   * identical corner/edge windows can have very different stable counts.
+   *
+   * This is deliberately NOT a cheap corner-anchored approximation. Cheap edge
+   * stability is a deterministic function of the edge configuration, and Edge2X plus
+   * Corner3x3 plus Corner2x5 already encode that configuration exactly -- so it would
+   * be redundant by construction, which is precisely how Corner2x6 failed. The whole
+   * value here is the GLOBAL part that no window can see, so the real fixpoint is what
+   * gets used. Measured cost: about +9% search time for both colours.
+   *
+   * Two colour-absolute tables like mobility, so antisymmetry stays exact and the
+   * +1-coefficient training loop is untouched.
+   */
+  inline constexpr int kStabBuckets = 65; // stable disc counts 0..64
+
+  /**
    * Legal move counts of each colour. (Potential mobility -- empties next to the
    * enemy -- was tried here as a second trained feature and measured NEUTRAL, so it
    * is not carried; the struct stays for the clean two-count API.)
    */
   struct MobCounts {
     int black_mob = 0, white_mob = 0;
+    int black_stab = 0, white_stab = 0; // provably-unflippable discs; see kStabBuckets
   };
 
   /** Both move counts from a mover-relative board + whose turn it is. */
@@ -233,7 +254,8 @@ namespace islay {
    * plus the bias. THIS is the training hook: the score is their weights summed,
    * so a design row is just these indices with coefficient 1 (repeats count).
    *
-   * `out` must hold kPatternInstances + 3 entries (patterns + bias + 2 mobility).
+   * `out` must hold kPatternInstances + 5 entries (patterns + bias + 2 mobility
+   * + 2 stability).
    * Returns how many were written.
    */
   int pattern_features(const Board &b, Color stm, std::uint32_t *out) noexcept;

@@ -485,6 +485,21 @@ namespace islay {
           run_match(cfg, std::cout);
           return;
         }
+        if (first == "et") { // EVAL vs EVAL at equal TIME -- the honest test for a feature
+          // that costs search speed. The fixed-depth form measures only what the eval
+          // KNOWS; this one also charges it for what it costs to know it.
+          int ms = 50;
+          if (!(is >> cfg.pairs) || cfg.pairs < 1) cfg.pairs = 50;
+          if (!(is >> ms) || ms < 1) ms = 50;
+          cfg.depth = 0; cfg.movetime_ms = ms;
+          std::string ea, eb;
+          if (is >> ea && ea != "-") cfg.eval_a = ea;
+          if (is >> eb && eb != "-") cfg.eval_b = eb;
+          std::uint64_t sd = 0;
+          if (is >> sd) cfg.seed = sd;
+          run_match(cfg, std::cout);
+          return;
+        }
         if (first == "pcg4") { // 4-ply ProbCut probe gap at deep nodes vs the usual 2, equal time
           int ms = 50;
           if (!(is >> cfg.pairs) || cfg.pairs < 1) cfg.pairs = 50;
@@ -769,11 +784,13 @@ namespace islay {
           cfg.lr = 0.0005;
         if (!(is >> cfg.l2) || cfg.l2 < 0.0)
           cfg.l2 = 1e-6;
-        int mob = 1, c2x5 = 1; // gate each feature so its value can be A/B'd cleanly
+        int mob = 1, c2x5 = 1, stab = 1; // gate each feature so its value can be A/B'd cleanly
         if (is >> mob)
           cfg.use_mobility = (mob != 0);
         if (is >> c2x5)
           cfg.use_c2x5 = (c2x5 != 0);
+        if (is >> stab)
+          cfg.use_stab = (stab != 0);
         std::string out;
         if (is >> out && !out.empty())
           cfg.out = out;
