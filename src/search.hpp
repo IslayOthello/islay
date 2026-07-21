@@ -49,9 +49,84 @@ namespace islay {
     bool          exact    = false; // depth reached the empty count -> game-theoretic result
   };
 
+  /**
+   * The transposition table, deliberately SEPARATE from Searcher so that several
+   * searchers can share ONE of them. That sharing is the whole mechanism of lazy SMP:
+   * the helper threads are not dividing the tree between them, they are filling this
+   * table with results the main thread then finds already answered.
+   *
+   * LOCKLESS, and it has to be. A 16-byte entry cannot be written atomically, so two
+   * threads storing to the same slot can leave a mixture of both -- a score from one
+   * and a depth from the other. Validating the move (which the search already does)
+   * catches an illegal `best`, but nothing catches a plausible score carrying someone
+   * else's depth, and this engine PROVES exact endgame results out of this table. So
+   * each slot is two 64-bit atomics holding Hyatt's XOR check: the key is stored
+   * XOR-ed with the payload, and a reader that recomputes `key_xor ^ data` only gets
+   * its key back if the pair it read belongs together. A torn pair simply misses.
+   *
+   * Relaxed ordering throughout: the table is a hint, every value read from it is
+   * re-validated or bounded by the search, and no other memory is published through it.
+   */
+  class TranspositionTable {
+  public:
+    enum : std::uint8_t { kNone = 0, kExact = 1, kLower = 2, kUpper = 3 };
+
+    struct Hit {
+      int          score = 0;
+      int          depth = 0;
+      std::uint8_t flag  = kNone;
+      std::uint8_t best  = 255;
+    };
+
+    void resize(std::size_t mib);
+    void clear() noexcept;
+
+    /** One generation per search; older entries lose to newer ones on replacement. */
+    void new_generation() noexcept { age_.fetch_add(1, std::memory_order_relaxed); }
+
+    [[nodiscard]] bool probe(std::uint64_t key, Hit &out) const noexcept;
+    void store(std::uint64_t key, int score, int depth, std::uint8_t flag, std::uint8_t best) noexcept;
+
+    void prefetch(std::uint64_t key) const noexcept {
+      if (mask_) ISLAY_PREFETCH(&slots_[key & mask_]);
+    }
+
+    /** Per-mille occupancy, for the UCI `hashfull` field. Approximate under SMP. */
+    [[nodiscard]] int hashfull() const noexcept;
+
+  private:
+    struct Slot {
+      std::atomic<std::uint64_t> key_xor;
+      std::atomic<std::uint64_t> data;
+    };
+    static_assert(sizeof(Slot) == 16, "TT slot must stay 16 bytes");
+
+    std::vector<Slot>          slots_;
+    std::size_t                mask_ = 0;
+    std::atomic<std::uint8_t>  age_{0};
+    std::atomic<std::size_t>   used_{0};
+  };
+
   class Searcher {
   public:
-    explicit Searcher(std::size_t mib = 256) { resize(mib); }
+    explicit Searcher(std::size_t mib = 256)
+        : tt_(std::make_shared<TranspositionTable>()) {
+      resize(mib);
+    }
+
+    /** Share another searcher's table. THIS is what makes lazy SMP work -- helpers must
+     *  write into the same table the main thread reads. Killers, history, the pattern
+     *  stack and the node counter stay per-searcher, which is why each thread needs its
+     *  own Searcher rather than just its own stack. */
+    void share_table_with(const Searcher &other) noexcept { tt_ = other.tt_; }
+    [[nodiscard]] bool shares_table_with(const Searcher &other) const noexcept { return tt_ == other.tt_; }
+
+    /** Helper threads must not bump the shared generation; only the main search does. */
+    void set_bump_age(bool on) noexcept { bump_age_ = on; }
+
+    /** Start the iterative deepening at 1 + offset, so helper threads do not all
+     *  duplicate the same iteration at the same moment. */
+    void set_depth_offset(int d) noexcept { depth_offset_ = d < 0 ? 0 : d; }
 
     /** Reallocate the transposition table to about `mib` MiB (also wipes it). */
     void resize(std::size_t mib);
@@ -174,28 +249,15 @@ namespace islay {
     [[nodiscard]] int static_eval(const Board &b, Color stm) const noexcept;
 
   private:
-    enum : std::uint8_t { kNone = 0, kExact = 1, kLower = 2, kUpper = 3 };
-
-    // 16 bytes: two per cache line. `flag == kNone` (0) marks an unused slot, so
-    // a zeroed table can never be misread as a real EXACT score.
-    struct Entry {
-      std::uint64_t key;
-      std::int16_t  score;
-      std::uint8_t  depth;
-      std::uint8_t  flag;
-      std::uint8_t  best; // 0..63, or >= 64 for "none" -- ALWAYS validated before use
-      std::uint8_t  age;
-      std::uint8_t  pad[2];
-    };
-    static_assert(sizeof(Entry) == 16, "TT entry must stay 16 bytes");
+    using Entry = TranspositionTable::Hit;
+    static constexpr std::uint8_t kNone  = TranspositionTable::kNone;
+    static constexpr std::uint8_t kExact = TranspositionTable::kExact;
+    static constexpr std::uint8_t kLower = TranspositionTable::kLower;
+    static constexpr std::uint8_t kUpper = TranspositionTable::kUpper;
 
     // ply != depth once passes are free, so this is sized by the real worst case
     // (~60 moves interleaved with ~60 passes), not by depth.
     static constexpr int kMaxPly = 128;
-
-    std::vector<Entry> tt_;
-    std::size_t        mask_       = 0;
-    std::uint8_t       age_        = 0;
     bool               tt_enabled_        = true;
     bool               selective_enabled_ = true;
     bool               probcut_enabled_   = true;
@@ -216,6 +278,10 @@ namespace islay {
     // Heap, and only allocated when weights are loaded: inline, this array is
     // 19KB sitting INSIDE Searcher, next to the hot fields (nodes_, mask_,
     // killers_). Cheap insurance, not a measured fix.
+    std::shared_ptr<TranspositionTable> tt_;
+    bool                                bump_age_     = true;
+    int                                 depth_offset_ = 0;
+
     std::vector<PatternState> ps_;
     bool                      pat_on_ = false; // cached per search; see new_search()
 
@@ -229,7 +295,7 @@ namespace islay {
     bool          stopped_     = false; // thread-local to the search; see request_stop
     std::atomic<bool> stop_flag_{false}; // set from the command thread
     int           seldepth_    = 0; // max ply reached this iteration
-    std::size_t   tt_used_     = 0; // distinct slots written since the last clear (for hashfull)
+
 
     // Opt-in telemetry (see searchstats.hpp). Allocated lazily in new_search only
     // when kStats is on, so a shipping build never pays the ~200KB or the counters.

@@ -73,6 +73,23 @@ namespace islay {
                            return false;
                          }
                        }},
+            OptionSpec{"Threads",
+                       "spin",
+                       "1",
+                       {},
+                       1,
+                       64,
+                       [](Options &o, const std::string &v) {
+                         try {
+                           const long t = std::stol(v);
+                           if (t < 1 || t > 64)
+                             return false;
+                           o.threads = static_cast<int>(t);
+                           return true;
+                         } catch (...) {
+                           return false;
+                         }
+                       }},
             OptionSpec{"Hash",
                        "spin",
                        "256",

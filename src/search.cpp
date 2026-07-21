@@ -503,21 +503,91 @@ namespace islay {
 
   } // namespace
 
+  namespace {
+    // Payload packing for the lockless table. Six bytes of real content in one 64-bit
+    // word, so a reader gets it in a single atomic load and the XOR check below can
+    // vouch that it belongs with the key it was read beside.
+    [[nodiscard]] ISLAY_FORCEINLINE std::uint64_t tt_pack(int score, int depth, std::uint8_t flag,
+                                                          std::uint8_t best, std::uint8_t age) noexcept {
+      return static_cast<std::uint64_t>(static_cast<std::uint16_t>(static_cast<std::int16_t>(score))) |
+             (static_cast<std::uint64_t>(static_cast<std::uint8_t>(depth)) << 16) |
+             (static_cast<std::uint64_t>(flag) << 24) | (static_cast<std::uint64_t>(best) << 32) |
+             (static_cast<std::uint64_t>(age) << 40);
+    }
+    [[nodiscard]] ISLAY_FORCEINLINE int          tt_score(std::uint64_t d) noexcept { return static_cast<std::int16_t>(d & 0xFFFF); }
+    [[nodiscard]] ISLAY_FORCEINLINE int          tt_depth(std::uint64_t d) noexcept { return static_cast<int>((d >> 16) & 0xFF); }
+    [[nodiscard]] ISLAY_FORCEINLINE std::uint8_t tt_flag(std::uint64_t d) noexcept { return static_cast<std::uint8_t>((d >> 24) & 0xFF); }
+    [[nodiscard]] ISLAY_FORCEINLINE std::uint8_t tt_best(std::uint64_t d) noexcept { return static_cast<std::uint8_t>((d >> 32) & 0xFF); }
+    [[nodiscard]] ISLAY_FORCEINLINE std::uint8_t tt_age(std::uint64_t d) noexcept { return static_cast<std::uint8_t>((d >> 40) & 0xFF); }
+  } // namespace
+
+  void TranspositionTable::resize(std::size_t mib) {
+    const std::size_t n = tt_slots_for(mib, sizeof(Slot));
+    slots_ = std::vector<Slot>(n); // atomics are not copyable, so build fresh
+    mask_  = n - 1;
+    clear();
+  }
+
+  void TranspositionTable::clear() noexcept {
+    for (Slot &s: slots_) {
+      s.key_xor.store(0, std::memory_order_relaxed);
+      s.data.store(0, std::memory_order_relaxed);
+    }
+    age_.store(0, std::memory_order_relaxed);
+    used_.store(0, std::memory_order_relaxed);
+  }
+
+  bool TranspositionTable::probe(std::uint64_t key, Hit &out) const noexcept {
+    if (!mask_)
+      return false;
+    const Slot         &s  = slots_[key & mask_];
+    const std::uint64_t kx = s.key_xor.load(std::memory_order_relaxed);
+    const std::uint64_t d  = s.data.load(std::memory_order_relaxed);
+    // The XOR is the whole guarantee: a pair written by two different threads will not
+    // reproduce this key, so a torn entry reads as a miss rather than as a lie.
+    if ((kx ^ d) != key || tt_flag(d) == kNone)
+      return false;
+    out.score = tt_score(d);
+    out.depth = tt_depth(d);
+    out.flag  = tt_flag(d);
+    out.best  = tt_best(d);
+    return true;
+  }
+
+  void TranspositionTable::store(std::uint64_t key, int score, int depth, std::uint8_t flag,
+                                 std::uint8_t best) noexcept {
+    if (!mask_)
+      return;
+    Slot               &s   = slots_[key & mask_];
+    const std::uint64_t kx  = s.key_xor.load(std::memory_order_relaxed);
+    const std::uint64_t old = s.data.load(std::memory_order_relaxed);
+    const bool          same = ((kx ^ old) == key);
+    const std::uint8_t  age = age_.load(std::memory_order_relaxed);
+    // Prefer keeping a deeper entry from THIS generation; anything older loses.
+    const bool replace = same || tt_flag(old) == kNone || tt_age(old) != age || tt_depth(old) <= depth;
+    if (!replace)
+      return;
+    if (tt_flag(old) == kNone)
+      used_.fetch_add(1, std::memory_order_relaxed);
+    const std::uint64_t d = tt_pack(score, std::max(0, depth), flag, best, age);
+    s.data.store(d, std::memory_order_relaxed);
+    s.key_xor.store(key ^ d, std::memory_order_relaxed);
+  }
+
+  int TranspositionTable::hashfull() const noexcept {
+    return mask_ ? static_cast<int>(used_.load(std::memory_order_relaxed) * 1000 / (mask_ + 1)) : 0;
+  }
+
   void Searcher::resize(std::size_t mib) {
-    const std::size_t slots = tt_slots_for(mib, sizeof(Entry));
-    tt_.assign(slots, Entry{});
-    mask_ = slots - 1;
+    tt_->resize(mib);
     clear();
   }
 
   void Searcher::clear() noexcept {
     stop_flag_.store(false, std::memory_order_relaxed); // a stale stop must not kill the next search
-    for (Entry &e: tt_)
-      e = Entry{};
+    tt_->clear();
     std::memset(killers_, 0, sizeof killers_);
     std::memset(history_, 0, sizeof history_);
-    age_     = 0;
-    tt_used_ = 0;
   }
 
   void Searcher::new_search(const SearchLimits &limits) noexcept {
@@ -536,7 +606,8 @@ namespace islay {
     node_cap_    = limits.nodes;
     start_ms_    = now_ms();
     deadline_ms_ = limits.movetime_ms > 0.0 ? start_ms_ + limits.movetime_ms : 0.0;
-    ++age_;
+    if (bump_age_)
+      tt_->new_generation();
     if constexpr (kStats) { // one position's telemetry per go
       if (!stats_) stats_ = std::make_unique<SearchStats>();
       stats_->reset();
@@ -772,8 +843,8 @@ namespace islay {
 
     if (kUseTT && tt_enabled_) {
       if constexpr (kStats) ++sacc.tt_probe;
-      const Entry &e = tt_[key & mask_];
-      if (e.key == key && e.flag != kNone) {
+      Entry e;
+      if (tt_->probe(key, e)) {
         if constexpr (kStats) ++sacc.tt_hit;
         // A zeroed slot has best == 0, which aliases a1 and looks legal, and
         // flip() is UB for sq >= 64 -- so ALWAYS validate against `moves`.
@@ -947,7 +1018,7 @@ namespace islay {
         // perft work showed this table is memory-bound. Start the load now, while
         // ordering still has work to do, so the probe after we recurse is warm.
         if (kUsePrefetch && kUseTT && tt_enabled_)
-          ISLAY_PREFETCH(&tt_[hash_board(sm.child.player, sm.child.opponent) & mask_]);
+          tt_->prefetch(hash_board(sm.child.player, sm.child.opponent));
         if constexpr (kUseOrdering) {
           if (sq == tt_move) {
             sm.score = 1 << 24;
@@ -1075,19 +1146,9 @@ namespace islay {
 
     if (kUseTT && tt_enabled_) {
       if (!stopped_) { // never poison the table with an aborted node's score
-        Entry &e = tt_[key & mask_];
-        // Prefer keeping a deeper entry from THIS search; anything older loses.
-        const bool replace = (e.key == key) || (e.flag == kNone) || (e.age != age_) || (e.depth <= depth);
-        if (replace) {
-          if (e.flag == kNone)
-            ++tt_used_; // occupancy for `hashfull`; counting on first write beats scanning the table
-          e.key = key;
-          e.score = static_cast<std::int16_t>(std::clamp(best, -kScoreMax, kScoreMax));
-          e.depth = static_cast<std::uint8_t>(std::max(0, depth));
-          e.flag  = best <= alpha_orig ? kUpper : (best >= beta ? kLower : kExact);
-          e.best  = best_move >= 0 && best_move < 64 ? static_cast<std::uint8_t>(best_move) : 255;
-          e.age   = age_;
-        }
+        tt_->store(key, std::clamp(best, -kScoreMax, kScoreMax), depth,
+                   best <= alpha_orig ? kUpper : (best >= beta ? kLower : kExact),
+                   best_move >= 0 && best_move < 64 ? static_cast<std::uint8_t>(best_move) : 255);
       }
     }
 
@@ -1204,9 +1265,9 @@ namespace islay {
         continue;
       }
       const std::uint64_t k = hash_board(b.player, b.opponent);
-      const Entry        &e = tt_[k & mask_];
-      if (e.key != k || e.flag == kNone)
-        break;
+      Entry e;
+      if (!tt_->probe(k, e))
+        break; // probe already rejects a miss, a torn pair and an empty slot
       if (e.best >= 64 || !(moves & square_bb(e.best)))
         break; // stale/colliding entry: stop rather than emit an illegal move
       emit(out, static_cast<Square>(e.best));
@@ -1249,7 +1310,10 @@ namespace islay {
 
     int  score_hist[2] = {0, 0}; // score two and one iterations ago (index by parity of d)
     bool have_hist[2]  = {false, false};
-    for (int d = 1; d <= max_depth; ++d) {
+    // Helper threads start a little deeper so they are not all grinding the identical
+    // iteration at the same instant; the shared table keeps them diverged after that.
+    const int first_depth = depth_offset_ < max_depth ? 1 + depth_offset_ : 1;
+    for (int d = first_depth; d <= max_depth; ++d) {
       seldepth_       = 0; // per-iteration, like the UCI convention
       SearchResult it = res; // carry the previous best in for root ordering
 
@@ -1302,7 +1366,7 @@ namespace islay {
       const double        dt   = now_ms() - start_ms_;
       const std::uint64_t nps  = dt > 0.0 ? static_cast<std::uint64_t>(nodes_ / (dt / 1000.0)) : 0;
       // hashfull is per-mille of the table occupied (UCI convention).
-      const int hashfull = mask_ ? static_cast<int>(tt_used_ * 1000 / (mask_ + 1)) : 0;
+      const int hashfull = tt_->hashfull();
       // `cd` = centi-discs, not centipawns: this is Othello, the unit is discs.
       info << "info depth " << d << " seldepth " << res.seldepth << " score cd " << res.score << " nodes " << nodes_
            << " nps " << nps << " hashfull " << hashfull << " time " << static_cast<std::uint64_t>(dt) << " pv"

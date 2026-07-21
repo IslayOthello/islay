@@ -170,6 +170,36 @@ namespace islay {
       bool        search_infinite_ = false; // only ever touched by the command thread
 
       /**
+       * LAZY SMP. The helpers do NOT divide the tree -- they run the same iterative
+       * deepening on the same root, and everything they discover lands in the SHARED
+       * transposition table, where the main thread finds it already answered. That
+       * sharing is the entire mechanism; helpers with private tables would be N
+       * independent searches and worth nothing.
+       *
+       * Each helper needs its own Searcher because killers, history, the pattern stack
+       * and the node counter are per-thread state -- only the table is shared. They are
+       * built once and kept, because constructing one allocates that per-thread state.
+       *
+       * A small depth offset stops them all grinding the identical iteration at the same
+       * instant; from there the table itself keeps them diverged.
+       */
+      std::vector<std::unique_ptr<Searcher>> helpers_;
+
+      void size_helpers() {
+        const std::size_t want = options_.threads > 1 ? static_cast<std::size_t>(options_.threads - 1) : 0;
+        if (helpers_.size() == want && (want == 0 || helpers_[0]->shares_table_with(searcher_)))
+          return;
+        helpers_.clear();
+        for (std::size_t i = 0; i < want; ++i) {
+          auto h = std::make_unique<Searcher>(1); // tiny private table, dropped on the next line
+          h->share_table_with(searcher_);
+          h->set_bump_age(false);          // one generation per search, owned by the main thread
+          h->set_depth_offset(static_cast<int>(i % 3));
+          helpers_.push_back(std::move(h));
+        }
+      }
+
+      /**
        * `abandon` distinguishes the two reasons a search ends early.
        *
        * TRUE for `stop` and for any command that takes the engine state over: the
@@ -492,11 +522,30 @@ namespace islay {
         const Color stm  = stm_;
         const Rule  rule = options_.rule;
         search_infinite_ = (lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0);
+        size_helpers();
         searcher_.arm(); // clear any earlier stop HERE, not on the search thread
-        search_thread_   = std::thread([this, lim, root, stm, rule] {
+        for (auto &h: helpers_)
+          h->arm();
+        search_thread_ = std::thread([this, lim, root, stm, rule] {
+          // Helpers run UNLIMITED and are cut off when the main search is done: their
+          // job is to keep filling the table for as long as the main thread is thinking,
+          // not to finish anything of their own.
+          std::vector<std::thread> hthreads;
+          hthreads.reserve(helpers_.size());
+          for (auto &h: helpers_)
+            hthreads.emplace_back([&h, root, rule, stm] {
+              std::ostream sink(nullptr); // helper output is noise; only the main thread reports
+              h->search(root, SearchLimits{}, rule, stm, sink);
+            });
+
           LineSyncBuf  sb;
           std::ostream out(&sb);
           const SearchResult r = searcher_.search(root, lim, rule, stm, out);
+
+          for (auto &h: helpers_)
+            h->request_stop();
+          for (auto &t: hthreads)
+            t.join();
           if (r.best == NOMOVE) {
             // Reversi with no move, or both sides stuck: there is nothing to play.
             out << "info string game over (final score " << r.score / 100 << ")\n"

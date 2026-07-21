@@ -77,6 +77,7 @@ option name Rule type combo default Othello var Othello var Reversi
 option name EvalFile type string default
 option name StageInterpolation type check default true
 option name PerftHash type spin default 256 min 1 max 65536
+option name Threads type spin default 1 min 1 max 64
 option name Hash type spin default 256 min 1 max 65536
 uciok
 ```
@@ -206,6 +207,7 @@ setoption name <name> value <value>
 | `Rule` | `combo` | `Othello` | `Othello` or `Reversi` |
 | `EvalFile` | `string` | Empty | Path to an ISLAYPAT pattern-weight file; an empty value restores the built-in evaluation |
 | `StageInterpolation` | `check` | `true` | Linearly interpolates the pattern evaluation across game-stage boundaries |
+| `Threads` | `spin` | `1` | Search threads (lazy SMP); range `1`–`64` |
 | `Hash` | `spin` | `256` | Search transposition-table size in MiB; range `1`–`65536` |
 | `PerftHash` | `spin` | `256` | Transposition-table size in MiB for `go perft`; range `1`–`65536` |
 
@@ -259,6 +261,13 @@ go depth <N> movetime <MS> nodes <N>
 
 The limits may be combined. A value of `0` means that the corresponding limit
 is disabled. A bare `go` defaults to `depth 8`.
+
+With `Threads` above 1 the search runs in parallel (lazy SMP): every thread
+searches the same position and shares one transposition table, so the extra
+threads reach a given depth sooner rather than dividing the work. The reported
+`nodes` and `nps` count the main thread only. Results stay deterministic where
+they are provable: a search deep enough to solve the position returns the same
+exact score at any thread count.
 
 The search runs on its own thread, so the engine keeps reading commands while it
 is thinking. `stop` and `isready` are answered immediately; any other command

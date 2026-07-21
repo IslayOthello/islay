@@ -29,6 +29,7 @@ namespace islay {
   struct Options {
     Rule        rule      = Rule::Othello;
     std::string eval_file;            // ISLAYPAT pattern weights; empty = hand-written eval
+    int  threads        = 1;   // lazy-SMP search threads (1 = the old single-threaded search)
     int  hash_mib       = 256; // SEARCH transposition table size, in MiB
     int  perft_hash_mib = 256; // perft transposition table size, in MiB (separate table)
     bool stage_interp   = true;  // linear stage interpolation of the pattern eval (+~58 Elo, see uci.cpp)
