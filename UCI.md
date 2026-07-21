@@ -26,8 +26,14 @@ islay 0.1.0 - Othello/Reversi engine (movegen backend: <backend>)
 type 'uci', 'position', 'go depth <N>', 'go perft <N>', or 'quit'
 ```
 
-The protocol loop is synchronous. A search command blocks the command loop
-until it completes. The `stop` command is not implemented.
+The command loop is asynchronous with respect to searching: `go` starts a search
+on a separate thread and returns immediately, so `stop` and `isready` can be
+answered while the engine is thinking. Any other command received during a
+search ends that search before it is carried out.
+
+`quit` and end-of-input let a search that has a limit finish before the engine
+exits, and stop an unlimited one. That keeps a piped
+`go depth N` followed by `quit` complete rather than silently truncated.
 
 ## 2. Quick Start
 
@@ -247,11 +253,16 @@ go
 go depth <N>
 go movetime <MS>
 go nodes <N>
+go infinite
 go depth <N> movetime <MS> nodes <N>
 ```
 
 The limits may be combined. A value of `0` means that the corresponding limit
 is disabled. A bare `go` defaults to `depth 8`.
+
+The search runs on its own thread, so the engine keeps reading commands while it
+is thinking. `stop` and `isready` are answered immediately; any other command
+ends the current search first.
 
 A malformed or out-of-range limit rejects the whole command rather than
 starting an unintended search:
@@ -262,12 +273,10 @@ info error: movetime must be non-negative
 info error: nodes must be non-negative
 ```
 
-`go infinite` is not supported. The engine reports the condition and then
-uses the normal default if no other limit is specified:
-
-```text
-info string 'go infinite' is not supported; use depth/movetime/nodes
-```
+`go infinite` searches with no limit until `stop` arrives. It still ends by
+itself if the position is solved, because a search whose depth reaches the
+number of empty squares has the exact result and deepening further cannot change
+it.
 
 #### Iteration information
 
@@ -352,6 +361,21 @@ info error: 'go perft' needs a depth
 
 The `Rule` option affects the counts, since Othello passes and Reversi does not.
 The size of the cache is set by `PerftHash`.
+
+### `stop`
+
+Ends the search in progress. The engine finishes the move it is committed to,
+then emits its `bestmove` as usual, so a stopped search still produces exactly
+one `bestmove` for its `go`.
+
+#### Syntax
+
+```text
+stop
+```
+
+`stop` with no search running is ignored. There is no separate response: the
+`bestmove` from the search being stopped is the response.
 
 ### `debug`
 

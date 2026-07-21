@@ -18,6 +18,7 @@
 #ifndef ISLAY_SEARCH_HPP
 #define ISLAY_SEARCH_HPP
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -57,6 +58,26 @@ namespace islay {
 
     /** Forget everything: TT, killers, history, age. Use on `ucinewgame`. */
     void clear() noexcept;
+
+    /**
+     * Ask a running search to stop, FROM ANOTHER THREAD. The search now runs on its
+     * own thread, so `stop`, `quit` and any state-changing command arrive while it is
+     * still working.
+     *
+     * The hot path deliberately keeps reading the plain `stopped_` bool: an atomic
+     * load at every node would be a real cost for a flag that changes at most once per
+     * search. This one is folded into it inside check_stop(), which already runs once
+     * every 1024 nodes -- so noticing a stop costs nothing and is at worst a thousand
+     * nodes late, which no clock cares about. Relaxed ordering suffices: the flag is
+     * the only thing published, and the searching thread's own results are handed over
+     * by joining, which is itself a synchronisation point.
+     */
+    void request_stop() noexcept { stop_flag_.store(true, std::memory_order_relaxed); }
+
+    /** Clear a previous stop. MUST be called by the owner BEFORE starting a search, on
+     *  the thread that will later request the stop -- doing it inside the search would
+     *  race with a request arriving just after launch and silently swallow it. */
+    void arm() noexcept { stop_flag_.store(false, std::memory_order_relaxed); }
 
     /** Search `root` under `rule`; `info` receives one UCI info line per iteration.
      *  `stm` is only used to case the PV (White uppercase / Black lowercase) --
@@ -205,7 +226,8 @@ namespace islay {
     std::uint64_t node_cap_ = 0;
     double        deadline_ms_ = 0.0;
     double        start_ms_    = 0.0;
-    bool          stopped_     = false;
+    bool          stopped_     = false; // thread-local to the search; see request_stop
+    std::atomic<bool> stop_flag_{false}; // set from the command thread
     int           seldepth_    = 0; // max ply reached this iteration
     std::size_t   tt_used_     = 0; // distinct slots written since the last clear (for hashfull)
 

@@ -18,6 +18,7 @@
  *   setoption name <N> value <V>-> set an engine option (e.g. name Rule value Reversi)
  *   go [depth N] [movetime MS] [nodes N] -> search, ends with "bestmove"
  *   go perft <depth> [nocache]  -> perft with bulk-counting (cache on by default)
+ *   stop                        -> end the search in progress (it still emits bestmove)
  *   debug [ on | off ]          -> toggle the development surface below
  *   quit | exit                 -> leave
  *
@@ -40,8 +41,11 @@
 #include <cstdint>
 #include <iostream>
 #include <cstdlib>
+#include <mutex>
 #include <sstream>
+#include <streambuf>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "board.hpp"
@@ -76,6 +80,53 @@ namespace islay {
       return os.str();
     }
 
+    /**
+     * The search runs on its own thread while the command loop keeps reading stdin, so
+     * two threads can reach stdout at once. Whole lines may interleave harmlessly; half
+     * an `info` line spliced into `readyok` breaks a GUI. So the search writes through
+     * this buffer, which accumulates until a newline and then emits the COMPLETE line
+     * under a shared mutex, and the command loop takes the same mutex for the handful
+     * of replies it can still emit while a search is running.
+     */
+    std::mutex g_out_mu;
+
+    class LineSyncBuf final : public std::streambuf {
+    public:
+      ~LineSyncBuf() override { if (!buf_.empty()) flush_line(); }
+
+    protected:
+      int overflow(int c) override {
+        if (c == traits_type::eof())
+          return traits_type::not_eof(c);
+        buf_.push_back(static_cast<char>(c));
+        if (c == '\n')
+          flush_line();
+        return c;
+      }
+      std::streamsize xsputn(const char *sp, std::streamsize n) override {
+        for (std::streamsize i = 0; i < n; ++i)
+          overflow(traits_type::to_int_type(sp[i]));
+        return n;
+      }
+      int sync() override { return 0; } // a line is the unit; partial flushes would defeat it
+
+    private:
+      void flush_line() {
+        const std::lock_guard<std::mutex> lk(g_out_mu);
+        std::cout << buf_;
+        std::cout.flush();
+        buf_.clear();
+      }
+      std::string buf_;
+    };
+
+    /** One whole line to stdout, atomically against the search thread. */
+    void say(const std::string &line) {
+      const std::lock_guard<std::mutex> lk(g_out_mu);
+      std::cout << line;
+      std::cout.flush();
+    }
+
     [[nodiscard]] Color color_of(char stm) noexcept {
       return (stm == 'O' || stm == 'o' || stm == 'W' || stm == 'w') ? Color::White : Color::Black;
     }
@@ -90,12 +141,18 @@ namespace islay {
           std::string        cmd;
           if (!(is >> cmd))
             continue;
-          if (cmd == "quit" || cmd == "exit")
+          if (cmd == "quit" || cmd == "exit") {
+            stop_search_and_join(/*abandon=*/false); // let a bounded search finish; see above
             break;
+          }
           dispatch(cmd, is);
-          std::cout.flush();
         }
+        // Leaving with a thread still running would terminate(); end-of-input is a
+        // legitimate way to quit, so it has to unwind exactly like `quit`.
+        stop_search_and_join(/*abandon=*/false);
       }
+
+      ~Engine() { stop_search_and_join(); }
 
     private:
       Board    board_ = Board::start();
@@ -107,13 +164,59 @@ namespace islay {
       Searcher searcher_{256};
       bool     debug_ = false; // `debug on` unlocks the development commands
 
+      // At most one search at a time. `joinable()` IS the "is a search running" flag --
+      // a separate bool could disagree with reality, this cannot.
+      std::thread search_thread_;
+      bool        search_infinite_ = false; // only ever touched by the command thread
+
+      /**
+       * `abandon` distinguishes the two reasons a search ends early.
+       *
+       * TRUE for `stop` and for any command that takes the engine state over: the
+       * result is being thrown away, so cut it off now.
+       *
+       * FALSE for `quit` and end-of-input, where a BOUNDED search is allowed to finish
+       * first. That is not politeness -- every batch script in this project is
+       * `printf '... go depth N\nquit\n' | islay`, and cutting the search off there
+       * would silently truncate it and hand back a shallower result that still looks
+       * well-formed. A bounded search always terminates, so waiting is safe; an
+       * unlimited one never would, so it is still stopped.
+       */
+      void stop_search_and_join(bool abandon = true) {
+        if (!search_thread_.joinable())
+          return;
+        if (abandon || search_infinite_)
+          searcher_.request_stop();
+        search_thread_.join(); // the join is also what publishes the search's writes
+      }
+
+      /**
+       * `stop`, `isready` and `debug` are the only commands that may be answered WHILE a
+       * search is running -- that is the entire point of `stop`, and `isready` is
+       * defined to reply at once. Everything else reads or mutates state the search
+       * thread is using (board_, options_, the table), so it first stops and joins.
+       * A GUI should not send those mid-search anyway; stopping is the forgiving
+       * response, and it is what keeps the shared state race-free by construction.
+       */
       void dispatch(const std::string &cmd, std::istringstream &is) {
+        if (cmd == "stop") {
+          stop_search_and_join();
+          return;
+        }
+        if (cmd == "isready") {
+          say("readyok\n"); // must answer during a search, so it does not join
+          return;
+        }
+        if (cmd == "debug") {
+          cmd_debug(is);
+          return;
+        }
+        stop_search_and_join(); // every remaining command owns the engine state
+
         if (cmd == "uci") {
           std::cout << "id name " << kName << '\n' << "id author " << kAuthor << '\n';
           print_option_specs(std::cout);
           std::cout << "uciok\n";
-        } else if (cmd == "isready") {
-          std::cout << "readyok\n";
         } else if (cmd == "ucinewgame") {
           board_ = Board::start();
           stm_   = Color::Black;
@@ -123,8 +226,6 @@ namespace islay {
           cmd_position(is);
         } else if (cmd == "setoption") {
           cmd_setoption(is);
-        } else if (cmd == "debug") {
-          cmd_debug(is);
         } else if (cmd == "go") {
           cmd_go(is);
         } else if (is_debug_command(cmd)) {
@@ -339,6 +440,7 @@ namespace islay {
         // rather than silently starting an unlimited/exact search. `tok` already holds
         // the first keyword (read above), so process it before pulling the next one.
         SearchLimits lim;
+        bool         infinite = false;
         for (; !tok.empty(); tok.clear()) {
           if (tok == "depth") {
             long v;
@@ -362,31 +464,50 @@ namespace islay {
             }
             lim.nodes = static_cast<std::uint64_t>(v);
           } else if (tok == "infinite") {
-            // The command loop is a blocking getline: with no search thread there is no
-            // way to read `stop`, so this would hang for good.
-            std::cout << "info string 'go infinite' is not supported; use depth/movetime/nodes\n";
+            infinite = true; // no limit at all: run until `stop`, or until the position is solved
           }
           if (!(is >> tok))
             break;
         }
-        if (lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0)
-          lim.depth = 8; // a bare `go` still has to return a move
+        // A bare `go` still has to return a move; `go infinite` deliberately must not
+        // get that default, which is the only thing distinguishing the two.
+        if (!infinite && lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0)
+          lim.depth = 8;
 
         run_search(lim);
       }
 
+      /**
+       * Hands the search to its own thread and returns at once, so the command loop can
+       * still read `stop`. The board, side to move and rule are COPIED into the thread:
+       * the caller has already joined any previous search, so nothing else can be
+       * touching them, and a copy removes the question entirely.
+       *
+       * `bestmove` is printed by the search thread when it finishes, which is what keeps
+       * the "exactly one bestmove per go, after its info lines" ordering true whether the
+       * search ended on its own or was stopped.
+       */
       void run_search(const SearchLimits &lim) {
-        const SearchResult r = searcher_.search(board_, lim, options_.rule, stm_, std::cout);
-        if (r.best == NOMOVE) {
-          // Reversi with no move, or both sides stuck: there is nothing to play.
-          std::cout << "info string game over (final score " << r.score / 100 << ")\n"
-                    << "bestmove --\n";
-          return;
-        }
-        std::cout << "info string " << (r.exact ? "exact" : "heuristic") << " score, depth " << r.depth << '\n'
-                  << "bestmove " << square_to_string(r.best) << '\n';
-        if (const SearchStats *s = searcher_.stats()) // only non-null in a kStats build
-          s->dump(std::cout, false);
+        const Board root = board_;
+        const Color stm  = stm_;
+        const Rule  rule = options_.rule;
+        search_infinite_ = (lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0);
+        searcher_.arm(); // clear any earlier stop HERE, not on the search thread
+        search_thread_   = std::thread([this, lim, root, stm, rule] {
+          LineSyncBuf  sb;
+          std::ostream out(&sb);
+          const SearchResult r = searcher_.search(root, lim, rule, stm, out);
+          if (r.best == NOMOVE) {
+            // Reversi with no move, or both sides stuck: there is nothing to play.
+            out << "info string game over (final score " << r.score / 100 << ")\n"
+                << "bestmove --\n";
+            return;
+          }
+          out << "info string " << (r.exact ? "exact" : "heuristic") << " score, depth " << r.depth << '\n'
+              << "bestmove " << square_to_string(r.best) << '\n';
+          if (const SearchStats *st = searcher_.stats()) // only non-null in a kStats build
+            st->dump(out, false);
+        });
       }
 
       void run_perft(int depth, bool use_cache) {

@@ -511,6 +511,7 @@ namespace islay {
   }
 
   void Searcher::clear() noexcept {
+    stop_flag_.store(false, std::memory_order_relaxed); // a stale stop must not kill the next search
     for (Entry &e: tt_)
       e = Entry{};
     std::memset(killers_, 0, sizeof killers_);
@@ -527,6 +528,11 @@ namespace islay {
       ps_.resize(kMaxPly);
     nodes_       = 0;
     stopped_     = false;
+    // NOTE: stop_flag_ is deliberately NOT cleared here. Clearing it on the SEARCH
+    // thread races with a `stop` that arrives between launching the thread and this
+    // line -- the request would be wiped and the search would run on, which is exactly
+    // the bug this comment exists to prevent a re-introduction of. The owner clears it
+    // before starting a search instead (see uci.cpp run_search and clear()).
     node_cap_    = limits.nodes;
     start_ms_    = now_ms();
     deadline_ms_ = limits.movetime_ms > 0.0 ? start_ms_ + limits.movetime_ms : 0.0;
@@ -538,7 +544,11 @@ namespace islay {
   }
 
   void Searcher::check_stop() noexcept {
-    if (node_cap_ && nodes_ >= node_cap_)
+    // An asynchronous `stop` outranks the limits: it is the one condition the search
+    // cannot discover for itself.
+    if (stop_flag_.load(std::memory_order_relaxed))
+      stopped_ = true;
+    else if (node_cap_ && nodes_ >= node_cap_)
       stopped_ = true;
     else if (deadline_ms_ > 0.0 && now_ms() >= deadline_ms_)
       stopped_ = true;
