@@ -128,7 +128,6 @@ namespace islay {
      *  duplicate the same iteration at the same moment. */
     void set_depth_offset(int d) noexcept { depth_offset_ = d < 0 ? 0 : d; }
 
-
     /** Reallocate the transposition table to about `mib` MiB (also wipes it). */
     void resize(std::size_t mib);
 
