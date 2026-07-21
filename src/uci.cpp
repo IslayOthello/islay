@@ -182,6 +182,19 @@ namespace islay {
        *
        * A small depth offset stops them all grinding the identical iteration at the same
        * instant; from there the table itself keeps them diverged.
+       *
+       * TWO STRONGER DIVERGENCE SCHEMES WERE TRIED AND BOTH MEASURED NEUTRAL, so do not
+       * reach for a third without new evidence:
+       *   per-node move-order jitter  +2.8 Elo, 95% CI [-12, 17], 500 games
+       *   root-only move-order jitter +2.3 Elo, 95% CI [-11, 16], 600 games
+       * The first also carries a warning about the ordering here: perturbing it at every
+       * node cost 39% MORE nodes at fixed depth for a jitter of only +-3, and up to 73%
+       * for larger ones, on an erratic non-monotone profile. Near-ties are common and
+       * breaking them makes each helper markedly worse at its own job. The root-only
+       * form avoids that cost entirely -- one node, a handful of moves -- and still gained
+       * nothing, which is the informative half: divergence is not what limits lazy SMP
+       * here. The tree is simply too narrow (branching 2.27, a first-move cutoff 82.7% of
+       * the time) for helpers to find work the main thread was not about to do.
        */
       std::vector<std::unique_ptr<Searcher>> helpers_;
 
