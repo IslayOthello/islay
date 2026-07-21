@@ -208,7 +208,7 @@ Examples:
 ```text
 setoption name Rule value Reversi
 setoption name Hash value 512
-setoption name EvalFile value weights/v17.pat
+setoption name EvalFile value weights/v18.pat
 setoption name StageInterpolation value false
 ```
 
@@ -225,7 +225,7 @@ and restores the built-in evaluation; a failed load also unloads rather than
 leaving stale weights in place:
 
 ```text
-info string pattern weights loaded: weights/v17.pat (v<version>, <stages> stages x <weights> weights)
+info string pattern weights loaded: weights/v18.pat (v<version>, <stages> stages x <weights> weights)
 info error: cannot open pattern weights 'weights/missing.pat'
 ```
 

@@ -275,13 +275,18 @@ namespace islay {
     // index, which is what makes an otherwise colour-even quantity antisymmetric.
     constexpr std::size_t kPar     = static_cast<std::size_t>(kParityBuckets);
     constexpr std::size_t kParBase = kWStabBase + kStab;
-    constexpr std::size_t kPerStage = kParBase + 2 * kPar;
+    // Frontier tables, appended last so earlier files stay loadable prefixes.
+    constexpr std::size_t kFront     = static_cast<std::size_t>(kFrontBuckets);
+    constexpr std::size_t kBFrontBase = kParBase + 2 * kPar;
+    constexpr std::size_t kWFrontBase = kBFrontBase + kFront;
+    constexpr std::size_t kPerStage   = kWFrontBase + kFront;
     // Older files load as a prefix of the current stage: v1 = patterns+bias,
     // v2 = +mobility. Both are valid teachers with the newer tables zeroed.
     constexpr std::size_t kPerStageV1 = kBiasBase + 1;
     constexpr std::size_t kPerStageV2 = kWMobBase + kMob;
     constexpr std::size_t kPerStageV3 = kC2x5Base + kC2x5Size; // before the stability tables (v1-v12)
     constexpr std::size_t kPerStageV4 = kWStabBase + kStab;    // before the parity table (v16)
+    constexpr std::size_t kPerStageV5 = kParBase + 2 * kPar;   // before the frontier tables (v17)
 
     // Per-instance weight base: the kBases block for the 38 type instances, and each
     // appended block's own shared table.
@@ -328,6 +333,12 @@ namespace islay {
       oddq += (popcount(empties & kQuadrant[q]) & 1);
     const int bucket = (popcount(empties) & 1) + 2 * oddq;
     m.parity = (stm == Color::Black ? 0 : kParityBuckets) + bucket;
+    // Frontier: discs of each colour that touch an empty square. dilate8 is wrap-safe.
+    const Bitboard near_empty = dilate8(empties);
+    const int      my_front   = popcount(b.player & near_empty);
+    const int      opp_front  = popcount(b.opponent & near_empty);
+    m.black_front = (stm == Color::Black) ? my_front : opp_front;
+    m.white_front = (stm == Color::Black) ? opp_front : my_front;
     return m;
   }
 
@@ -391,6 +402,9 @@ namespace islay {
     [[nodiscard]] ISLAY_FORCEINLINE int stab_clamp(int v) noexcept {
       return v < 0 ? 0 : (v >= kStabBuckets ? kStabBuckets - 1 : v);
     }
+    [[nodiscard]] ISLAY_FORCEINLINE int front_clamp(int v) noexcept {
+      return v < 0 ? 0 : (v >= kFrontBuckets ? kFrontBuckets - 1 : v);
+    }
   }
 
   int PatternWeights::score(const PatternState &s, int stage, const MobCounts &mc) const noexcept {
@@ -406,6 +420,8 @@ namespace islay {
     acc += w[kBStabBase + static_cast<std::size_t>(stab_clamp(mc.black_stab))];
     acc += w[kWStabBase + static_cast<std::size_t>(stab_clamp(mc.white_stab))];
     acc += w[kParBase + static_cast<std::size_t>(mc.parity)];
+    acc += w[kBFrontBase + static_cast<std::size_t>(front_clamp(mc.black_front))];
+    acc += w[kWFrontBase + static_cast<std::size_t>(front_clamp(mc.white_front))];
     return acc;
   }
 
@@ -421,6 +437,8 @@ namespace islay {
     out[n++] = static_cast<std::uint32_t>(off + kBStabBase + static_cast<std::size_t>(stab_clamp(mc.black_stab)));
     out[n++] = static_cast<std::uint32_t>(off + kWStabBase + static_cast<std::size_t>(stab_clamp(mc.white_stab)));
     out[n++] = static_cast<std::uint32_t>(off + kParBase + static_cast<std::size_t>(mc.parity));
+    out[n++] = static_cast<std::uint32_t>(off + kBFrontBase + static_cast<std::size_t>(front_clamp(mc.black_front)));
+    out[n++] = static_cast<std::uint32_t>(off + kWFrontBase + static_cast<std::size_t>(front_clamp(mc.white_front)));
     return n;
   }
 
@@ -464,10 +482,10 @@ namespace islay {
     // That one rule loads v1, v2, v3, ... with no per-version branch -- a teacher
     // from before a feature existed simply runs with that feature off.
     const bool known = (per == kPerStageV1 || per == kPerStageV2 || per == kPerStageV3 || per == kPerStageV4 ||
-                        per == kPerStage);
+                        per == kPerStageV5 || per == kPerStage);
     if (stages != static_cast<std::uint32_t>(kStageCount) || !known || per > kPerStage) {
       log << "info error: pattern weights shape mismatch (ver " << ver << ", stages " << stages << ", per " << per
-          << "; expected " << kStageCount << " stages x {" << kPerStageV1 << ',' << kPerStageV2 << ',' << kPerStageV3 << ',' << kPerStageV4 << ',' << kPerStage
+          << "; expected " << kStageCount << " stages x {" << kPerStageV1 << ',' << kPerStageV2 << ',' << kPerStageV3 << ',' << kPerStageV4 << ',' << kPerStageV5 << ',' << kPerStage
           << "})\n";
       return false;
     }
@@ -491,7 +509,7 @@ namespace islay {
       log << "info error: cannot write '" << path << "'\n";
       return false;
     }
-    const std::uint32_t ver = 5, stages = kStageCount;
+    const std::uint32_t ver = 6, stages = kStageCount;
     const std::uint64_t per = pattern_weights_per_stage();
     os.write("ISLAYPAT", 8);
     os.write(reinterpret_cast<const char *>(&ver), 4);
@@ -579,9 +597,9 @@ namespace islay {
       st.set(b, Color::Black);
       if (w.score(st, pattern_stage(b.count()), mob_counts(b, Color::Black)) != 0)
         return false; // zeroed weights must score exactly 0
-      std::uint32_t idx[kPatternInstances + 6];
+      std::uint32_t idx[kPatternInstances + 8];
       const int     n = pattern_features(b, Color::Black, idx);
-      if (n != kPatternInstances + 6)
+      if (n != kPatternInstances + 8)
         return false;
       for (int i = 0; i < n; ++i)
         if (idx[i] >= static_cast<std::uint32_t>(kStageCount * pattern_weights_per_stage()))

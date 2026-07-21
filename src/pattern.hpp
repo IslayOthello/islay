@@ -40,7 +40,7 @@
  *     v3 (taught by v2)                   : +152 Elo over v2, z = 4.1
  * The loop works and is decelerating (+247 -> +152), which is what convergence looks
  * like. Shipped sets live in weights/; nothing auto-loads, so `pattern_enabled()` is
- * still false until `setoption name EvalFile value weights/v17.pat`, and eval.cpp
+ * still false until `setoption name EvalFile value weights/v18.pat`, and eval.cpp
  * remains the default for anyone who does not ask.
  *
  * Note the training loss is NOT the signal: v1 finished at rmse 2118 cd against a
@@ -174,6 +174,36 @@ namespace islay {
    * endgame move ordering in search.cpp). Both are a few instructions, so unlike
    * stability this feature is essentially free.
    */
+  /**
+   * FRONTIER DISCS, as a trained feature: discs of a colour that touch at least one
+   * empty square. Few frontier discs is the classic Othello sign of a safe shape --
+   * an exposed disc is what gives the opponent something to flip against.
+   *
+   * WEAKER PRIOR THAN THE OTHER THREE, and that is worth stating up front. Mobility,
+   * stability and parity all won because they are things a sum of independent windows
+   * provably cannot express. Frontier is NOT of that kind: it is a sum of LOCAL 3x3
+   * indicators, exactly the shape a window-based linear model is good at -- and
+   * POTENTIAL MOBILITY, a close relative, already measured NEUTRAL here for precisely
+   * the reason that the edge/corner patterns imply it. The one argument for trying it
+   * anyway is that the pattern set has no general 3x3 window (only the four corners),
+   * and rows/diagonals are one-dimensional so they cannot see a vertical neighbour --
+   * so frontier is only PARTLY covered.
+   *
+   * THE PRIOR WAS WRONG, and that is the lesson worth keeping. Measured isolated
+   * against a control trained from the same teacher, seed and games with only the gate
+   * differing: **+11.1 Elo, 95% CI [4, 18], z = 3.22** over 4046 games at equal nodes.
+   * The mistake was stopping at "frontier is a sum of local 3x3 indicators, which a
+   * window model can express". The missing step is whether those windows EXIST: this
+   * set has no general 3x3 window (only the four corners), and rows and diagonals are
+   * one-dimensional, so for the ~60 non-corner squares a disc's frontier status is
+   * invisible to every instance. Expressible-in-principle is not the test; expressible
+   * BY THE WINDOWS ACTUALLY PRESENT is.
+   *
+   * val_rmse understated it again: 1564 against the control's 1567, a 3 cd gap, for an
+   * 11 Elo feature -- the same direction of error stability showed (4 cd, +12.7 Elo).
+   */
+  inline constexpr int kFrontBuckets = 41; // frontier disc counts 0..40, capped
+
   inline constexpr int kParityBuckets = 10; // (empties & 1) + 2 * odd-quadrant count, 0..9
 
   /**
@@ -185,6 +215,7 @@ namespace islay {
     int black_mob = 0, white_mob = 0;
     int black_stab = 0, white_stab = 0; // provably-unflippable discs; see kStabBuckets
     int parity = 0;                     // 0..2*kParityBuckets-1, side-to-move folded in
+    int black_front = 0, white_front = 0; // discs touching an empty square; see kFrontBuckets
   };
 
   /** Both move counts from a mover-relative board + whose turn it is. */
@@ -279,8 +310,8 @@ namespace islay {
    * plus the bias. THIS is the training hook: the score is their weights summed,
    * so a design row is just these indices with coefficient 1 (repeats count).
    *
-   * `out` must hold kPatternInstances + 6 entries (patterns + bias + 2 mobility
-   * + 2 stability + 1 parity).
+   * `out` must hold kPatternInstances + 8 entries (patterns + bias + 2 mobility
+   * + 2 stability + 1 parity + 2 frontier).
    * Returns how many were written.
    */
   int pattern_features(const Board &b, Color stm, std::uint32_t *out) noexcept;
