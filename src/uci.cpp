@@ -183,18 +183,27 @@ namespace islay {
        * A small depth offset stops them all grinding the identical iteration at the same
        * instant; from there the table itself keeps them diverged.
        *
-       * TWO STRONGER DIVERGENCE SCHEMES WERE TRIED AND BOTH MEASURED NEUTRAL, so do not
-       * reach for a third without new evidence:
+       * THREE DIVERGENCE SCHEMES WERE TRIED. Two neutral, one negative -- do not reach
+       * for a fourth without new evidence:
        *   per-node move-order jitter  +2.8 Elo, 95% CI [-12, 17], 500 games
        *   root-only move-order jitter +2.3 Elo, 95% CI [-11, 16], 600 games
-       * The first also carries a warning about the ordering here: perturbing it at every
+       *   WIDER helpers (t=2.5 / gate off / full-width PVS)  -26.7 Elo, CI [-42,-12], 600 games
+       * The jitter results carry a warning about the ordering here: perturbing it at every
        * node cost 39% MORE nodes at fixed depth for a jitter of only +-3, and up to 73%
        * for larger ones, on an erratic non-monotone profile. Near-ties are common and
-       * breaking them makes each helper markedly worse at its own job. The root-only
-       * form avoids that cost entirely -- one node, a handful of moves -- and still gained
-       * nothing, which is the informative half: divergence is not what limits lazy SMP
-       * here. The tree is simply too narrow (branching 2.27, a first-move cutoff 82.7% of
-       * the time) for helpers to find work the main thread was not about to do.
+       * breaking them makes each helper markedly worse at its own job. The root-only form
+       * avoids that cost -- one node, a handful of moves -- and still gained nothing.
+       *
+       * The WIDE-helper attempt was the sharpest lesson. The idea was to have helpers
+       * prune less so they explore the parts of the tree the main search cut, which
+       * targets the real reason SMP under-delivers: the tree is so narrow (branching
+       * 2.27, a first-move cutoff 82.7% of the time) that identically-configured helpers
+       * mostly re-do the main thread's work. But wider = more nodes per ply, so the
+       * helpers, sharing the same cores, STARVE the main thread -- it reached depth 18
+       * where plain SMP reached 19 at the same time -- and the played move comes from the
+       * main thread. Helpers must be at least as CHEAP as the main search, never more
+       * expensive. Divergence is not the lever here; the shared table's +23.5 is the
+       * ceiling the tree's narrowness allows.
        */
       std::vector<std::unique_ptr<Searcher>> helpers_;
 
