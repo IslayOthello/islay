@@ -96,11 +96,20 @@ namespace islay {
             flagged = a_to_move ? 1 : 2;
             break;
           }
-          // Spread the remaining clock over the moves this side has left (~empties/2),
-          // plus the increment. Both engines use the identical rule, so it is fair.
-          const int    ml     = std::max(1, (64 - b.count()) / 2);
-          const double budget = std::min(*clk, *clk / ml + cfg.tc_inc_ms);
-          lim                 = SearchLimits{0, 0, budget};
+          if (a_to_move ? cfg.etm_a : cfg.etm_b) {
+            // Engine time management under test: the side gets its RAW clock and the
+            // allocation happens inside search.cpp. The wall-clock accounting and the
+            // flag rule below stay identical for both sides -- only WHO decides the
+            // budget differs, which is exactly the thing being measured.
+            lim = SearchLimits{0, 0, 0.0, *clk, cfg.tc_inc_ms};
+          } else {
+            // Reference policy: spread the remaining clock over the moves this side has
+            // left (~empties/2), plus the increment -- the same even split fastothello's
+            // runner uses, so beating it here means beating the incumbent.
+            const int    ml     = std::max(1, (64 - b.count()) / 2);
+            const double budget = std::min(*clk, *clk / ml + cfg.tc_inc_ms);
+            lim                 = SearchLimits{0, 0, budget};
+          }
         }
 
         const auto t0 = Clock::now();

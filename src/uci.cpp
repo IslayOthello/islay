@@ -493,7 +493,11 @@ namespace islay {
         // the first keyword (read above), so process it before pulling the next one.
         SearchLimits lim;
         bool         infinite = false;
-        for (; !tok.empty(); tok.clear()) {
+        // NOTE the loop has NO increment. It once had `tok.clear()` there, which runs
+        // AFTER the body reads the next keyword and so wiped it -- the loop processed
+        // exactly one token, silently, since the day it was written. Single-limit
+        // commands hid it; the four-token clock form exposed it.
+        for (; !tok.empty();) {
           if (tok == "depth") {
             long v;
             if (!(is >> v) || v < 1) {
@@ -517,13 +521,29 @@ namespace islay {
             lim.nodes = static_cast<std::uint64_t>(v);
           } else if (tok == "infinite") {
             infinite = true; // no limit at all: run until `stop`, or until the position is solved
+          } else if (tok == "wtime" || tok == "btime" || tok == "winc" || tok == "binc") {
+            // Standard UCI clock. Board is mover-relative, so pick out the MOVER's pair;
+            // the opponent's clock is irrelevant to allocating this move.
+            double v;
+            if (!(is >> v) || v < 0.0) {
+              std::cout << "info error: " << tok << " must be non-negative\n";
+              return;
+            }
+            const bool mine = (stm_ == Color::White) == (tok[0] == 'w');
+            if (mine && (tok == "wtime" || tok == "btime"))
+              lim.time_ms = v;
+            else if (mine)
+              lim.inc_ms = v;
+          } else if (tok == "movestogo") {
+            long v; // parsed so a GUI sending it is not rejected; Othello's move count
+            is >> v; // is already known exactly from the empties, so it adds nothing
           }
           if (!(is >> tok))
             break;
         }
         // A bare `go` still has to return a move; `go infinite` deliberately must not
         // get that default, which is the only thing distinguishing the two.
-        if (!infinite && lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0)
+        if (!infinite && lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0 && lim.time_ms == 0.0)
           lim.depth = 8;
 
         run_search(lim);
@@ -543,7 +563,7 @@ namespace islay {
         const Board root = board_;
         const Color stm  = stm_;
         const Rule  rule = options_.rule;
-        search_infinite_ = (lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0);
+        search_infinite_ = (lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0 && lim.time_ms == 0.0);
         size_helpers();
         searcher_.arm(); // clear any earlier stop HERE, not on the search thread
         for (auto &h: helpers_)
@@ -738,6 +758,20 @@ namespace islay {
           if (!(is >> d) || d < 1) d = 6;
           cfg.depth = d; cfg.movetime_ms = 0.0;
           cfg.si_a = true; cfg.si_b = false;
+          std::string ev;
+          if (is >> ev && ev != "-") cfg.eval_a = cfg.eval_b = ev;
+          std::uint64_t sd = 0;
+          if (is >> sd) cfg.seed = sd;
+          run_match(cfg, std::cout);
+          return;
+        }
+        if (first == "tm") { // ENGINE time management vs the harness's even split, real clock
+          double base = 3000.0, inc = 50.0;
+          if (!(is >> cfg.pairs) || cfg.pairs < 1) cfg.pairs = 50;
+          is >> base; is >> inc;
+          cfg.depth = 0; cfg.movetime_ms = 0.0;
+          cfg.tc_base_ms = base; cfg.tc_inc_ms = inc;
+          cfg.etm_a = true; cfg.etm_b = false;
           std::string ev;
           if (is >> ev && ev != "-") cfg.eval_a = cfg.eval_b = ev;
           std::uint64_t sd = 0;

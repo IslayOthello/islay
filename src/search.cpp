@@ -606,6 +606,7 @@ namespace islay {
     node_cap_    = limits.nodes;
     start_ms_    = now_ms();
     deadline_ms_ = limits.movetime_ms > 0.0 ? start_ms_ + limits.movetime_ms : 0.0;
+    soft_ms_ = 0.0;
     if (bump_age_)
       tt_->new_generation();
     if constexpr (kStats) { // one position's telemetry per go
@@ -1276,9 +1277,61 @@ namespace islay {
     return out;
   }
 
+  namespace {
+    /**
+     * Clock allocation -- how much of MY remaining clock this one move deserves.
+     *
+     * Othello makes this easier than chess in one important way: the number of moves
+     * left is not a guess. Every real move fills exactly one empty square, so the
+     * mover has about empties/2 moves left, full stop. The naive reference policy
+     * (this engine's own match harness, and fastothello's runner) spends
+     * clk/(empties/2) + inc per move -- an even split.
+     *
+     * Two refinements, both Othello-specific, both cheap:
+     *
+     *  * SPEND LESS EARLY. An even split prices move 5 like move 35, but the search is
+     *    far cheaper early (shallow trees, no solve in sight) and the game is rarely
+     *    decided there. Shaving the opening banks Fischer increment for later.
+     *
+     *  * SPEND MORE AT THE SOLVE WINDOW. Around 20-30 empties one deep think can reach
+     *    `depth >= empties` -- the EXACT game result. From that point the engine plays
+     *    perfectly at trivial cost (the proof lives in the shared table), so a big
+     *    investment there buys the entire remaining game. This is the one place in an
+     *    Othello game where time converts directly into truth.
+     *
+     * SOFT is the target the iterative-deepening loop steers by (it will not start an
+     * iteration it cannot roughly half-finish); HARD is the abort line check_stop
+     * enforces, a multiple of soft but never a dangerous share of the clock.
+     */
+    struct TimeBudget {
+      double soft_ms, hard_ms;
+    };
+    constexpr double kMoveOverheadMs = 15.0; // protocol + scheduling latency, charged to us
+
+    [[nodiscard]] TimeBudget allocate_time(double clk, double inc, int empties) noexcept {
+      clk = clk - kMoveOverheadMs;
+      if (clk < 1.0)
+        return {1.0, 1.0};
+      const int    my_moves = empties > 1 ? (empties + 1) / 2 : 1;
+      double       soft     = clk / my_moves + 0.9 * inc;
+      if (empties >= 44)
+        soft *= 0.6; // opening: cheap plies, bank the increment
+      else if (empties >= 20 && empties <= 30)
+        soft *= 1.8; // solve window: one deep think can end the game exactly
+      double hard = std::min(clk * 0.30, soft * 4.0);
+      soft        = std::min(soft, hard);
+      return {std::max(soft, 1.0), std::max(hard, 1.0)};
+    }
+  } // namespace
+
   SearchResult Searcher::search(const Board &root, const SearchLimits &limits, Rule rule, Color stm,
                                std::ostream &info) {
     new_search(limits);
+    if (limits.time_ms > 0.0) { // clock mode: the engine allocates its own budget
+      const TimeBudget tb = allocate_time(limits.time_ms, limits.inc_ms, 64 - root.count());
+      deadline_ms_        = start_ms_ + tb.hard_ms;
+      soft_ms_            = start_ms_ + tb.soft_ms;
+    }
     if (pat_on_)
       ps_[0].set(root, stm); // the only from-scratch build; everything below is incremental
     SearchResult res;
@@ -1377,7 +1430,10 @@ namespace islay {
         break;
       // Don't start an iteration there is no hope of finishing (Othello's
       // effective branching is ~3-5, so the next one costs several times this).
-      if (deadline_ms_ > 0.0 && dt > 0.5 * (deadline_ms_ - start_ms_))
+      // Under a clock the SOFT budget steers this; the hard deadline stays as the
+      // abort line for an iteration that was started and misbehaved.
+      const double steer = soft_ms_ > 0.0 ? soft_ms_ : deadline_ms_;
+      if (steer > 0.0 && dt > 0.5 * (steer - start_ms_))
         break;
     }
     if constexpr (kStats)

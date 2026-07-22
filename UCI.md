@@ -256,11 +256,19 @@ go depth <N>
 go movetime <MS>
 go nodes <N>
 go infinite
+go wtime <MS> btime <MS> winc <MS> binc <MS>
 go depth <N> movetime <MS> nodes <N>
 ```
 
 The limits may be combined. A value of `0` means that the corresponding limit
 is disabled. A bare `go` defaults to `depth 8`.
+
+The `wtime`/`btime`/`winc`/`binc` form is a real clock: the engine reads the
+side to move's remaining time and Fischer increment and allocates its own budget
+for the move, spending less in the opening and more where a deep search can
+solve the game exactly. `movestogo` is accepted and ignored -- the number of
+remaining moves in Othello is already determined by the empty squares. Black's
+clock is `btime`/`binc` (Black is `X` and moves first).
 
 With `Threads` above 1 the search runs in parallel (lazy SMP): every thread
 searches the same position and shares one transposition table, so the extra

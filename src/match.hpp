@@ -68,6 +68,8 @@ namespace islay {
     bool          lmrc_b = false;
     bool          pcg4_a = false;   // wider (4-ply) ProbCut probe gap at deep nodes
     bool          pcg4_b = false;
+    bool          etm_a = false;    // ENGINE time management: hand the side its raw clock and
+    bool          etm_b = false;    // let search.cpp allocate, instead of the harness's even split
   };
 
   struct MatchResult {

@@ -38,6 +38,11 @@ namespace islay {
     int           depth      = 0;
     std::uint64_t nodes      = 0;
     double        movetime_ms = 0.0;
+    // CLOCK mode (real time control): the MOVER's remaining clock and Fischer
+    // increment. When time_ms > 0 the engine allocates its own budget for this move
+    // (see the policy in search.cpp) instead of being handed a fixed movetime.
+    double        time_ms = 0.0;
+    double        inc_ms  = 0.0;
   };
 
   struct SearchResult {
@@ -290,7 +295,8 @@ namespace islay {
 
     std::uint64_t nodes_    = 0;
     std::uint64_t node_cap_ = 0;
-    double        deadline_ms_ = 0.0;
+    double        deadline_ms_ = 0.0; // HARD: check_stop aborts past this
+    double        soft_ms_     = 0.0; // SOFT: the ID loop will not START an iteration past a fraction of it
     double        start_ms_    = 0.0;
     bool          stopped_     = false; // thread-local to the search; see request_stop
     std::atomic<bool> stop_flag_{false}; // set from the command thread
