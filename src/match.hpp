@@ -70,6 +70,8 @@ namespace islay {
     bool          pcg4_b = false;
     bool          etm_a = false;    // ENGINE time management: hand the side its raw clock and
     bool          etm_b = false;    // let search.cpp allocate, instead of the harness's even split
+    bool          tma_a = false;    // adaptive soft budget (see Searcher::set_tm_adaptive)
+    bool          tma_b = false;
   };
 
   struct MatchResult {

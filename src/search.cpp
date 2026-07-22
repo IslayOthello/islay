@@ -1308,6 +1308,37 @@ namespace islay {
     };
     constexpr double kMoveOverheadMs = 15.0; // protocol + scheduling latency, charged to us
 
+    /**
+     * Adaptive scaling of the SOFT budget, from what iterative deepening just learnt.
+     * The allocator above prices a move before searching it; the ID loop knows more.
+     * A best move that CHANGED at this depth, or a score that fell hard, is the
+     * signature of a position that is still being decided -- the classic case where a
+     * little more time changes the move actually played. A best move that has not
+     * moved while the score sits still is an obvious move, and its time is better
+     * banked (Fischer) for a harder one later. Multiplicative, clamped, and always
+     * under the HARD budget, so it can steer but never flag.
+     *
+     * MEASURED AND REJECTED (tm_adaptive_ stays false). Two versions, both against the
+     * fixed allocation at 3000+50ms:
+     *   naive (compares to d-1)        -5.4 Elo, 95% CI [-32, 21], 160 pairs
+     *   parity-aware (compares to d-2) -8.7 Elo, 95% CI [-31, 13], 240 pairs
+     * The parity fix mattered in principle -- an Othello score oscillates across
+     * parities by nature, so the naive drop detector fired on noise -- but not in
+     * outcome. WHY a chess-proven idea has nothing to collect here: the signals barely
+     * fire (the best move is exceptionally stable -- ordering gets a first-move cutoff
+     * 82.7% of the time), and Othello's timing-relevant structure is VISIBLE STATICALLY.
+     * The move count is exact from the empties and the one genuinely critical moment,
+     * the solve window, sits at a known empty count -- and the fixed allocator already
+     * prices both. Chess needs dynamic signals because criticality is hidden; here it
+     * is on the board.
+     */
+    constexpr int    kTmAdjustMinDepth = 6;    // below this, iterations are noise
+    constexpr int    kTmDropCd         = 120;  // a fall this size counts as instability
+    constexpr double kTmBump           = 1.5;  // extension per unstable iteration
+    constexpr double kTmDecay          = 0.85; // shrink per calm iteration
+    constexpr double kTmMaxFactor      = 2.5;
+    constexpr double kTmMinFactor      = 0.6;
+
     [[nodiscard]] TimeBudget allocate_time(double clk, double inc, int empties) noexcept {
       clk = clk - kMoveOverheadMs;
       if (clk < 1.0)
@@ -1327,10 +1358,12 @@ namespace islay {
   SearchResult Searcher::search(const Board &root, const SearchLimits &limits, Rule rule, Color stm,
                                std::ostream &info) {
     new_search(limits);
+    double tm_soft_base = 0.0, tm_factor = 1.0; // adaptive-TM state; see kTmBump
     if (limits.time_ms > 0.0) { // clock mode: the engine allocates its own budget
       const TimeBudget tb = allocate_time(limits.time_ms, limits.inc_ms, 64 - root.count());
       deadline_ms_        = start_ms_ + tb.hard_ms;
       soft_ms_            = start_ms_ + tb.soft_ms;
+      tm_soft_base        = tb.soft_ms;
     }
     if (pat_on_)
       ps_[0].set(root, stm); // the only from-scratch build; everything below is incremental
@@ -1363,6 +1396,14 @@ namespace islay {
 
     int  score_hist[2] = {0, 0}; // score two and one iterations ago (index by parity of d)
     bool have_hist[2]  = {false, false};
+    // Adaptive TM keeps its previous best/score PER PARITY of the depth. Comparing to
+    // the immediately previous iteration would compare across opposite parities, and in
+    // Othello the score oscillates with parity BY NATURE -- the same fact that makes
+    // ProbCut predict across d-2 and sank naive aspiration. A drop detector fed with
+    // that oscillation fires on noise every other iteration.
+    Square tm_prev_best[2]  = {NOMOVE, NOMOVE};
+    int    tm_prev_score[2] = {0, 0};
+    bool   tm_have_prev[2]  = {false, false};
     // Helper threads start a little deeper so they are not all grinding the identical
     // iteration at the same instant; the shared table keeps them diverged after that.
     const int first_depth = depth_offset_ < max_depth ? 1 + depth_offset_ : 1;
@@ -1428,6 +1469,19 @@ namespace islay {
 
       if (res.exact || stopped_)
         break;
+      // Adaptive TM: re-price the soft budget from what this iteration just revealed.
+      // A changed best move or a hard score fall extends it; a still one shrinks it.
+      // Clamped under the hard budget, so this can steer but never flag.
+      if (tm_adaptive_ && tm_soft_base > 0.0 && d >= kTmAdjustMinDepth && tm_have_prev[d & 1]) {
+        const bool unstable = (res.best != tm_prev_best[d & 1]) ||
+                              (res.score <= tm_prev_score[d & 1] - kTmDropCd);
+        tm_factor = unstable ? std::min(tm_factor * kTmBump, kTmMaxFactor)
+                             : std::max(tm_factor * kTmDecay, kTmMinFactor);
+        soft_ms_  = start_ms_ + std::min(deadline_ms_ - start_ms_, tm_soft_base * tm_factor);
+      }
+      tm_prev_best[d & 1]  = res.best;
+      tm_prev_score[d & 1] = res.score;
+      tm_have_prev[d & 1]  = true;
       // Don't start an iteration there is no hope of finishing (Othello's
       // effective branching is ~3-5, so the next one costs several times this).
       // Under a clock the SOFT budget steers this; the hard deadline stays as the

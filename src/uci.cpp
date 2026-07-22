@@ -765,6 +765,21 @@ namespace islay {
           run_match(cfg, std::cout);
           return;
         }
+        if (first == "tma") { // ADAPTIVE soft budget vs the fixed engine allocation, real clock
+          double base = 3000.0, inc = 50.0;
+          if (!(is >> cfg.pairs) || cfg.pairs < 1) cfg.pairs = 50;
+          is >> base; is >> inc;
+          cfg.depth = 0; cfg.movetime_ms = 0.0;
+          cfg.tc_base_ms = base; cfg.tc_inc_ms = inc;
+          cfg.etm_a = cfg.etm_b = true; // both allocate for themselves...
+          cfg.tma_a = true;             // ...only A re-prices per iteration
+          std::string ev;
+          if (is >> ev && ev != "-") cfg.eval_a = cfg.eval_b = ev;
+          std::uint64_t sd = 0;
+          if (is >> sd) cfg.seed = sd;
+          run_match(cfg, std::cout);
+          return;
+        }
         if (first == "tm") { // ENGINE time management vs the harness's even split, real clock
           double base = 3000.0, inc = 50.0;
           if (!(is >> cfg.pairs) || cfg.pairs < 1) cfg.pairs = 50;

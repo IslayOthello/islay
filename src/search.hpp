@@ -129,6 +129,11 @@ namespace islay {
     /** Helper threads must not bump the shared generation; only the main search does. */
     void set_bump_age(bool on) noexcept { bump_age_ = on; }
 
+    /** Adaptive time management: scale the soft budget by what iterative deepening
+     *  LEARNS -- extend on a changed best move or a score drop, shrink when the move is
+     *  obvious. `match tma` is the A/B against the fixed allocation. */
+    void set_tm_adaptive(bool on) noexcept { tm_adaptive_ = on; }
+
     /** Start the iterative deepening at 1 + offset, so helper threads do not all
      *  duplicate the same iteration at the same moment. */
     void set_depth_offset(int d) noexcept { depth_offset_ = d < 0 ? 0 : d; }
@@ -285,6 +290,7 @@ namespace islay {
     // killers_). Cheap insurance, not a measured fix.
     std::shared_ptr<TranspositionTable> tt_;
     bool                                bump_age_     = true;
+    bool                                tm_adaptive_  = false; // fixed allocation ships until `match tma` wins
     int                                 depth_offset_ = 0;
 
     std::vector<PatternState> ps_;
