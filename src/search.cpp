@@ -1493,6 +1493,42 @@ namespace islay {
       int        window = kAspWindow;
       int        alpha  = aspire ? centre - window : -kInf;
       int        beta   = aspire ? centre + window : kInf;
+      /**
+       * WIN/LOSS/DRAW solve. The solving iteration (d >= empties) normally computes
+       * the EXACT final margin with a full window. To PLAY correctly, the margin is
+       * unnecessary -- what is needed is a move that wins (or draws, or loses least),
+       * and a +-100 window answers that: disc differences are even, so any true win
+       * fails high past +100, any loss fails low past -100, and a value strictly
+       * inside is an exact draw. The narrow window bounds every subtree in the solve
+       * and lets the stability cutoff bite everywhere; measured on 12 positions at
+       * ~26 empties it is 7.0x fewer nodes and 5.7x less time than the exact solve.
+       * Cheaper means AFFORDABLE EARLIER -- roughly two empties sooner at a given
+       * budget, i.e. perfect play from two moves earlier in every game.
+       *
+       * Only under a TIMED search: `go depth` is analysis, and analysis wants the
+       * true margin, not a bound. Fail-soft keeps the root's best_move meaningful in
+       * all three outcomes (the winning move; the drawing move; the least-bad bound).
+       *
+       * MEASURED AND SHIPPED OFF (wld_enabled_ false), in two stages that are both
+       * worth remembering. The naive version -- play whatever the bound suggests --
+       * lost 15.2 Elo (CI [-32, 2], 320 games): in PROVEN-LOST positions the fail-low
+       * bounds barely rank the moves, and the opponent at that moment is NOT yet
+       * solved, so throwing away the least-bad margin throws away real swindle equity
+       * against a still-fallible opponent. Refining losses with a full-window
+       * re-search (below) removed that entirely -- but what remained measured only
+       * +4.7 Elo, CI [-5, 14], over 960 pairs at 3000+50ms. WHY so little for a 5.7x
+       * cheaper solve: the saving is banked as Fischer time in positions that are
+       * already decided, where it buys nothing; the true prize is solving ~2 empties
+       * earlier, which merely upgrades a couple of depth-20 heuristic moves --
+       * already nearly always correct -- to proven ones. Verdicts on all 12 test
+       * positions matched the exact solve, so the machinery is sound and stays behind
+       * the flag for longer time controls, where the solve window is wider.
+       */
+      bool wld = wld_enabled_ && (limits.movetime_ms > 0.0 || limits.time_ms > 0.0) && d >= empties;
+      if (wld) {
+        alpha = -100;
+        beta  = 100;
+      }
       for (;;) {
         if (rule == Rule::Othello) {
           if (pat_on_)
@@ -1507,6 +1543,23 @@ namespace islay {
         }
         if (stopped_)
           break;
+        if (wld) {
+          // A proven WIN or DRAW is played as-is: any winning move keeps the win, any
+          // drawing move keeps at least the draw, and the whole 5.7x saving is kept.
+          // A proven LOSS is different -- the fail-low bounds barely rank the moves,
+          // and the OPPONENT IS NOT SOLVED YET: against a fallible opponent the move
+          // that loses by two is worth far more than the one that loses by forty.
+          // Playing an arbitrary bound move here measured -15 Elo. So a loss is
+          // REFINED: re-search full-window for the exact margins, on a table the WLD
+          // pass just warmed. Only lost positions pay; the others bank the saving.
+          if (it.score <= -100 && !stopped_) {
+            wld   = false;
+            alpha = -kInf;
+            beta  = kInf;
+            continue;
+          }
+          break;
+        }
         if (it.score <= alpha && alpha > -kInf) {
           window *= 3;
           alpha = it.score - window <= -kScoreMax ? -kInf : it.score - window;

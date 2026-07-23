@@ -189,6 +189,11 @@ namespace islay {
     /** ABDADA work deferral for lazy SMP; on only when several threads search. */
     void set_abdada(bool on) noexcept { abdada_ = on; }
 
+    /** Win/Loss/Draw solve at the solving iteration of TIMED searches (see the note in
+     *  search.cpp): ~6x cheaper than the exact solve, so it lands ~2 empties earlier.
+     *  `match wldtc` is the A/B. */
+    void set_wld(bool on) noexcept { wld_enabled_ = on; }
+
     /** Adaptive time management: scale the soft budget by what iterative deepening
      *  LEARNS -- extend on a changed best move or a score drop, shrink when the move is
      *  obvious. `match tma` is the A/B against the fixed allocation. */
@@ -352,6 +357,7 @@ namespace islay {
     bool                                bump_age_     = true;
     bool                                tm_adaptive_  = false; // fixed allocation ships until `match tma` wins
     bool                                abdada_       = false; // meaningless single-threaded
+    bool                                wld_enabled_  = false; // exact solve ships until `match wldtc` wins
     SearchParams                        params_;
     int                                 depth_offset_ = 0;
 
