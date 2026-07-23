@@ -51,6 +51,18 @@ namespace islay {
    * are PER-SEARCHER so the match harness (and the SPSA loop) can give the two sides
    * different values -- which is the entire point. Defaults reproduce the shipped
    * constants exactly, and a Threads=1 search with defaults must stay byte-identical.
+   *
+   * TUNED, AND THE DEFAULTS WON. Two `tune spsa` runs on v18 at movetime 15ms:
+   * a conservative one (2000 iters) converged to within ~3% of the defaults on every
+   * parameter and then oscillated there; an aggressive one (800 iters, c x2, a x3,
+   * different seed) drifted the futility margins ~10-15% up and left the rest alone.
+   * That candidate was validated independently -- first 400 pairs read +11.7 Elo at
+   * LOS 0.97, which the boundary-z rule says to distrust, and pooling a second 400
+   * pairs on a fresh book collapsed it to +3.7, CI [-5, 13]. So the hand-guessed
+   * values below are, at measurement resolution, already the optimum -- consistent
+   * with the flat ProbCut t-sweep, the insensitive LMR schedule, and ordering that
+   * cuts on the first move 82.7% of the time. The knobs are flat because the engine
+   * barely consults them.
    */
   struct SearchParams {
     int fut1 = 250, fut2 = 450, fut3 = 700; // futility margins at depth 1/2/3, centi-discs

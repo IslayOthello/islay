@@ -1082,6 +1082,10 @@ namespace islay {
           return;
         std::uint64_t seed = 0x9E3779B97F4A7C15ULL, sd = 0;
         if (is >> sd && sd) seed = sd;
+        double cscale = 1.0, ascale = 1.0; // optional aggressiveness multipliers
+        is >> cscale; is >> ascale;
+        if (cscale <= 0) cscale = 1.0;
+        if (ascale <= 0) ascale = 1.0;
 
         struct P { const char *name; double th, c0, lo, hi; };
         SearchParams d0;
@@ -1135,7 +1139,7 @@ namespace islay {
           double vp[kN], vm[kN]; int delta[kN];
           for (int i = 0; i < kN; ++i) {
             delta[i]        = (rng() & 1) ? 1 : -1;
-            const double ck = th[i].c0 / ckd;
+            const double ck = cscale * th[i].c0 / ckd;
             vp[i] = std::clamp(th[i].th + ck * delta[i], th[i].lo, th[i].hi);
             vm[i] = std::clamp(th[i].th - ck * delta[i], th[i].lo, th[i].hi);
           }
@@ -1155,7 +1159,7 @@ namespace islay {
           const double s2 = 1.0 - play(ob, os, sb, sa); // theta+ as White
           const double r  = (s1 + s2) - 1.0;            // [-1, +1], + favours theta+
           for (int i = 0; i < kN; ++i) {
-            const double ak = th[i].c0 * 0.25 / akd;
+            const double ak = ascale * th[i].c0 * 0.25 / akd;
             th[i].th        = std::clamp(th[i].th + ak * r * delta[i], th[i].lo, th[i].hi);
           }
           if (k % 100 == 0) {
