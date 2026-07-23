@@ -535,6 +535,19 @@ namespace islay {
     used_.store(0, std::memory_order_relaxed);
   }
 
+  /**
+   * DIRECT-MAPPED ON PURPOSE -- a two-way cluster was built and measured NEUTRAL, so
+   * do not spend the complexity again. The motive looked sound: the telemetry hit rate
+   * collapses to ~30% then ~12% in the late stages, and pairing xor-1 slots puts the
+   * second way on the same cache line, so the extra look is nearly free. Measured
+   * honestly (same eval both sides -- the first comparison accidentally used a v12-era
+   * baseline against v18 and read a fantastical -67%): 552604 -> 552579 nodes at
+   * depth 14 (nothing) and 1801033 -> 1728963 at depth 16 (-4%), hit rates unchanged.
+   * The late-stage misses are not collisions to associate away; deep positions are
+   * simply NEW, and no associativity invents an entry that was never stored. The same
+   * re-measurement surfaced a happier fact: v18's tree at fixed depth is ~3x smaller
+   * than v12's was -- the eval work compounded into search efficiency.
+   */
   bool TranspositionTable::probe(std::uint64_t key, Hit &out) const noexcept {
     if (!mask_)
       return false;
