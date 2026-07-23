@@ -242,6 +242,9 @@ namespace islay {
             {1.004f, 18.6f, 209.7f},                             // d=12
     };
     constexpr int   kProbCutMinDepth = 5; // needs room for a d-2 search worth the saving
+    // ABDADA: mark subtrees from this remaining depth up; shallower ones finish too
+    // fast for deferral to buy anything over the cost of the marks.
+    constexpr int kAbdadaMinDepth = 4;
 
     /**
      * WIDER PROBE GAP at deep nodes. The telemetry says ProbCut probes are 68-78% of
@@ -1003,6 +1006,21 @@ namespace islay {
       }
     }
 
+    // ABDADA: publish that THIS subtree is being searched so other threads defer it,
+    // and clear the mark on every exit path via the guard.
+    struct BusyGuard {
+      TranspositionTable *t = nullptr;
+      std::uint64_t       k = 0;
+      ~BusyGuard() {
+        if (t) t->busy_leave(k);
+      }
+    } bguard;
+    if (abdada_ && depth >= kAbdadaMinDepth) {
+      tt_->busy_enter(key);
+      bguard.t = tt_.get();
+      bguard.k = key;
+    }
+
     // Endgame parity, for move ordering only (never changes a score -- the oracle
     // still holds). In the endgame the empties split into regions; a region with an
     // ODD count hands its last move to the side that moves into it, so playing into
@@ -1060,27 +1078,22 @@ namespace islay {
 
     int    best       = -kInf;
     Square best_move  = NOMOVE;
-    bool   first      = true;
+    bool   aborted    = false;
 
-    for (int i = 0; i < n; ++i) {
-      // Lazy selection: a cutoff on the first move must not have paid to sort all.
-      if constexpr (kUseOrdering) {
-        int pick = i;
-        for (int j = i + 1; j < n; ++j)
-          if (list[j].score > list[pick].score)
-            pick = j;
-        if (pick != i)
-          std::swap(list[i], list[pick]);
-      }
+    // The move-search body, shared by the two execution orders below. `idx` picks the
+    // move from the list; `ord` is its position in the ACTUAL search order, which is
+    // what LMR, LMP and the telemetry key on (in the plain path the two are equal).
+    // Returns 0 to continue the node, non-zero to end it (cutoff, prune, or abort).
+    const auto search_move = [&](int idx, int ord) -> int {
       // Late move pruning: in a scout node at shallow depth, drop the tail of the list
-      // unsearched. Selection above is descending, so everything remaining is ordered
+      // unsearched. Ordering is descending, so everything remaining is ordered
       // worse than what already failed to raise alpha. `best > -kInf` keeps at least
       // one move searched so best_move can never come back NOMOVE. Re-tested on v12.
       if (kUseLMP && lmp_enabled_ && kUsePruning && selective_enabled_ && kUseOrdering && !solving &&
-          beta == alpha + 1 && depth <= kLMPMaxDepth && i >= kLMPCount[depth] && best > -kInf)
-        break;
+          beta == alpha + 1 && depth <= kLMPMaxDepth && ord >= kLMPCount[depth] && best > -kInf)
+        return 2;
 
-      const ScoredMove &sm = list[i];
+      const ScoredMove &sm = list[idx];
       if constexpr (kStats) ++sacc.moves_searched;
 
       // Extension: a forced reply branches nowhere, so spending a ply on it buys
@@ -1095,9 +1108,9 @@ namespace islay {
       // surprises us. Heuristic, so: not while solving, not on the first moves,
       // and never below depth 3.
       int red = 0;
-      if (kUsePruning && lmr_enabled_ && selective_enabled_ && !solving && !ext && kUseOrdering && depth >= 3 && i >= 3 &&
-          sm.sq != tt_move)
-        red = lmr_calibrated_ ? lmr_reduction(depth, i) : 1 + (i >= 6 && depth >= 5 ? 1 : 0);
+      if (kUsePruning && lmr_enabled_ && selective_enabled_ && !solving && !ext && kUseOrdering && depth >= 3 &&
+          ord >= 3 && sm.sq != tt_move)
+        red = lmr_calibrated_ ? lmr_reduction(depth, ord) : 1 + (ord >= 6 && depth >= 5 ? 1 : 0);
       if constexpr (kStats) if (red) ++sacc.lmr_try;
 
       // Incremental pattern features for the child: copy the parent's vector and
@@ -1110,14 +1123,14 @@ namespace islay {
       }
 
       int s;
-      if (first || !kUsePVS) {
+      if (ord == 0 || !kUsePVS) {
         s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -beta, -alpha, ply + 1, ~stm);
       } else {
         if constexpr (kStats) ++sacc.pvs_scout;
         s = -pvs<R, Pat>(sm.child, depth - 1 + ext - red, -alpha - 1, -alpha, ply + 1, ~stm);
         // Calibration sample: was reducing THIS move at THIS (depth, ordinal) a mistake?
         if constexpr (kStats)
-          if (red) stats_->lmr_sample(depth, i, s > alpha);
+          if (red) stats_->lmr_sample(depth, ord, s > alpha);
         // A reduced scout that beats alpha proved nothing -- redo it at full depth
         // before trusting it.
         if (red && s > alpha) {
@@ -1131,8 +1144,10 @@ namespace islay {
           s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -beta, -alpha, ply + 1, ~stm);
         }
       }
-      if (stopped_)
-        return 0; // partial score: caller must not use or store it
+      if (stopped_) {
+        aborted = true; // partial score: the node must not use or store it
+        return 2;
+      }
 
       if (s > best) {
         best      = s;
@@ -1141,7 +1156,7 @@ namespace islay {
       if (s > alpha)
         alpha = s;
       if (alpha >= beta) { // fail high
-        if constexpr (kStats) sacc.cut_idx = i; // ordinal of the cutoff move (selection is descending)
+        if constexpr (kStats) sacc.cut_idx = ord; // ordinal of the cutoff move
         if constexpr (kUseKillers) {
           if (killers_[ply][0] != sm.sq) {
             killers_[ply][1] = killers_[ply][0];
@@ -1152,10 +1167,58 @@ namespace islay {
             for (int &h: history_)
               h >>= 1;
         }
-        break;
+        return 1;
       }
-      first = false;
+      return 0;
+    };
+
+    // ABDADA applies only where deferral can matter: several threads, a subtree deep
+    // enough to be worth not duplicating, and more than one move to choose from.
+    const bool abdada_here = abdada_ && depth > kAbdadaMinDepth && n > 1;
+    if (!abdada_here) {
+      for (int i = 0; i < n; ++i) {
+        // Lazy selection: a cutoff on the first move must not have paid to sort all.
+        if constexpr (kUseOrdering) {
+          int pick = i;
+          for (int j = i + 1; j < n; ++j)
+            if (list[j].score > list[pick].score)
+              pick = j;
+          if (pick != i)
+            std::swap(list[i], list[pick]);
+        }
+        if (search_move(i, i))
+          break;
+      }
+    } else {
+      // Full sort up front: the two-pass order below revisits the list, so lazy
+      // selection no longer pays for itself here.
+      for (int i = 1; i < n; ++i) {
+        ScoredMove key_ = list[i];
+        int        j    = i - 1;
+        for (; j >= 0 && list[j].score < key_.score; --j)
+          list[j + 1] = list[j];
+        list[j + 1] = key_;
+      }
+      bool deferred[36] = {};
+      int  ord = 0, ended = 0;
+      // Pass 1: search moves whose subtree nobody else is inside. The first move is
+      // never deferred -- the node needs a real score to raise alpha with.
+      for (int i = 0; i < n && !ended; ++i) {
+        if (i > 0 && tt_->busy(hash_board(list[i].child.player, list[i].child.opponent))) {
+          deferred[i] = true;
+          continue;
+        }
+        ended = search_move(i, ord++);
+      }
+      // Pass 2: whatever was deferred. By now the other thread has either finished
+      // (its result is in the shared table) or is deep inside (we duplicate, as plain
+      // lazy SMP always did) -- either way no move is ever skipped.
+      for (int i = 0; i < n && !ended; ++i)
+        if (deferred[i])
+          ended = search_move(i, ord++);
     }
+    if (aborted)
+      return 0;
 
     if (kUseTT && tt_enabled_) {
       if (!stopped_) { // never poison the table with an aborted node's score

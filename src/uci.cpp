@@ -61,6 +61,18 @@
 namespace islay {
   namespace {
 
+    // ABDADA work deferral under lazy SMP: mark subtrees being searched in a shared
+    // busy table; other threads defer a busy child to the end of the node instead of
+    // duplicating it. MEASURED AND OFF: -6.5 Elo, 95% CI [-20, 7], 700 games at equal
+    // time against plain 4-thread SMP -- the FOURTH parallel-shaping idea to return
+    // nothing (after three divergence schemes). Same root cause every time: this tree
+    // cuts on the first move 82.7% of the time at branching 2.27, so the non-first
+    // children whose duplication ABDADA prevents are tiny scouts not worth deferring,
+    // while its bookkeeping (and a full sort where lazy selection used to stop at the
+    // first cutoff) is paid at every deep node. Parallel search here is capped by the
+    // narrowness of the tree, not by how cleverly the threads are arranged.
+    constexpr bool kUseAbdada = false;
+
     constexpr const char *kName   = "islay 0.1.0";
     constexpr const char *kAuthor = "islay";
 
@@ -567,6 +579,9 @@ namespace islay {
         const Rule  rule = options_.rule;
         search_infinite_ = (lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0 && lim.time_ms == 0.0);
         size_helpers();
+        searcher_.set_abdada(kUseAbdada && options_.threads > 1);
+        for (auto &h: helpers_)
+          h->set_abdada(kUseAbdada && options_.threads > 1);
         searcher_.arm(); // clear any earlier stop HERE, not on the search thread
         for (auto &h: helpers_)
           h->arm();

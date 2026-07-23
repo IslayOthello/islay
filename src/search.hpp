@@ -127,6 +127,27 @@ namespace islay {
     /** Per-mille occupancy, for the UCI `hashfull` field. Approximate under SMP. */
     [[nodiscard]] int hashfull() const noexcept;
 
+    /**
+     * ABDADA busy table: which positions are being searched RIGHT NOW, so that other
+     * threads defer them instead of duplicating the work -- the failure mode all three
+     * divergence schemes measured (helpers on a narrow tree redo the main thread's
+     * subtrees). A hint, deliberately imprecise: a stale mark defers a search that
+     * did not need deferring and a lost mark permits a duplicate, both of which cost
+     * only time, never correctness -- deferral REORDERS moves within a node and every
+     * move is still searched unless a real cutoff ends the node.
+     */
+    void busy_enter(std::uint64_t key) noexcept {
+      busy_[key & (kBusySlots - 1)].store(key, std::memory_order_relaxed);
+    }
+    void busy_leave(std::uint64_t key) noexcept {
+      std::uint64_t e = key; // clear only our own mark; losing the race is benign
+      busy_[key & (kBusySlots - 1)].compare_exchange_strong(e, 0, std::memory_order_relaxed,
+                                                            std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool busy(std::uint64_t key) const noexcept {
+      return busy_[key & (kBusySlots - 1)].load(std::memory_order_relaxed) == key;
+    }
+
   private:
     struct Slot {
       std::atomic<std::uint64_t> key_xor;
@@ -134,7 +155,11 @@ namespace islay {
     };
     static_assert(sizeof(Slot) == 16, "TT slot must stay 16 bytes");
 
-    std::vector<Slot>          slots_;
+    static constexpr std::size_t kBusySlots = 1u << 15;
+
+    std::vector<Slot> slots_;
+    std::unique_ptr<std::atomic<std::uint64_t>[]> busy_ =
+            std::make_unique<std::atomic<std::uint64_t>[]>(kBusySlots); // zero-initialised
     std::size_t                mask_ = 0;
     std::atomic<std::uint8_t>  age_{0};
     std::atomic<std::size_t>   used_{0};
@@ -160,6 +185,9 @@ namespace islay {
     /** Search-constant overrides for tuning; defaults are the shipped values. */
     void set_params(const SearchParams &p) noexcept { params_ = p; }
     [[nodiscard]] const SearchParams &params() const noexcept { return params_; }
+
+    /** ABDADA work deferral for lazy SMP; on only when several threads search. */
+    void set_abdada(bool on) noexcept { abdada_ = on; }
 
     /** Adaptive time management: scale the soft budget by what iterative deepening
      *  LEARNS -- extend on a changed best move or a score drop, shrink when the move is
@@ -323,6 +351,7 @@ namespace islay {
     std::shared_ptr<TranspositionTable> tt_;
     bool                                bump_age_     = true;
     bool                                tm_adaptive_  = false; // fixed allocation ships until `match tma` wins
+    bool                                abdada_       = false; // meaningless single-threaded
     SearchParams                        params_;
     int                                 depth_offset_ = 0;
 
