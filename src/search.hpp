@@ -363,6 +363,7 @@ namespace islay {
 
     std::vector<PatternState> ps_;
     bool                      pat_on_ = false; // cached per search; see new_search()
+    bool                      nnue_on_ = false; // ditto: NNUE leaf instead of the linear sum
 
     Square killers_[kMaxPly][2]{};
     int    history_[64]{};

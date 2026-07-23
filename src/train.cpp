@@ -11,6 +11,7 @@
 
 #include "eval.hpp"
 #include "movegen.hpp"
+#include "nnue.hpp"
 #include "pattern.hpp"
 #include "search.hpp"
 
@@ -329,6 +330,221 @@ namespace islay {
         << "        match 100 4 " << cfg.out << " -\n";
     log.flush();
     pattern_set_stage_interp(false);
+    res.ok = true;
+    return res;
+  }
+
+  TrainResult run_ntrain(const NTrainConfig &cfg, std::ostream &log) {
+    TrainResult res;
+    if (!pattern_weights().loaded()) {
+      log << "info error: ntrain needs pattern weights loaded (EvalFile) -- they are the teacher AND the warm start\n";
+      return res;
+    }
+    constexpr int     H   = kNnueHidden;
+    const std::size_t per = pattern_weights_per_stage();
+
+    log << "info string ntrain: " << cfg.games << " games @ depth " << cfg.depth << ", " << cfg.epochs
+        << " epochs, lr_emb " << cfg.lr_emb << ", lr_out " << cfg.lr_out << ", H " << H << " x " << kStageCount
+        << " stages -> " << cfg.out << '\n';
+    log.flush();
+
+    // --- phase 1: generate (the teacher is the loaded linear eval) --------------
+    Rng               rng{cfg.seed ? cfg.seed : 0x9E3779B97F4A7C15ULL};
+    Searcher          s(32);
+    TrainConfig       gen; // reuse play_one's contract for the game loop
+    gen.depth         = cfg.depth;
+    gen.opening_plies = cfg.opening_plies;
+    gen.solve_empties = cfg.solve_empties;
+    gen.rule          = cfg.rule;
+    std::vector<Game> games;
+    games.reserve(static_cast<std::size_t>(cfg.games));
+    for (int i = 0; i < cfg.games; ++i) {
+      Game g;
+      s.clear();
+      if (play_one(g, s, rng, gen))
+        games.push_back(g);
+      if ((i + 1) % 5000 == 0) {
+        log << "info string ntrain: generated " << games.size() << "/" << (i + 1) << " games\n";
+        log.flush();
+      }
+    }
+    if (games.empty()) {
+      log << "info string ntrain: no games generated\n";
+      return res;
+    }
+    res.games = games.size();
+
+    // --- phase 2: init ----------------------------------------------------------
+    // The net works in DISCS (labels /100): with cd-scale activations the head
+    // gradients would be ~10^5 per sample and no single lr fits both layers.
+    NnueNet &net = nnue_net();
+    net.reset();
+    float *emb = net.emb(), *w2a = net.w2a(), *w2h = net.w2h(), *b2 = net.b2();
+    (void) b2; // init 0; the bias FEATURE row carries the linear eval's bias already
+
+    const auto frand = [&](float a) { // uniform in [-a, a]
+      return (static_cast<float>(rng.next() >> 40) / 16777216.0f * 2.0f - 1.0f) * a;
+    };
+    // Identity warm start: dim 0 = the teacher's weight for THAT stage, exactly --
+    // the v1 phase-averaged init cost 57 Elo before training even started (nnue.hpp).
+    // The r rows start at 0 on dim 0 (v18 has no such term; the within-bucket blend
+    // is training's to learn) and the other dims start as small symmetry-breaking
+    // noise, passed through by the heads' dim-0-only skip.
+    const std::size_t   fper = per + kNnueRFeat; // net feature space: per_stage + r rows
+    const std::int16_t *w18  = pattern_weights().data();
+    for (int st = 0; st < kStageCount; ++st)
+      for (std::size_t f = 0; f < fper; ++f) {
+        float *row = emb + (static_cast<std::size_t>(st) * fper + f) * H;
+        row[0]     = f < per ? static_cast<float>(w18[static_cast<std::size_t>(st) * per + f]) / 100.0f : 0.0f;
+        for (int j = 1; j < H; ++j)
+          row[j] = frand(0.05f);
+      }
+    for (int st = 0; st < kStageCount; ++st) {
+      w2a[static_cast<std::size_t>(st) * H + 0] = 1.0f;
+      for (int j = 0; j < H; ++j)
+        w2h[static_cast<std::size_t>(st) * H + j] = frand(0.05f);
+    }
+
+    // --- phase 3: fit -----------------------------------------------------------
+    for (std::size_t i = games.size(); i > 1; --i) {
+      const std::size_t j = static_cast<std::size_t>(rng.next() % i);
+      std::swap(games[i - 1], games[j]);
+    }
+    const std::size_t nval   = static_cast<std::size_t>(static_cast<double>(games.size()) * cfg.val_frac);
+    const std::size_t ntrain = games.size() - nval;
+    if (ntrain == 0) {
+      log << "info string ntrain: validation fraction leaves no training games\n";
+      return res;
+    }
+    const float lre = static_cast<float>(cfg.lr_emb), lro = static_cast<float>(cfg.lr_out);
+
+    /** One pass over [begin,end); backprop when `update`. Same replay skeleton as
+     *  the linear pass above, different model. RMSE is reported in centi-discs. */
+    const auto pass = [&](std::size_t begin, std::size_t end, bool update, std::uint64_t *out_count) {
+      std::uint32_t idx[kPatternInstances + 9]; // + the appended r index
+      double        sse   = 0.0;
+      std::uint64_t count = 0;
+      for (std::size_t gi = begin; gi < end; ++gi) {
+        const Game  &g   = games[gi];
+        Board        b   = Board::start();
+        Color        stm = Color::Black;
+        PatternState st;
+        st.set(b, stm);
+        const float label = static_cast<float>(g.result) / 100.0f; // discs
+
+        for (int m = 0; m < g.n; ++m) {
+          const MobCounts mc    = mob_counts(b, stm);
+          const int       discs = b.count();
+          const int       stage = pattern_stage(discs);
+          int             n     = pattern_indices(st, 0, mc, idx); // FLAT (stage-0) ids
+          const int       r     = discs >= 4 ? (discs - 4) % 4 : 0;
+          idx[n++]              = static_cast<std::uint32_t>(per + r); // the interp input
+          float          *base  = emb + static_cast<std::size_t>(stage) * fper * H;
+          float          *a     = w2a + static_cast<std::size_t>(stage) * H;
+          float          *h     = w2h + static_cast<std::size_t>(stage) * H;
+
+          float acc[H] = {};
+          for (int k = 0; k < n; ++k) {
+            const float *row = base + static_cast<std::size_t>(idx[k]) * H;
+            for (int j = 0; j < H; ++j)
+              acc[j] += row[j];
+          }
+          float pred = net.b2()[stage];
+          for (int j = 0; j < H; ++j)
+            pred += a[j] * acc[j] + (acc[j] > 0.0f ? h[j] * acc[j] : 0.0f);
+
+          const float err = pred - label;
+          sse += static_cast<double>(err) * err;
+          ++count;
+
+          if (update) {
+            float dacc[H]; // with the CURRENT heads, before they move
+            for (int j = 0; j < H; ++j) {
+              dacc[j] = err * (a[j] + (acc[j] > 0.0f ? h[j] : 0.0f));
+              a[j] -= lro * err * acc[j];
+              h[j] -= lro * err * (acc[j] > 0.0f ? acc[j] : 0.0f);
+            }
+            net.b2()[stage] -= lro * err;
+            for (int k = 0; k < n; ++k) {
+              float *row = base + static_cast<std::size_t>(idx[k]) * H;
+              for (int j = 0; j < H; ++j)
+                row[j] -= lre * dacc[j];
+            }
+          }
+
+          const std::uint8_t mv = g.moves[m];
+          if (mv == kPassByte) {
+            b   = b.passed();
+            stm = ~stm;
+            continue;
+          }
+          const Square   sq      = static_cast<Square>(mv);
+          const Board    child   = b.play(sq);
+          const Bitboard flipped = b.player ^ child.opponent ^ square_bb(sq);
+          st.update(sq, flipped, stm);
+          b   = child;
+          stm = ~stm;
+        }
+      }
+      if (out_count)
+        *out_count = count;
+      return count ? std::sqrt(sse / static_cast<double>(count)) * 100.0 : 0.0; // cd
+    };
+
+    // Warm-start sanity: the skip path should already predict at roughly the
+    // teacher's fit before a single gradient step. If this prints garbage the
+    // init is wrong and training would only polish a bug.
+    log << "info string ntrain: warm-start val_rmse " << static_cast<int>(nval ? pass(0, nval, false, nullptr) : 0.0)
+        << " cd\n";
+    log.flush();
+
+    // Early stopping by snapshot, exactly like the linear trainer: train the whole
+    // budget, keep the epoch with the best held-out fit.
+    std::vector<float> best_emb, best_a, best_h, best_b;
+    double             best_val = 1e30;
+    int                best_ep  = 0;
+    const std::size_t  esz = static_cast<std::size_t>(kStageCount) * fper * H;
+
+    for (int ep = 0; ep < cfg.epochs; ++ep) {
+      for (std::size_t i = games.size(); i > nval + 1; --i) {
+        const std::size_t j = nval + static_cast<std::size_t>(rng.next() % (i - nval));
+        std::swap(games[i - 1], games[j]);
+      }
+      std::uint64_t count = 0;
+      res.rmse            = pass(nval, games.size(), true, &count);
+      res.positions       = count;
+      res.val_rmse        = nval ? pass(0, nval, false, nullptr) : 0.0;
+
+      const bool improved = nval && res.val_rmse < best_val;
+      if (improved || nval == 0) {
+        best_val = res.val_rmse;
+        best_ep  = ep + 1;
+        best_emb.assign(emb, emb + esz);
+        best_a.assign(w2a, w2a + static_cast<std::size_t>(kStageCount) * H);
+        best_h.assign(w2h, w2h + static_cast<std::size_t>(kStageCount) * H);
+        best_b.assign(net.b2(), net.b2() + kStageCount);
+      }
+      log << "info string ntrain: epoch " << (ep + 1) << "/" << cfg.epochs << "  positions " << count << "  rmse "
+          << static_cast<int>(res.rmse) << "  val_rmse " << static_cast<int>(res.val_rmse)
+          << (improved ? " cd *" : " cd") << "\n";
+      log.flush();
+    }
+    if (nval && !best_emb.empty()) {
+      std::copy(best_emb.begin(), best_emb.end(), emb);
+      std::copy(best_a.begin(), best_a.end(), w2a);
+      std::copy(best_h.begin(), best_h.end(), w2h);
+      std::copy(best_b.begin(), best_b.end(), net.b2());
+      res.val_rmse = best_val;
+      log << "info string ntrain: keeping epoch " << best_ep << " (best val_rmse " << static_cast<int>(best_val)
+          << " cd)\n";
+    }
+
+    if (!net.save(cfg.out, log))
+      return res;
+    log << "ntrain done: " << res.games << " games, " << res.positions << " positions/epoch -> " << cfg.out << '\n'
+        << "  NOTE: strength is settled by match, never by rmse. A/B via fastothello:\n"
+        << "        EvalFile " << cfg.out << "  vs  the teacher .pat\n";
+    log.flush();
     res.ok = true;
     return res;
   }

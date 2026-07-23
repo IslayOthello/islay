@@ -21,6 +21,7 @@
 
 #include "eval.hpp"
 #include "hash.hpp"
+#include "nnue.hpp"
 #include "pattern.hpp"
 #include "movegen.hpp"
 #include "stability.hpp"
@@ -607,7 +608,8 @@ namespace islay {
   void Searcher::new_search(const SearchLimits &limits) noexcept {
     // Cache it once: pattern_enabled() lives in another TU, so leaving the call
     // in the move loop stops the compiler hoisting anything out of it.
-    pat_on_ = pattern_enabled();
+    pat_on_  = pattern_enabled();
+    nnue_on_ = nnue_enabled(); // ditto (leaf_eval branches on it per leaf)
     if (pat_on_ && ps_.size() < static_cast<std::size_t>(kMaxPly))
       ps_.resize(kMaxPly);
     nodes_       = 0;
@@ -777,7 +779,17 @@ namespace islay {
     // scratch instead of maintained incrementally -- the oracle pins the two equal.
     PatternState ps;
     ps.set(b, stm);
-    const int black = pattern_weights().score_phase(ps, b.count(), mob_counts(b, stm, moves), pattern_stage_interp());
+    int black;
+    if (nnue_enabled()) {
+      std::uint32_t idx[kPatternInstances + 9];
+      const int     discs = b.count();
+      int           n     = pattern_indices(ps, 0, mob_counts(b, stm, moves), idx);
+      idx[n++]            = static_cast<std::uint32_t>(nnue_net().features() - kNnueRFeat +
+                                                       (discs >= 4 ? (discs - 4) % 4 : 0));
+      black               = nnue_net().score(idx, n, pattern_stage(discs));
+    } else {
+      black = pattern_weights().score_phase(ps, b.count(), mob_counts(b, stm, moves), pattern_stage_interp());
+    }
     const int mover = (stm == Color::Black) ? black : -black;
     return std::clamp(mover, -kEvalMax, kEvalMax);
   }
@@ -796,7 +808,22 @@ namespace islay {
       // `moves` is this mover's legal moves, already in hand, but mob_counts recomputes
       // from the board so the eval and the oracle's scratch path stay bit-identical.
       (void) moves;
-      const int black = pattern_weights().score_phase(ps_[ply], b.count(), mob_counts(b, stm, moves), pattern_stage_interp());
+      int black;
+      if (nnue_on_) {
+        // NNUE leaf: the SAME flat feature indices the linear eval sums select
+        // embedding rows instead (nnue.hpp) -- identical cache-line count, and the
+        // per-stage head restores the stage dependence the phase buckets coarsen.
+        std::uint32_t idx[kPatternInstances + 9];
+        const int     discs = b.count();
+        int           n     = pattern_indices(ps_[ply], 0, mob_counts(b, stm, moves), idx);
+        // The r index is the net's interpolation input (nnue.hpp): within-bucket
+        // disc count, so the eval does not step at stage boundaries.
+        idx[n++]            = static_cast<std::uint32_t>(nnue_net().features() - kNnueRFeat +
+                                                         (discs >= 4 ? (discs - 4) % 4 : 0));
+        black               = nnue_net().score(idx, n, pattern_stage(discs));
+      } else {
+        black = pattern_weights().score_phase(ps_[ply], b.count(), mob_counts(b, stm, moves), pattern_stage_interp());
+      }
       const int mover = (stm == Color::Black) ? black : -black; // zero-sum
       return std::clamp(mover, -kEvalMax, kEvalMax);
     }

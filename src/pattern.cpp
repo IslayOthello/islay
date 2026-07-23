@@ -9,6 +9,8 @@
  */
 #include "pattern.hpp"
 
+#include "nnue.hpp"
+
 #include "stability.hpp"
 
 #include <array>
@@ -519,7 +521,9 @@ namespace islay {
     return static_cast<bool>(os);
   }
 
-  bool             pattern_enabled() noexcept { return g_active->loaded(); }
+  // The NNUE net rides on the same PatternState/feature machinery, so it counts as
+  // "pattern eval on" for the search's template selection even with no linear weights.
+  bool             pattern_enabled() noexcept { return g_active->loaded() || nnue_enabled(); }
   PatternWeights & pattern_weights() noexcept { return *g_active; }
   void pattern_set_active(PatternWeights *w) noexcept { g_active = w ? w : &g_weights; }
 

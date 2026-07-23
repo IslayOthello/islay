@@ -52,6 +52,7 @@
 #include "eval.hpp"
 #include "match.hpp"
 #include "movegen.hpp"
+#include "nnue.hpp"
 #include "options.hpp"
 #include "pattern.hpp"
 #include "perft.hpp"
@@ -313,7 +314,7 @@ namespace islay {
       [[nodiscard]] static bool is_debug_command(const std::string &c) noexcept {
         return c == "d" || c == "display" || c == "board" || c == "bench" || c == "test" ||
                c == "selftest" || c == "match" || c == "features" || c == "pcdata" ||
-               c == "train" || c == "backend" || c == "searchstats" || c == "tune";
+               c == "train" || c == "ntrain" || c == "backend" || c == "searchstats" || c == "tune";
       }
 
       void dispatch_debug(const std::string &cmd, std::istringstream &is) {
@@ -331,6 +332,8 @@ namespace islay {
           cmd_pcdata(is);
         } else if (cmd == "train") {
           cmd_train(is);
+        } else if (cmd == "ntrain") {
+          cmd_ntrain(is);
         } else if (cmd == "backend") {
           std::cout << "movegen backend: " << movegen_backend() << '\n';
         } else if (cmd == "tune") {
@@ -416,10 +419,20 @@ namespace islay {
           if (lname == "evalfile") {
             // Empty value UNLOADS to the hand-written eval; a failed load must not leave
             // stale weights active, so it also unloads (a defined state, not the old one).
-            if (options_.eval_file.empty())
+            // A `.nnue` file loads the NNUE-lite net (nnue.hpp) instead of linear
+            // weights; exactly one of the two is ever active.
+            const std::string &ev     = options_.eval_file;
+            const bool         is_net = ev.size() > 5 && ev.compare(ev.size() - 5, 5, ".nnue") == 0;
+            nnue_set_active(false);
+            if (ev.empty()) {
               pattern_weights().unload();
-            else if (!pattern_weights().load(options_.eval_file, std::cout))
+            } else if (is_net) {
               pattern_weights().unload();
+              if (nnue_net().load(ev, std::cout))
+                nnue_set_active(true);
+            } else if (!pattern_weights().load(ev, std::cout)) {
+              pattern_weights().unload();
+            }
           }
           std::cout << "info string option " << name << " = " << value << '\n';
         } else {
@@ -1081,6 +1094,30 @@ namespace islay {
         // EvalFile left over from an earlier setoption would quietly change what is
         // being bootstrapped from.
         run_train(cfg, std::cout);
+      }
+
+      /** ntrain [games] [epochs] [depth] [lr_emb] [lr_out] [out] [seed] -- NNUE-lite
+       *  training (train.hpp). Needs EvalFile loaded: teacher and warm start. */
+      void cmd_ntrain(std::istringstream &is) {
+        NTrainConfig cfg;
+        cfg.rule = options_.rule;
+        if (!(is >> cfg.games) || cfg.games < 1)
+          cfg.games = 50000;
+        if (!(is >> cfg.epochs) || cfg.epochs < 1)
+          cfg.epochs = 10;
+        if (!(is >> cfg.depth) || cfg.depth < 1)
+          cfg.depth = 4;
+        if (!(is >> cfg.lr_emb) || cfg.lr_emb <= 0.0)
+          cfg.lr_emb = 1e-3;
+        if (!(is >> cfg.lr_out) || cfg.lr_out <= 0.0)
+          cfg.lr_out = 1e-5;
+        std::string out;
+        if (is >> out && !out.empty())
+          cfg.out = out;
+        std::uint64_t sd = 0;
+        if (is >> sd)
+          cfg.seed = sd;
+        run_ntrain(cfg, std::cout);
       }
 
       /**

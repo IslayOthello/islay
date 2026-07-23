@@ -57,6 +57,7 @@ add_executable(islay
         src/eval.cpp
         src/match.cpp
         src/options.cpp
+        src/nnue.cpp
         src/pattern.cpp
         src/perft.cpp
         src/search.cpp
