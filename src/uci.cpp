@@ -301,7 +301,7 @@ namespace islay {
       [[nodiscard]] static bool is_debug_command(const std::string &c) noexcept {
         return c == "d" || c == "display" || c == "board" || c == "bench" || c == "test" ||
                c == "selftest" || c == "match" || c == "features" || c == "pcdata" ||
-               c == "train" || c == "backend" || c == "searchstats";
+               c == "train" || c == "backend" || c == "searchstats" || c == "tune";
       }
 
       void dispatch_debug(const std::string &cmd, std::istringstream &is) {
@@ -321,6 +321,8 @@ namespace islay {
           cmd_train(is);
         } else if (cmd == "backend") {
           std::cout << "movegen backend: " << movegen_backend() << '\n';
+        } else if (cmd == "tune") {
+          cmd_tune(is);
         } else if (cmd == "searchstats") {
           std::string sub;
           const bool  full = (is >> sub) && sub == "full";
@@ -1049,6 +1051,124 @@ namespace islay {
         // EvalFile left over from an earlier setoption would quietly change what is
         // being bootstrapped from.
         run_train(cfg, std::cout);
+      }
+
+      /**
+       * tune spsa [iters] [movetime_ms] [eval] [seed] -- SPSA over SearchParams.
+       *
+       * Classic sign-SPSA, one colour-paired game pair per iteration: perturb every
+       * parameter by +-c_k simultaneously, play theta+ against theta- from a random
+       * opening (both colours), and step each parameter towards the side that won.
+       * One pair is a hopelessly noisy estimate on its own -- the method works because
+       * thousands of noisy steps average into the gradient, which is exactly the
+       * regime this engine can afford: in-process games at a small movetime are cheap.
+       *
+       * The RESULT IS A CANDIDATE, NOT A VERDICT. SPSA's own trajectory is not
+       * evidence; whatever it converges to must beat the shipped defaults in an
+       * independent match before anything changes.
+       */
+      void cmd_tune(std::istringstream &is) {
+        std::string sub;
+        if (!(is >> sub) || sub != "spsa") {
+          std::cout << "info error: expected 'tune spsa [iters] [movetime_ms] [eval] [seed]'\n";
+          return;
+        }
+        int    iters = 1000, mt = 20;
+        if (is >> iters && iters < 1) iters = 1000;
+        if (is >> mt && mt < 1) mt = 20;
+        std::string   ev;
+        PatternWeights w;
+        if (is >> ev && ev != "-" && !w.load(ev, std::cout))
+          return;
+        std::uint64_t seed = 0x9E3779B97F4A7C15ULL, sd = 0;
+        if (is >> sd && sd) seed = sd;
+
+        struct P { const char *name; double th, c0, lo, hi; };
+        SearchParams d0;
+        P th[] = {
+          {"fut1", (double)d0.fut1, 40, 50, 2000},   {"fut2", (double)d0.fut2, 70, 50, 2000},
+          {"fut3", (double)d0.fut3, 100, 50, 2500},  {"killer0", (double)d0.killer0, 9000, 1000, 1048576},
+          {"killer1", (double)d0.killer1, 4500, 500, 1048576}, {"mob_w", (double)d0.mob_w, 6, 1, 512},
+          {"hist_div", (double)d0.hist_div, 12, 1, 4096},      {"parity", (double)d0.parity_bonus, 1200, 0, 1048576},
+          {"sqv", (double)d0.sqv_mult, 2, 0, 128},
+        };
+        constexpr int kN = 9;
+        auto to_params = [&](const double *v) {
+          SearchParams p;
+          p.fut1 = (int)v[0]; p.fut2 = (int)v[1]; p.fut3 = (int)v[2];
+          p.killer0 = (int)v[3]; p.killer1 = (int)v[4]; p.mob_w = (int)v[5];
+          p.hist_div = std::max(1, (int)v[6]); p.parity_bonus = (int)v[7]; p.sqv_mult = (int)v[8];
+          return p;
+        };
+        auto rng = [&]() { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; return seed; };
+
+        Searcher sa(32), sb(32);
+        pattern_set_active(ev.empty() || ev == "-" ? nullptr : &w);
+        pattern_set_stage_interp(options_.stage_interp);
+
+        // One game: `first` plays Black. Returns Black's points {0, .5, 1}.
+        auto play = [&](Board b, Color stm, Searcher &black, Searcher &white) -> double {
+          std::ostringstream sink;
+          black.clear(); white.clear();
+          for (int ply = 0; ply < 80; ++ply) {
+            if (b.moves() == 0) {
+              const Board p = b.passed();
+              if (options_.rule != Rule::Othello || !p.has_moves()) break;
+              b = p; stm = ~stm; continue;
+            }
+            Searcher &sr = (stm == Color::Black) ? black : white;
+            const SearchResult r = sr.search(b, SearchLimits{0, 0, (double)mt}, options_.rule, stm, sink);
+            if (r.best == NOMOVE) break;
+            if (r.best == PASS) { b = b.passed(); stm = ~stm; continue; }
+            b = b.play(r.best); stm = ~stm;
+          }
+          const int diff = popcount(b.player) - popcount(b.opponent); // mover-relative
+          const int bd   = (stm == Color::Black) ? diff : -diff;
+          return bd > 0 ? 1.0 : (bd < 0 ? 0.0 : 0.5);
+        };
+
+        std::cout << "info string spsa: " << iters << " iters, movetime " << mt << "ms, "
+                  << (ev.empty() ? "handcrafted" : ev) << "\n";
+        for (int k = 1; k <= iters; ++k) {
+          const double ckd = std::pow((double)k, 0.101);
+          const double akd = std::pow((double)k + 50.0, 0.602);
+          double vp[kN], vm[kN]; int delta[kN];
+          for (int i = 0; i < kN; ++i) {
+            delta[i]        = (rng() & 1) ? 1 : -1;
+            const double ck = th[i].c0 / ckd;
+            vp[i] = std::clamp(th[i].th + ck * delta[i], th[i].lo, th[i].hi);
+            vm[i] = std::clamp(th[i].th - ck * delta[i], th[i].lo, th[i].hi);
+          }
+          sa.set_params(to_params(vp));
+          sb.set_params(to_params(vm));
+          // random legal opening, then BOTH colours (the same pairing the match uses)
+          Board ob = Board::start(); Color os = Color::Black; bool ok = true;
+          for (int i = 0; i < 6; ++i) {
+            Bitboard m = ob.moves();
+            if (!m) { ok = false; break; }
+            unsigned pick = (unsigned)(rng() % (unsigned)popcount(m));
+            while (pick-- > 0) m &= m - 1;
+            ob = ob.play(lsb(m)); os = ~os;
+          }
+          if (!ok || !ob.has_moves()) { --k; continue; }
+          const double s1 = play(ob, os, sa, sb);       // theta+ as Black
+          const double s2 = 1.0 - play(ob, os, sb, sa); // theta+ as White
+          const double r  = (s1 + s2) - 1.0;            // [-1, +1], + favours theta+
+          for (int i = 0; i < kN; ++i) {
+            const double ak = th[i].c0 * 0.25 / akd;
+            th[i].th        = std::clamp(th[i].th + ak * r * delta[i], th[i].lo, th[i].hi);
+          }
+          if (k % 100 == 0) {
+            std::cout << "info string spsa " << k << "/" << iters;
+            for (int i = 0; i < kN; ++i) std::cout << ' ' << th[i].name << '=' << (int)th[i].th;
+            std::cout << '\n';
+            std::cout.flush();
+          }
+        }
+        pattern_set_active(nullptr);
+        std::cout << "spsa done:";
+        for (int i = 0; i < kN; ++i) std::cout << ' ' << th[i].name << '=' << (int)th[i].th;
+        std::cout << '\n';
       }
 
       void cmd_test() {

@@ -45,6 +45,22 @@ namespace islay {
     double        inc_ms  = 0.0;
   };
 
+  /**
+   * The hand-guessed search constants, gathered so a tuner can move them. Every value
+   * here shipped as a constexpr somebody typed in; none of them was ever fitted. They
+   * are PER-SEARCHER so the match harness (and the SPSA loop) can give the two sides
+   * different values -- which is the entire point. Defaults reproduce the shipped
+   * constants exactly, and a Threads=1 search with defaults must stay byte-identical.
+   */
+  struct SearchParams {
+    int fut1 = 250, fut2 = 450, fut3 = 700; // futility margins at depth 1/2/3, centi-discs
+    int killer0 = 65536, killer1 = 32768;   // move-ordering bonus for the two killers
+    int mob_w   = 32;                       // ordering weight per opponent reply
+    int hist_div = 64;                      // history score divisor
+    int parity_bonus = 8192;                // endgame odd-quadrant ordering nudge
+    int sqv_mult = 8;                       // static square-value multiplier
+  };
+
   struct SearchResult {
     Square        best     = NOMOVE; // PASS if the mover must pass; NOMOVE if the game is over
     int           score    = 0;
@@ -128,6 +144,10 @@ namespace islay {
 
     /** Helper threads must not bump the shared generation; only the main search does. */
     void set_bump_age(bool on) noexcept { bump_age_ = on; }
+
+    /** Search-constant overrides for tuning; defaults are the shipped values. */
+    void set_params(const SearchParams &p) noexcept { params_ = p; }
+    [[nodiscard]] const SearchParams &params() const noexcept { return params_; }
 
     /** Adaptive time management: scale the soft budget by what iterative deepening
      *  LEARNS -- extend on a changed best move or a score drop, shrink when the move is
@@ -291,6 +311,7 @@ namespace islay {
     std::shared_ptr<TranspositionTable> tt_;
     bool                                bump_age_     = true;
     bool                                tm_adaptive_  = false; // fixed allocation ships until `match tma` wins
+    SearchParams                        params_;
     int                                 depth_offset_ = 0;
 
     std::vector<PatternState> ps_;

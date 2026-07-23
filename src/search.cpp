@@ -145,7 +145,6 @@ namespace islay {
     constexpr bool kUseStabilityCut = true;
     // Endgame parity move ordering (reorders only -> exact; oracle-checked).
     constexpr bool kUseParity     = true;
-    constexpr int  kParityBonus   = 1 << 13;
 
     /**
      * ProbCut. Unlike everything in the rejected list below, its numbers are FITTED,
@@ -423,7 +422,6 @@ namespace islay {
     // in this game, it is the whole point of mobility play. The premise is false.
 
     /** Futility margin by remaining depth, in centi-discs. Hand-guessed. */
-    constexpr int kFutilityMargin[4] = {0, 250, 450, 700};
 
     // Ordering only pays where the subtree it saves dwarfs its own cost:
     // play()+get_moves per move is ~120 instructions, so ordering ~10 moves costs
@@ -985,7 +983,8 @@ namespace islay {
     if (kUsePruning && selective_enabled_ && !solving && depth <= 3 && beta == alpha + 1) {
       if constexpr (kStats) ++sacc.fut_try;
       const int stand_pat = leaf_eval<Pat>(b, moves, ply, stm);
-      if (stand_pat + kFutilityMargin[depth] <= alpha) {
+      const int fut_margin = depth <= 1 ? params_.fut1 : (depth == 2 ? params_.fut2 : params_.fut3);
+      if (stand_pat + fut_margin <= alpha) {
         if constexpr (kStats) { ++sacc.fut_cut; stats_->flush(depth, pattern_stage(b.count()), SearchStats::All, sacc); }
         return stand_pat;
       }
@@ -1024,20 +1023,20 @@ namespace islay {
           if (sq == tt_move) {
             sm.score = 1 << 24;
           } else {
-            int s = kSquareValue[sq] * 8;
+            int s = kSquareValue[sq] * params_.sqv_mult;
             if constexpr (kUseKillers) {
               if (sq == killers_[ply][0])
-                s += 1 << 16;
+                s += params_.killer0;
               else if (sq == killers_[ply][1])
-                s += 1 << 15;
+                s += params_.killer1;
             }
             // Fewer replies for the opponent is the strongest cheap signal, but
             // it costs a get_moves per move -- only worth it deeper up the tree.
             if (depth >= kOrderMobilityMinDepth)
-              s -= 32 * popcount(sm.child.moves());
-            s += history_[sq] / 64;
+              s -= params_.mob_w * popcount(sm.child.moves());
+            s += history_[sq] / params_.hist_div;
             if (odd_quads & (1u << quadrant_of(sq)))
-              s += kParityBonus; // sq's quadrant has odd empties -> nudge it earlier
+              s += params_.parity_bonus; // sq's quadrant has odd empties -> nudge it earlier
             sm.score = s;
           }
         } else {
@@ -1183,7 +1182,7 @@ namespace islay {
       if (sq == res.best)
         list[n].score = 1 << 24;
       else
-        list[n].score = kSquareValue[sq] * 8 - 32 * popcount(list[n].child.moves());
+        list[n].score = kSquareValue[sq] * params_.sqv_mult - params_.mob_w * popcount(list[n].child.moves());
       ++n;
     }
 
