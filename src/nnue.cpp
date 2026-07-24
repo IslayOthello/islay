@@ -15,7 +15,8 @@
 
 namespace islay {
   namespace {
-    constexpr char kMagic[8] = {'I', 'S', 'L', 'A', 'Y', 'N', 'N', '2'};
+    constexpr char kMagic[8]  = {'I', 'S', 'L', 'A', 'Y', 'N', 'N', '2'}; // float emb (legacy)
+    constexpr char kMagic3[8] = {'I', 'S', 'L', 'A', 'Y', 'N', 'N', '3'}; // int16 emb (shipped)
 
     NnueNet g_net;
     bool    g_nnue_active = false;
@@ -94,17 +95,23 @@ namespace islay {
     return static_cast<int>(std::clamp(cd, -6399L, 6399L));
   }
 
+  // The shipped file (NN3) stores the embedding table as int16 -- exactly what inference
+  // reads, half the size, no float precision wasted on disk. NN2 (float emb) is still
+  // accepted so trained nets from before the format change load; a float NN2 is
+  // quantized on load, an int16 NN3 goes straight to emb16_.
   bool NnueNet::save(const std::string &path, std::ostream &log) const {
     std::FILE *f = std::fopen(path.c_str(), "wb");
     if (!f) {
       log << "info error: cannot write " << path << '\n';
       return false;
     }
-    std::uint32_t hidden = kNnueHidden, phases = 0 /* v2: per-stage */, stages = kStageCount;
+    std::vector<std::int16_t> q(emb_.size());
+    for (std::size_t i = 0; i < emb_.size(); ++i)
+      q[i] = static_cast<std::int16_t>(std::clamp(std::lround(emb_[i] * kNnueQuant), -32767L, 32767L));
+    std::uint32_t hidden = kNnueHidden, phases = 0, stages = kStageCount;
     std::uint64_t feat = feat_;
-    bool ok = std::fwrite(kMagic, 1, 8, f) == 8 && rw_all(f, &hidden, 4, true) && rw_all(f, &phases, 4, true) &&
-              rw_all(f, &stages, 4, true) && rw_all(f, &feat, 8, true) &&
-              rw_all(f, const_cast<float *>(emb_.data()), emb_.size() * 4, true) &&
+    bool ok = std::fwrite(kMagic3, 1, 8, f) == 8 && rw_all(f, &hidden, 4, true) && rw_all(f, &phases, 4, true) &&
+              rw_all(f, &stages, 4, true) && rw_all(f, &feat, 8, true) && rw_all(f, q.data(), q.size() * 2, true) &&
               rw_all(f, const_cast<float *>(w2a_.data()), w2a_.size() * 4, true) &&
               rw_all(f, const_cast<float *>(w2h_.data()), w2h_.size() * 4, true) &&
               rw_all(f, const_cast<float *>(b2_.data()), b2_.size() * 4, true);
@@ -128,28 +135,40 @@ namespace islay {
     std::uint64_t feat = 0;
     bool hdr = std::fread(magic, 1, 8, f) == 8 && rw_all(f, &hidden, 4, false) && rw_all(f, &phases, 4, false) &&
                rw_all(f, &stages, 4, false) && rw_all(f, &feat, 8, false);
-    if (!hdr || std::memcmp(magic, kMagic, 8) != 0 || hidden != kNnueHidden || phases != 0 ||
-        stages != kStageCount || feat != pattern_weights_per_stage() + kNnueRFeat) {
+    const bool is3 = hdr && std::memcmp(magic, kMagic3, 8) == 0;
+    const bool is2 = hdr && std::memcmp(magic, kMagic, 8) == 0;
+    if (!hdr || (!is2 && !is3) || hidden != kNnueHidden || phases != 0 || stages != kStageCount ||
+        feat != pattern_weights_per_stage() + kNnueRFeat) {
       std::fclose(f);
-      log << "info error: " << path << " is not a compatible ISLAYNN2 net\n";
+      log << "info error: " << path << " is not a compatible ISLAY NNUE net\n";
       return false;
     }
     feat_ = feat;
-    emb_.resize(static_cast<std::size_t>(kStageCount) * feat_ * kNnueHidden);
+    const std::size_t embn = static_cast<std::size_t>(kStageCount) * feat_ * kNnueHidden;
     w2a_.resize(static_cast<std::size_t>(kStageCount) * kNnueHidden);
     w2h_.resize(static_cast<std::size_t>(kStageCount) * kNnueHidden);
     b2_.resize(kStageCount);
-    bool ok = rw_all(f, emb_.data(), emb_.size() * 4, false) && rw_all(f, w2a_.data(), w2a_.size() * 4, false) &&
-              rw_all(f, w2h_.data(), w2h_.size() * 4, false) && rw_all(f, b2_.data(), b2_.size() * 4, false);
+    bool ok;
+    if (is3) {
+      emb16_.resize(embn);
+      emb_.clear();
+      emb_.shrink_to_fit();
+      ok = rw_all(f, emb16_.data(), embn * 2, false);
+    } else {
+      emb_.resize(embn);
+      ok = rw_all(f, emb_.data(), embn * 4, false);
+    }
+    ok = ok && rw_all(f, w2a_.data(), w2a_.size() * 4, false) && rw_all(f, w2h_.data(), w2h_.size() * 4, false) &&
+         rw_all(f, b2_.data(), b2_.size() * 4, false);
     std::fclose(f);
     if (!ok) {
       log << "info error: short read from " << path << '\n';
       return false;
     }
     loaded_ = true;
-    const std::size_t mib = emb_.size() * sizeof(std::int16_t) / (1024 * 1024);
-    quantize();
-    log << "info string nnue: loaded " << path << " (" << mib << " MiB quantized)\n";
+    if (is2)
+      quantize(); // float NN2 -> the int16 inference table
+    log << "info string nnue: loaded " << path << " (" << (emb16_.size() * 2 / (1024 * 1024)) << " MiB)\n";
     return true;
   }
 
