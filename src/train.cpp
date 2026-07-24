@@ -541,6 +541,7 @@ namespace islay {
 
     if (!net.save(cfg.out, log))
       return res;
+    net.quantize(); // the float table just went to disk; inference wants the int16 one
     log << "ntrain done: " << res.games << " games, " << res.positions << " positions/epoch -> " << cfg.out << '\n'
         << "  NOTE: strength is settled by match, never by rmse. A/B via fastothello:\n"
         << "        EvalFile " << cfg.out << "  vs  the teacher .pat\n";

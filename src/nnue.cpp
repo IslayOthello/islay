@@ -32,10 +32,20 @@ namespace islay {
   void NnueNet::reset() {
     feat_ = pattern_weights_per_stage() + kNnueRFeat;
     emb_.assign(static_cast<std::size_t>(kStageCount) * feat_ * kNnueHidden, 0.0f);
+    emb16_.clear(); // stale inference table must not outlive the weights it mirrored
     w2a_.assign(static_cast<std::size_t>(kStageCount) * kNnueHidden, 0.0f);
     w2h_.assign(static_cast<std::size_t>(kStageCount) * kNnueHidden, 0.0f);
     b2_.assign(kStageCount, 0.0f);
     loaded_ = true;
+  }
+
+  void NnueNet::quantize() {
+    emb16_.resize(emb_.size());
+    for (std::size_t i = 0; i < emb_.size(); ++i)
+      emb16_[i] = static_cast<std::int16_t>(
+          std::clamp(std::lround(emb_[i] * kNnueQuant), -32767L, 32767L));
+    emb_.clear();
+    emb_.shrink_to_fit(); // inference never reads the float table; 80MB back to the OS
   }
 
   int NnueNet::score(const std::uint32_t *idx, int n, int stage) const noexcept {
@@ -45,20 +55,25 @@ namespace islay {
     // lines are usually COLD, and the real cost is DRAM. All row addresses are known
     // up front, so they are prefetched in one burst before any is consumed: the
     // misses overlap each other instead of the (short) add chain.
-    const float *base = emb_.data() + static_cast<std::size_t>(stage) * feat_ * kNnueHidden;
+    const std::int16_t *base = emb16_.data() + static_cast<std::size_t>(stage) * feat_ * kNnueHidden;
     for (int i = 0; i < n; ++i)
       __builtin_prefetch(base + static_cast<std::size_t>(idx[i]) * kNnueHidden, 0, 0);
     const float *a = w2a_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
     const float *h = w2h_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
     float        s;
+    constexpr float kInv = 1.0f / kNnueQuant;
 #if defined(__ARM_NEON)
     static_assert(kNnueHidden == 8, "the NEON path is written for H = 8");
-    float32x4_t acc0 = vdupq_n_f32(0.0f), acc1 = vdupq_n_f32(0.0f);
+    // int16 rows, widening int32 accumulate: 55 rows x |value| <= 32767 cannot
+    // overflow 32 bits. One 16-byte load per row is the whole point (nnue.hpp).
+    int32x4_t s0 = vdupq_n_s32(0), s1 = vdupq_n_s32(0);
     for (int i = 0; i < n; ++i) {
-      const float *row = base + static_cast<std::size_t>(idx[i]) * kNnueHidden;
-      acc0             = vaddq_f32(acc0, vld1q_f32(row));
-      acc1             = vaddq_f32(acc1, vld1q_f32(row + 4));
+      const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[i]) * kNnueHidden);
+      s0                  = vaddw_s16(s0, vget_low_s16(row));
+      s1                  = vaddw_s16(s1, vget_high_s16(row));
     }
+    const float32x4_t acc0 = vmulq_n_f32(vcvtq_f32_s32(s0), kInv);
+    const float32x4_t acc1 = vmulq_n_f32(vcvtq_f32_s32(s1), kInv);
     // Per-stage head: linear skip term + relu term (see nnue.hpp). relu(x) * h ==
     // max(x,0) * h vectorises directly.
     const float32x4_t r0 = vmaxq_f32(acc0, vdupq_n_f32(0.0f));
@@ -69,18 +84,20 @@ namespace islay {
     sv                   = vmlaq_f32(sv, vld1q_f32(h + 4), r1);
     s                    = vaddvq_f32(sv) + b2_[static_cast<std::size_t>(stage)];
 #else
-    float acc[kNnueHidden] = {};
+    std::int32_t acci[kNnueHidden] = {};
     for (int i = 0; i < n; ++i) {
-      const float *row = base + static_cast<std::size_t>(idx[i]) * kNnueHidden;
+      const std::int16_t *row = base + static_cast<std::size_t>(idx[i]) * kNnueHidden;
       for (int j = 0; j < kNnueHidden; ++j)
-        acc[j] += row[j];
+        acci[j] += row[j];
     }
     // Per-stage head: linear skip term + relu term. The skip is what lets the net be
     // initialised AS the linear eval; the relu dimensions carry everything a linear
     // model cannot (see nnue.hpp).
     s = b2_[static_cast<std::size_t>(stage)];
-    for (int j = 0; j < kNnueHidden; ++j)
-      s += a[j] * acc[j] + (acc[j] > 0.0f ? h[j] * acc[j] : 0.0f);
+    for (int j = 0; j < kNnueHidden; ++j) {
+      const float aj = static_cast<float>(acci[j]) * kInv;
+      s += a[j] * aj + (aj > 0.0f ? h[j] * aj : 0.0f);
+    }
 #endif
     // The net works in DISCS; the engine speaks centi-discs, clamped inside the
     // terminal range exactly like the linear eval (eval.cpp's kEvalMax contract).
@@ -141,7 +158,9 @@ namespace islay {
       return false;
     }
     loaded_ = true;
-    log << "info string nnue: loaded " << path << " (" << (emb_.size() * 4 / (1024 * 1024)) << " MiB)\n";
+    const std::size_t mib = emb_.size() * sizeof(std::int16_t) / (1024 * 1024);
+    quantize();
+    log << "info string nnue: loaded " << path << " (" << mib << " MiB quantized)\n";
     return true;
   }
 

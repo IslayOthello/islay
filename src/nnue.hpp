@@ -46,6 +46,7 @@ namespace islay {
 
   inline constexpr int kNnueHidden = 8;
   inline constexpr int kNnueRFeat  = 4; // the appended r = (discs-4)%4 one-hot rows
+  inline constexpr float kNnueQuant = 64.0f; // int16 grid: 1/64 disc ~ 1.6 cd per step
 
   class NnueNet {
   public:
@@ -63,20 +64,31 @@ namespace islay {
      */
     [[nodiscard]] int score(const std::uint32_t *idx, int n, int stage) const noexcept;
 
-    // Trainer access: everything is plain float, laid out flat.
+    // Trainer access: training runs on the float table, laid out flat.
     [[nodiscard]] float *emb() noexcept { return emb_.data(); }
     [[nodiscard]] float *w2a() noexcept { return w2a_.data(); }
     [[nodiscard]] float *w2h() noexcept { return w2h_.data(); }
     [[nodiscard]] float *b2() noexcept { return b2_.data(); }
     [[nodiscard]] std::size_t features() const noexcept { return feat_; } // per_stage + kNnueRFeat
 
+    /**
+     * Build the int16 inference table from the float one and DROP the float one.
+     * The file stays float (training precision); inference wants bandwidth: a row
+     * becomes 16 bytes, the 80MB table 40MB, and the misses that dominated the
+     * leaf cost halve. 1/64-disc resolution loses ~3 cd of accumulated rounding
+     * against an eval whose own error is measured in hundreds. Called by load();
+     * a trainer that keeps the net live calls it after save().
+     */
+    void quantize();
+
   private:
-    std::vector<float> emb_;  // [kStageCount][feat_][kNnueHidden]
-    std::vector<float> w2a_;  // [kStageCount][kNnueHidden]
-    std::vector<float> w2h_;  // [kStageCount][kNnueHidden]
-    std::vector<float> b2_;   // [kStageCount]
-    std::size_t        feat_ = 0;
-    bool               loaded_ = false;
+    std::vector<float>        emb_;   // [kStageCount][feat_][kNnueHidden], training + file IO
+    std::vector<std::int16_t> emb16_; // same layout, x kNnueQuant -- what score() reads
+    std::vector<float>        w2a_;   // [kStageCount][kNnueHidden]
+    std::vector<float>        w2h_;   // [kStageCount][kNnueHidden]
+    std::vector<float>        b2_;    // [kStageCount]
+    std::size_t               feat_ = 0;
+    bool                      loaded_ = false;
   };
 
   /** The active net, or null. Loaded via `setoption EvalFile <file>.nnue`. */
