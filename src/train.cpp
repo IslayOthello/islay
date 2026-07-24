@@ -5,8 +5,10 @@
 #include "train.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 #include "eval.hpp"
@@ -349,25 +351,59 @@ namespace islay {
     log.flush();
 
     // --- phase 1: generate (the teacher is the loaded linear eval) --------------
-    Rng               rng{cfg.seed ? cfg.seed : 0x9E3779B97F4A7C15ULL};
-    Searcher          s(32);
-    TrainConfig       gen; // reuse play_one's contract for the game loop
+    // Games are independent, so generation fans out across threads: each worker has
+    // its own Searcher, TT and Rng, and the shared eval weights are read-only during
+    // a search. The fit that follows stays single-threaded (it is not the bottleneck).
+    TrainConfig gen; // reuse play_one's contract for the game loop
     gen.depth         = cfg.depth;
     gen.opening_plies = cfg.opening_plies;
     gen.solve_empties = cfg.solve_empties;
     gen.rule          = cfg.rule;
-    std::vector<Game> games;
-    games.reserve(static_cast<std::size_t>(cfg.games));
-    for (int i = 0; i < cfg.games; ++i) {
-      Game g;
-      s.clear();
-      if (play_one(g, s, rng, gen))
-        games.push_back(g);
-      if ((i + 1) % 5000 == 0) {
-        log << "info string ntrain: generated " << games.size() << "/" << (i + 1) << " games\n";
-        log.flush();
+
+    const std::uint64_t seed0 = cfg.seed ? cfg.seed : 0x9E3779B97F4A7C15ULL;
+    unsigned            nthreads = std::thread::hardware_concurrency();
+    if (nthreads < 1)
+      nthreads = 1;
+    if (static_cast<int>(nthreads) > cfg.games)
+      nthreads = static_cast<unsigned>(cfg.games);
+
+    std::vector<std::vector<Game>> parts(nthreads);
+    std::atomic<int>               done{0};
+    const auto worker = [&](unsigned t) {
+      Rng      rng{seed0 + static_cast<std::uint64_t>(t) * 0x9E3779B97F4A7C15ULL};
+      Searcher s(32);
+      const int lo = static_cast<int>(static_cast<std::uint64_t>(cfg.games) * t / nthreads);
+      const int hi = static_cast<int>(static_cast<std::uint64_t>(cfg.games) * (t + 1) / nthreads);
+      parts[t].reserve(static_cast<std::size_t>(hi - lo));
+      for (int i = lo; i < hi; ++i) {
+        Game g;
+        s.clear();
+        if (play_one(g, s, rng, gen))
+          parts[t].push_back(g);
+        const int n = done.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (t == 0 && (n % 20000) == 0) {
+          log << "info string ntrain: generated ~" << n << "/" << cfg.games << " games\n";
+          log.flush();
+        }
       }
+    };
+    std::vector<std::thread> pool;
+    for (unsigned t = 1; t < nthreads; ++t)
+      pool.emplace_back(worker, t);
+    worker(0);
+    for (auto &th : pool)
+      th.join();
+
+    std::vector<Game> games;
+    std::size_t       total = 0;
+    for (auto &p : parts)
+      total += p.size();
+    games.reserve(total);
+    for (auto &p : parts) {
+      games.insert(games.end(), p.begin(), p.end());
+      p = {};
     }
+    Rng rng{seed0}; // drives the fit's shuffles (single-threaded, deterministic)
     if (games.empty()) {
       log << "info string ntrain: no games generated\n";
       return res;
