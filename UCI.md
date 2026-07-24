@@ -207,7 +207,7 @@ setoption name <name> value <value>
 | Name | Type | Default | Accepted values / effect |
 |---|---|---|---|
 | `Rule` | `combo` | `Othello` | `Othello` or `Reversi` |
-| `EvalFile` | `string` | Empty | Path to an ISLAYPAT pattern-weight file; an empty value restores the built-in evaluation |
+| `EvalFile` | `string` | Empty | Path to an evaluation file; an empty value restores the built-in evaluation. A `.nnue` file loads the NNUE-lite network (strongest; `weights/v19.nnue`), any other path loads ISLAYPAT pattern weights (`weights/v18.pat`) |
 | `OwnBook` | `check` | `false` | Play instantly from the opening book when it contains the position |
 | `BookFile` | `string` | Empty | Path to an opening-book file; an empty value disables the book |
 | `StageInterpolation` | `check` | `true` | Linearly interpolates the pattern evaluation across game-stage boundaries |
@@ -220,7 +220,7 @@ Examples:
 ```text
 setoption name Rule value Reversi
 setoption name Hash value 512
-setoption name EvalFile value weights/v18.pat
+setoption name EvalFile value weights/v19.nnue
 setoption name StageInterpolation value false
 ```
 
