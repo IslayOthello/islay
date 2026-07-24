@@ -45,6 +45,16 @@ namespace islay {
                          o.eval_file = v; // uci.cpp loads it; empty keeps the hand-written eval
                          return true;
                        }},
+            OptionSpec{"OwnBook", "check", "false", {}, 0, 0,
+                       [](Options &o, const std::string &v) {
+                         o.own_book = iequals(v, "true") || v == "1";
+                         return true;
+                       }},
+            OptionSpec{"BookFile", "string", "", {}, 0, 0,
+                       [](Options &o, const std::string &v) {
+                         o.book_file = v; // uci.cpp loads it; empty = no book
+                         return true;
+                       }},
             // Linear interpolation of the pattern eval across stage boundaries. MEASURED
             // +58/+66 Elo (fixed depth 6, two seeds) on weights/v12.pat; default off keeps
             // the baseline byte-identical, so it is opt-in until a set is trained for it.

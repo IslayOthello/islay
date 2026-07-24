@@ -54,6 +54,7 @@ add_executable(islay
         main.cpp
         src/movegen.cpp
         src/board.cpp
+        src/book.cpp
         src/eval.cpp
         src/match.cpp
         src/options.cpp

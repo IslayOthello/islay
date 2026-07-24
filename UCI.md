@@ -75,6 +75,8 @@ id name islay 0.1.0
 id author islay
 option name Rule type combo default Othello var Othello var Reversi
 option name EvalFile type string default
+option name OwnBook type check default false
+option name BookFile type string default
 option name StageInterpolation type check default true
 option name PerftHash type spin default 256 min 1 max 65536
 option name Threads type spin default 1 min 1 max 64
@@ -206,6 +208,8 @@ setoption name <name> value <value>
 |---|---|---|---|
 | `Rule` | `combo` | `Othello` | `Othello` or `Reversi` |
 | `EvalFile` | `string` | Empty | Path to an ISLAYPAT pattern-weight file; an empty value restores the built-in evaluation |
+| `OwnBook` | `check` | `false` | Play instantly from the opening book when it contains the position |
+| `BookFile` | `string` | Empty | Path to an opening-book file; an empty value disables the book |
 | `StageInterpolation` | `check` | `true` | Linearly interpolates the pattern evaluation across game-stage boundaries |
 | `Threads` | `spin` | `1` | Search threads (lazy SMP); range `1`–`64` |
 | `Hash` | `spin` | `256` | Search transposition-table size in MiB; range `1`–`65536` |

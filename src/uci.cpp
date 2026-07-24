@@ -49,6 +49,7 @@
 #include <vector>
 
 #include "board.hpp"
+#include "book.hpp"
 #include "eval.hpp"
 #include "match.hpp"
 #include "movegen.hpp"
@@ -175,6 +176,7 @@ namespace islay {
       int      search_tt_mib_ = 256; // tracks Options::hash_mib
       PerftTT  tt_{256};
       Searcher searcher_{256};
+      Book     book_{};
       bool     debug_ = false; // `debug on` unlocks the development commands
 
       // At most one search at a time. `joinable()` IS the "is a search running" flag --
@@ -314,7 +316,7 @@ namespace islay {
       [[nodiscard]] static bool is_debug_command(const std::string &c) noexcept {
         return c == "d" || c == "display" || c == "board" || c == "bench" || c == "test" ||
                c == "selftest" || c == "match" || c == "features" || c == "pcdata" ||
-               c == "train" || c == "ntrain" || c == "backend" || c == "searchstats" || c == "tune";
+               c == "train" || c == "ntrain" || c == "book" || c == "backend" || c == "searchstats" || c == "tune";
       }
 
       void dispatch_debug(const std::string &cmd, std::istringstream &is) {
@@ -334,6 +336,8 @@ namespace islay {
           cmd_train(is);
         } else if (cmd == "ntrain") {
           cmd_ntrain(is);
+        } else if (cmd == "book") {
+          cmd_book(is);
         } else if (cmd == "backend") {
           std::cout << "movegen backend: " << movegen_backend() << '\n';
         } else if (cmd == "tune") {
@@ -433,6 +437,12 @@ namespace islay {
             } else if (!pattern_weights().load(ev, std::cout)) {
               pattern_weights().unload();
             }
+          }
+          if (lname == "bookfile") {
+            if (options_.book_file.empty())
+              book_.clear();
+            else if (!book_.load(options_.book_file, std::cout))
+              book_.clear(); // a failed load leaves no stale book active
           }
           std::cout << "info string option " << name << " = " << value << '\n';
         } else {
@@ -568,6 +578,17 @@ namespace islay {
           if (!(is >> tok))
             break;
         }
+        // Opening book: if it recommends a move here, play it at once and skip the
+        // search entirely. `go infinite` is analysis and keeps searching.
+        if (options_.own_book && book_.loaded() && !infinite) {
+          const Square bm = book_.probe(board_, stm_);
+          if (bm != NOMOVE) {
+            say("info string book move\n");
+            say("bestmove " + square_to_string(bm) + "\n");
+            return;
+          }
+        }
+
         // A bare `go` still has to return a move; `go infinite` deliberately must not
         // get that default, which is the only thing distinguishing the two.
         if (!infinite && lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0 && lim.time_ms == 0.0)
@@ -1133,6 +1154,36 @@ namespace islay {
         run_ntrain(cfg, std::cout);
       }
 
+      // book gen [plies] [depth] [out]  -- build an opening book (uses the loaded EvalFile)
+      // book probe                      -- show the current position's book move, if any
+      void cmd_book(std::istringstream &is) {
+        std::string sub;
+        if (!(is >> sub) || sub == "probe") {
+          if (!book_.loaded()) {
+            std::cout << "info string book: none loaded (setoption name BookFile value <file>)\n";
+            return;
+          }
+          const Square bm = book_.probe(board_, stm_);
+          std::cout << "info string book: " << book_.size() << " positions, this position -> "
+                    << (bm == NOMOVE ? "(not in book)" : square_to_string(bm)) << '\n';
+          return;
+        }
+        if (sub != "gen") {
+          std::cout << "info error: expected 'book gen [plies] [depth] [out]' or 'book probe'\n";
+          return;
+        }
+        BookBuildConfig cfg;
+        cfg.rule = options_.rule;
+        if (!(is >> cfg.plies) || cfg.plies < 1)
+          cfg.plies = 8;
+        if (!(is >> cfg.depth) || cfg.depth < 1)
+          cfg.depth = 16;
+        std::string out;
+        if (is >> out && !out.empty())
+          cfg.out = out;
+        build_book(cfg, std::cout);
+      }
+
       /**
        * tune spsa [iters] [movetime_ms] [eval] [seed] -- SPSA over SearchParams.
        *
@@ -1275,9 +1326,13 @@ namespace islay {
         const bool pattern_ok = pattern_selftest();
         std::cout << (pattern_ok ? "ok\n" : "FAILED\n");
 
+        std::cout << "book self-test (probe symmetry mapping) ... " << std::flush;
+        const bool book_ok = book_selftest();
+        std::cout << (book_ok ? "ok\n" : "FAILED\n");
+
         constexpr std::array<std::uint64_t, 9> known{0, 4, 12, 56, 244, 1396, 8200, 55092, 390216};
         const Board                            start  = Board::start();
-        bool                                   all_ok = eval_ok && search_ok && pattern_ok;
+        bool                                   all_ok = eval_ok && search_ok && pattern_ok && book_ok;
         for (int d = 1; d <= 8; ++d) {
           const std::uint64_t got = perft(start, d, Rule::Othello);
           const bool          ok  = (got == known[static_cast<std::size_t>(d)]);
