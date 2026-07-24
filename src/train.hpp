@@ -112,16 +112,9 @@ namespace islay {
   /** Generate, fit, and write `cfg.out`. Progress streams to `log`. */
   TrainResult run_train(const TrainConfig &cfg, std::ostream &log);
 
-  /**
-   * NNUE-lite training (nnue.hpp). Same self-play pipeline, same disc-difference
-   * labels, same by-game validation split -- but the model is the two-layer net,
-   * fitted by backprop instead of the one-line linear step.
-   *
-   * REQUIRES loaded pattern weights (EvalFile): they are both the TEACHER that
-   * self-plays the games and the WARM START -- the net's skip path is initialised
-   * to the (phase-averaged) linear eval, so epoch 0 already plays at the teacher's
-   * level and training only has to learn the non-linear residue.
-   */
+  /** NNUE-lite training (nnue.hpp): same self-play pipeline and disc-diff labels as
+   *  run_train, but backprop over the two-layer net. Requires EvalFile loaded -- the
+   *  linear weights are both the teacher that plays the games and the warm start. */
   struct NTrainConfig {
     int           games         = 50000;
     int           epochs        = 10;

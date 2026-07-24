@@ -286,6 +286,9 @@ namespace islay {
      *  the 50ms this was measured at. Default ON; `match pcg4` is the A/B. */
     void set_probcut_gap4(bool on) noexcept { probcut_gap4_ = on; }
 
+    /** Null-move pruning. Default off; `match nmp` is the A/B. */
+    void set_nmp(bool on) noexcept { nmp_enabled_ = on; }
+
     /** Late move reduction, at runtime -- for an equal-time A/B of LMR itself. */
     void set_lmr_enabled(bool on) noexcept { lmr_enabled_ = on; }
 
@@ -342,6 +345,7 @@ namespace islay {
     bool               lmr_enabled_       = true;
     bool               lmr_calibrated_    = false; // MEASURED WORSE -- see lmr_reduction
     bool               lmp_enabled_       = false;
+    bool               nmp_enabled_       = false; // null-move pruning; ships off until `match nmp` wins
     bool               endgame_enabled_   = true;
     bool               aspiration_enabled_ = true;
     bool               mpc_perstage_      = false; // pooled per-depth by default; see kMpcFit note
@@ -399,7 +403,8 @@ namespace islay {
     // `stm` is threaded because pattern features are colour-ABSOLUTE and Board
     // carries no colour of its own.
     template<Rule R, bool Pat>
-    ISLAY_HOT ISLAY_FLATTEN int pvs(Board b, int depth, int alpha, int beta, int ply, Color stm) noexcept;
+    ISLAY_HOT ISLAY_FLATTEN int pvs(Board b, int depth, int alpha, int beta, int ply, Color stm,
+                                    bool can_null = true) noexcept;
     template<Rule R, bool Pat>
     void root_search(const Board &root, int depth, Color stm, int alpha, int beta, SearchResult &res) noexcept;
     template<bool Pat>

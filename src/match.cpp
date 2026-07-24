@@ -199,6 +199,8 @@ namespace islay {
     sb.set_tm_adaptive(cfg.tma_b);
     sa.set_wld(cfg.wld_a);
     sb.set_wld(cfg.wld_b);
+    sa.set_nmp(cfg.nmp_a);
+    sb.set_nmp(cfg.nmp_b);
 
     double sum = 0.0, sumsq = 0.0;         // over individual games -- diagnostic only
     double psum = 0.0, psumsq = 0.0;       // over PAIR means -- this is what the stats use

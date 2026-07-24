@@ -1,36 +1,19 @@
 /**
  * @file nnue.hpp
- * @brief A small non-linear evaluation ("NNUE-lite") over the existing pattern features.
+ * @brief NNUE-lite: a two-layer non-linear eval over the existing pattern features.
  *
- * WHY THIS EXISTS. The linear pattern eval is provably blind to any function that is
- * not a weighted sum of its windows -- and every eval feature that ever won here
- * (mobility +52, stability +12.7, parity +12.1, frontier +11.1) won precisely by
- * hand-delivering one such function as a new input. This is the general form of that
- * move: instead of a scalar weight per feature, each feature index selects a small
- * VECTOR (an embedding), the vectors of all active features are summed, and one
- * hidden non-linearity lets the network represent interactions between features that
- * no linear model can, however many windows it is given.
+ * Each feature index selects an 8-float embedding row instead of a scalar; the rows
+ * of the active features are summed, and a per-stage head adds a relu term the linear
+ * eval cannot express:
+ *     acc[j] = sum over active features f of E[stage][f][j]
+ *     score  = W2a[stage] . acc  +  W2h[stage] . relu(acc)  +  b2[stage]     (discs)
+ * from BLACK's point of view, like the linear eval. The skip term (W2a) lets a warm
+ * start reproduce v18 exactly (dim 0 = the v18 weight, W2a = (1,0,..)).
  *
- * SHAPE (v2).
- *     acc[j]  = sum over active features f of E[stage][f][j]         (j < kHidden)
- *     score   = W2a[stage] . acc  +  W2h[stage] . relu(acc)  +  b2[stage]
- * in DISCS (x100 for centi-discs), from BLACK's point of view like the linear eval.
- *
- * The FIRST version of this file bucketed embeddings by phase (3 stages each) to
- * save memory, and lost 57 Elo [-73, -42] to the linear eval at equal nodes. The
- * post-mortem was clean: that design threw away exactly the two properties this
- * project MEASURED to be the most valuable -- fine 4-disc stage resolution, and
- * stage interpolation (worth ~+58 on its own) which the net had no equivalent of.
- * Hence v2's deliberate choices:
- *   * Embeddings are PER STAGE (15 tables, H=8): dim 0 is initialised to the v18
- *     weight for THAT stage, so with W2a = (1,0,..) the warm start reproduces v18
- *     exactly -- not a phase-averaged approximation of it.
- *   * Interpolation becomes an INPUT: one extra feature, r = (discs-4)%4, appended
- *     as index per_stage + r. Four embedding rows per stage let the net learn its
- *     own within-bucket blend, per stage and non-linearly, for one extra gather.
- *   * A row is 8 floats = 32 bytes, two rows per cache line: a leaf still touches
- *     ~the same number of lines as the linear eval -- the added cost is arithmetic,
- *     not memory traffic, and arithmetic is what the machine has spare.
+ * Per-stage tables, not phase-bucketed: v1 bucketed by phase and lost 57 Elo, having
+ * dropped the two most-valuable measured properties (4-disc stage resolution + stage
+ * interpolation). Interpolation returns as an INPUT here: r = (discs-4)%4 appended as
+ * a feature (kNnueRFeat rows/stage), so the net learns its own within-bucket blend.
  */
 #ifndef ISLAY_NNUE_HPP
 #define ISLAY_NNUE_HPP
@@ -71,14 +54,9 @@ namespace islay {
     [[nodiscard]] float *b2() noexcept { return b2_.data(); }
     [[nodiscard]] std::size_t features() const noexcept { return feat_; } // per_stage + kNnueRFeat
 
-    /**
-     * Build the int16 inference table from the float one and DROP the float one.
-     * The file stays float (training precision); inference wants bandwidth: a row
-     * becomes 16 bytes, the 80MB table 40MB, and the misses that dominated the
-     * leaf cost halve. 1/64-disc resolution loses ~3 cd of accumulated rounding
-     * against an eval whose own error is measured in hundreds. Called by load();
-     * a trainer that keeps the net live calls it after save().
-     */
+    /** Build the int16 inference table (x kNnueQuant) from the float one and drop the
+     *  float one: halves the table so the cold misses that dominate the leaf halve too.
+     *  Called by load(); a trainer that keeps the net live calls it after save(). */
     void quantize();
 
   private:

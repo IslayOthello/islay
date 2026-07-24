@@ -74,6 +74,8 @@ namespace islay {
     bool          tma_b = false;
     bool          wld_a = false;    // Win/Loss/Draw solve at the solving iteration (timed only)
     bool          wld_b = false;
+    bool          nmp_a = false;    // null-move pruning per side
+    bool          nmp_b = false;
   };
 
   struct MatchResult {

@@ -58,6 +58,13 @@ namespace islay {
     // while extensions stay safe because they only ever look deeper.
     constexpr bool kUseExtensions = true;
     constexpr bool kUsePruning    = true;
+    // Null-move pruning. Default OFF at the flag until a match clears the bar; the
+    // constexpr stays true so the code builds and the block is one runtime bool away.
+    constexpr bool kUseNmp        = true;
+    constexpr int  kNmpMinDepth   = 3; // need room for the R+1 reduction to leave depth >= 1
+    constexpr int  kNmpMinEmpties = 10; // above the endgame-parity zone where a pass can beat a move
+    constexpr int  kNmpBaseR      = 2;
+    constexpr int  kNmpDepthDiv   = 6; // R = base + depth/div: deeper nodes reduce harder
     // OFF: measured -101 Elo. Kept, unlike the four rejects below, because its
     // premise is sound and it is blocked by ONE number that a trained eval fixes.
     // Full story and the exact revival procedure at kProbCutFit.
@@ -830,7 +837,7 @@ namespace islay {
   }
 
   template<Rule R, bool Pat>
-  int Searcher::pvs(Board b, int depth, int alpha, int beta, int ply, Color stm) noexcept {
+  int Searcher::pvs(Board b, int depth, int alpha, int beta, int ply, Color stm, bool can_null) noexcept {
     if (stopped_)
       return 0;
     ++nodes_;
@@ -1017,6 +1024,34 @@ namespace islay {
       // to cut it failed LOW there and its stored move is only the least-bad under a
       // window nobody asked about. Overriding ordering that already gets a first-move
       // cutoff 82.7% of the time with that move makes it worse, not better.
+    }
+
+    // Null-move pruning: give the opponent a free pass R+1 plies shallower; if we still
+    // hold beta, assume the real move would too and fail high without searching one.
+    // MEASURED -264 Elo per node and shipped OFF: the premise (a tempo is an asset) is
+    // false in Othello, where mobility strategy routinely makes passing PREFERABLE, so
+    // the interior cutoffs are spuriously fired all over the tree with no cheap
+    // verification to catch them. Cuts 58% of nodes and loses almost every game. Kept
+    // behind the flag as the record; the oracle stays exact because selective_enabled_
+    // is off there. `match nmp`.
+    if (kUseNmp && nmp_enabled_ && selective_enabled_ && can_null && !solving && beta == alpha + 1 &&
+        depth >= kNmpMinDepth && 64 - b.count() > kNmpMinEmpties) {
+      const int stand_pat = leaf_eval<Pat>(b, moves, ply, stm);
+      if (stand_pat >= beta) {
+        const int   red    = kNmpBaseR + depth / kNmpDepthDiv;
+        const int   nd     = depth - red - 1 < 1 ? 1 : depth - red - 1;
+        const Board passed = b.passed(); // the heuristic pass: mover changes, no square does
+        if constexpr (Pat)
+          if (ply + 1 < kMaxPly)
+            ps_[ply + 1] = ps_[ply]; // a pass leaves every feature unchanged
+        const int score = -pvs<R, Pat>(passed, nd, -beta, -beta + 1, ply + 1, ~stm, /*can_null=*/false);
+        if (stopped_)
+          return 0;
+        if (score >= beta) {
+          if constexpr (kStats) { ++sacc.fut_cut; stats_->flush(depth, pattern_stage(b.count()), SearchStats::Cut, sacc); }
+          return score; // fail-soft lower bound
+        }
+      }
     }
 
     // Futility: at shallow depth, if even a generous swing above the static score
@@ -1520,37 +1555,11 @@ namespace islay {
       int        window = kAspWindow;
       int        alpha  = aspire ? centre - window : -kInf;
       int        beta   = aspire ? centre + window : kInf;
-      /**
-       * WIN/LOSS/DRAW solve. The solving iteration (d >= empties) normally computes
-       * the EXACT final margin with a full window. To PLAY correctly, the margin is
-       * unnecessary -- what is needed is a move that wins (or draws, or loses least),
-       * and a +-100 window answers that: disc differences are even, so any true win
-       * fails high past +100, any loss fails low past -100, and a value strictly
-       * inside is an exact draw. The narrow window bounds every subtree in the solve
-       * and lets the stability cutoff bite everywhere; measured on 12 positions at
-       * ~26 empties it is 7.0x fewer nodes and 5.7x less time than the exact solve.
-       * Cheaper means AFFORDABLE EARLIER -- roughly two empties sooner at a given
-       * budget, i.e. perfect play from two moves earlier in every game.
-       *
-       * Only under a TIMED search: `go depth` is analysis, and analysis wants the
-       * true margin, not a bound. Fail-soft keeps the root's best_move meaningful in
-       * all three outcomes (the winning move; the drawing move; the least-bad bound).
-       *
-       * MEASURED AND SHIPPED OFF (wld_enabled_ false), in two stages that are both
-       * worth remembering. The naive version -- play whatever the bound suggests --
-       * lost 15.2 Elo (CI [-32, 2], 320 games): in PROVEN-LOST positions the fail-low
-       * bounds barely rank the moves, and the opponent at that moment is NOT yet
-       * solved, so throwing away the least-bad margin throws away real swindle equity
-       * against a still-fallible opponent. Refining losses with a full-window
-       * re-search (below) removed that entirely -- but what remained measured only
-       * +4.7 Elo, CI [-5, 14], over 960 pairs at 3000+50ms. WHY so little for a 5.7x
-       * cheaper solve: the saving is banked as Fischer time in positions that are
-       * already decided, where it buys nothing; the true prize is solving ~2 empties
-       * earlier, which merely upgrades a couple of depth-20 heuristic moves --
-       * already nearly always correct -- to proven ones. Verdicts on all 12 test
-       * positions matched the exact solve, so the machinery is sound and stays behind
-       * the flag for longer time controls, where the solve window is wider.
-       */
+      // WIN/LOSS/DRAW solve: at the solving iteration a +-100 window answers win/loss/draw
+      // without the exact margin (diffs are even: win fails high past +100, loss past -100,
+      // inside = draw). ~7x fewer nodes, so affordable ~2 empties earlier. Timed only (`go
+      // depth` analysis wants the true margin). Off: measured +4.7 [-5,14], the saving banks
+      // as idle Fischer time in already-decided positions. `match wldtc`.
       bool wld = wld_enabled_ && (limits.movetime_ms > 0.0 || limits.time_ms > 0.0) && d >= empties;
       if (wld) {
         alpha = -100;
@@ -1571,14 +1580,9 @@ namespace islay {
         if (stopped_)
           break;
         if (wld) {
-          // A proven WIN or DRAW is played as-is: any winning move keeps the win, any
-          // drawing move keeps at least the draw, and the whole 5.7x saving is kept.
-          // A proven LOSS is different -- the fail-low bounds barely rank the moves,
-          // and the OPPONENT IS NOT SOLVED YET: against a fallible opponent the move
-          // that loses by two is worth far more than the one that loses by forty.
-          // Playing an arbitrary bound move here measured -15 Elo. So a loss is
-          // REFINED: re-search full-window for the exact margins, on a table the WLD
-          // pass just warmed. Only lost positions pay; the others bank the saving.
+          // Win/draw: play the bound move as-is. Loss: the fail-low bounds barely rank
+          // moves and the opponent is not solved either, so re-search full-window for the
+          // least-bad margin (measured -15 without this). Only losses pay the re-search.
           if (it.score <= -100 && !stopped_) {
             wld   = false;
             alpha = -kInf;

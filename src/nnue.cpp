@@ -49,12 +49,8 @@ namespace islay {
   }
 
   int NnueNet::score(const std::uint32_t *idx, int n, int stage) const noexcept {
-    // Sum the active features' embedding rows. A row is kNnueHidden floats = 32
-    // bytes, two rows per cache line, so a leaf touches about as many lines as the
-    // linear eval did -- but this table is 80MB where the linear one is 5MB, so the
-    // lines are usually COLD, and the real cost is DRAM. All row addresses are known
-    // up front, so they are prefetched in one burst before any is consumed: the
-    // misses overlap each other instead of the (short) add chain.
+    // The rows are scattered across a cold 40MB table, so their addresses are all
+    // prefetched up front to overlap the misses before any row is summed.
     const std::int16_t *base = emb16_.data() + static_cast<std::size_t>(stage) * feat_ * kNnueHidden;
     for (int i = 0; i < n; ++i)
       __builtin_prefetch(base + static_cast<std::size_t>(idx[i]) * kNnueHidden, 0, 0);
@@ -64,8 +60,7 @@ namespace islay {
     constexpr float kInv = 1.0f / kNnueQuant;
 #if defined(__ARM_NEON)
     static_assert(kNnueHidden == 8, "the NEON path is written for H = 8");
-    // int16 rows, widening int32 accumulate: 55 rows x |value| <= 32767 cannot
-    // overflow 32 bits. One 16-byte load per row is the whole point (nnue.hpp).
+    // int16 rows into a widening int32 accumulate (n rows x <=32767 fits 32 bits).
     int32x4_t s0 = vdupq_n_s32(0), s1 = vdupq_n_s32(0);
     for (int i = 0; i < n; ++i) {
       const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[i]) * kNnueHidden);
@@ -74,9 +69,7 @@ namespace islay {
     }
     const float32x4_t acc0 = vmulq_n_f32(vcvtq_f32_s32(s0), kInv);
     const float32x4_t acc1 = vmulq_n_f32(vcvtq_f32_s32(s1), kInv);
-    // Per-stage head: linear skip term + relu term (see nnue.hpp). relu(x) * h ==
-    // max(x,0) * h vectorises directly.
-    const float32x4_t r0 = vmaxq_f32(acc0, vdupq_n_f32(0.0f));
+    const float32x4_t r0 = vmaxq_f32(acc0, vdupq_n_f32(0.0f)); // relu
     const float32x4_t r1 = vmaxq_f32(acc1, vdupq_n_f32(0.0f));
     float32x4_t       sv = vmulq_f32(vld1q_f32(a), acc0);
     sv                   = vmlaq_f32(sv, vld1q_f32(a + 4), acc1);
@@ -90,17 +83,13 @@ namespace islay {
       for (int j = 0; j < kNnueHidden; ++j)
         acci[j] += row[j];
     }
-    // Per-stage head: linear skip term + relu term. The skip is what lets the net be
-    // initialised AS the linear eval; the relu dimensions carry everything a linear
-    // model cannot (see nnue.hpp).
     s = b2_[static_cast<std::size_t>(stage)];
     for (int j = 0; j < kNnueHidden; ++j) {
       const float aj = static_cast<float>(acci[j]) * kInv;
       s += a[j] * aj + (aj > 0.0f ? h[j] * aj : 0.0f);
     }
 #endif
-    // The net works in DISCS; the engine speaks centi-discs, clamped inside the
-    // terminal range exactly like the linear eval (eval.cpp's kEvalMax contract).
+    // discs -> centi-discs, clamped inside the terminal range like the linear eval.
     const long cd = std::lround(static_cast<double>(s) * 100.0);
     return static_cast<int>(std::clamp(cd, -6399L, 6399L));
   }

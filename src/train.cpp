@@ -375,21 +375,18 @@ namespace islay {
     res.games = games.size();
 
     // --- phase 2: init ----------------------------------------------------------
-    // The net works in DISCS (labels /100): with cd-scale activations the head
-    // gradients would be ~10^5 per sample and no single lr fits both layers.
+    // Train in DISCS (labels /100): cd-scale activations would give ~1e5 head
+    // gradients and no single lr would fit both layers.
     NnueNet &net = nnue_net();
     net.reset();
     float *emb = net.emb(), *w2a = net.w2a(), *w2h = net.w2h(), *b2 = net.b2();
-    (void) b2; // init 0; the bias FEATURE row carries the linear eval's bias already
+    (void) b2; // starts 0; the bias feature row already carries the linear eval's bias
 
     const auto frand = [&](float a) { // uniform in [-a, a]
       return (static_cast<float>(rng.next() >> 40) / 16777216.0f * 2.0f - 1.0f) * a;
     };
-    // Identity warm start: dim 0 = the teacher's weight for THAT stage, exactly --
-    // the v1 phase-averaged init cost 57 Elo before training even started (nnue.hpp).
-    // The r rows start at 0 on dim 0 (v18 has no such term; the within-bucket blend
-    // is training's to learn) and the other dims start as small symmetry-breaking
-    // noise, passed through by the heads' dim-0-only skip.
+    // Warm start = the teacher: emb dim 0 = the v18 weight for that stage, W2a dim 0 = 1,
+    // everything else small noise. r rows start at 0 (v18 has no interp term to copy).
     const std::size_t   fper = per + kNnueRFeat; // net feature space: per_stage + r rows
     const std::int16_t *w18  = pattern_weights().data();
     for (int st = 0; st < kStageCount; ++st)
@@ -458,7 +455,7 @@ namespace islay {
           ++count;
 
           if (update) {
-            float dacc[H]; // with the CURRENT heads, before they move
+            float dacc[H]; // d(loss)/d(acc), using the heads BEFORE they step
             for (int j = 0; j < H; ++j) {
               dacc[j] = err * (a[j] + (acc[j] > 0.0f ? h[j] : 0.0f));
               a[j] -= lro * err * acc[j];
@@ -491,15 +488,13 @@ namespace islay {
       return count ? std::sqrt(sse / static_cast<double>(count)) * 100.0 : 0.0; // cd
     };
 
-    // Warm-start sanity: the skip path should already predict at roughly the
-    // teacher's fit before a single gradient step. If this prints garbage the
-    // init is wrong and training would only polish a bug.
+    // Sanity: the warm start should already fit near the teacher before any step.
     log << "info string ntrain: warm-start val_rmse " << static_cast<int>(nval ? pass(0, nval, false, nullptr) : 0.0)
         << " cd\n";
     log.flush();
 
-    // Early stopping by snapshot, exactly like the linear trainer: train the whole
-    // budget, keep the epoch with the best held-out fit.
+    // Early stop by snapshot (like the linear trainer): train the full budget, keep
+    // the best-held-out epoch.
     std::vector<float> best_emb, best_a, best_h, best_b;
     double             best_val = 1e30;
     int                best_ep  = 0;
