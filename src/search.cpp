@@ -610,6 +610,7 @@ namespace islay {
     tt_->clear();
     std::memset(killers_, 0, sizeof killers_);
     std::memset(history_, 0, sizeof history_);
+    std::memset(continuation_history_, 0, sizeof continuation_history_);
   }
 
   void Searcher::new_search(const SearchLimits &limits) noexcept {
@@ -837,7 +838,8 @@ namespace islay {
   }
 
   template<Rule R, bool Pat>
-  int Searcher::pvs(Board b, int depth, int alpha, int beta, int ply, Color stm, bool can_null) noexcept {
+  int Searcher::pvs(Board b, int depth, int alpha, int beta, int ply, Color stm, Square prev_move,
+                    bool can_null) noexcept {
     if (stopped_)
       return 0;
     ++nodes_;
@@ -870,7 +872,7 @@ namespace islay {
           if constexpr (Pat)
             if (ply + 1 < kMaxPly)
             ps_[ply + 1] = ps_[ply];
-          return -pvs<R, Pat>(passed, depth, -beta, -alpha, ply + 1, ~stm);
+          return -pvs<R, Pat>(passed, depth, -beta, -alpha, ply + 1, ~stm, prev_move);
         }
       }
       return terminal_score(b);
@@ -987,7 +989,7 @@ namespace islay {
       // v_d >= beta  <=  a*v_{d-2} + b - t*sigma >= beta
       const int hi = static_cast<int>((static_cast<float>(beta) + probcut_t_ * f.sigma - f.b) / f.a);
       const bool try_hi = !probcut_gate_enabled_ || (predf + gate >= static_cast<float>(hi));
-      if (try_hi && hi < kScoreMax && pvs<R, Pat>(b, d2, hi - 1, hi, ply, stm) >= hi) {
+      if (try_hi && hi < kScoreMax && pvs<R, Pat>(b, d2, hi - 1, hi, ply, stm, prev_move) >= hi) {
         if constexpr (kStats) { ++sacc.pc_cut; sacc.pc_probe_nodes += nodes_ - pc0; stats_->flush(depth, sg, SearchStats::Cut, sacc); }
         return beta;
       }
@@ -998,7 +1000,7 @@ namespace islay {
       const std::uint64_t lo0 = kStats ? nodes_ : 0; // the lo-probe's own cost
       if constexpr (kStats)
         if (try_lo && lo > -kScoreMax) ++sacc.pc_lo_try;
-      if (try_lo && lo > -kScoreMax && pvs<R, Pat>(b, d2, lo, lo + 1, ply, stm) <= lo) {
+      if (try_lo && lo > -kScoreMax && pvs<R, Pat>(b, d2, lo, lo + 1, ply, stm, prev_move) <= lo) {
         if constexpr (kStats) {
           ++sacc.pc_cut; ++sacc.pc_lo_cut;
           sacc.pc_lo_nodes += nodes_ - lo0;
@@ -1044,7 +1046,8 @@ namespace islay {
         if constexpr (Pat)
           if (ply + 1 < kMaxPly)
             ps_[ply + 1] = ps_[ply]; // a pass leaves every feature unchanged
-        const int score = -pvs<R, Pat>(passed, nd, -beta, -beta + 1, ply + 1, ~stm, /*can_null=*/false);
+        const int score =
+                -pvs<R, Pat>(passed, nd, -beta, -beta + 1, ply + 1, ~stm, prev_move, /*can_null=*/false);
         if (stopped_)
           return 0;
         if (score >= beta) {
@@ -1133,6 +1136,10 @@ namespace islay {
             if (depth >= kOrderMobilityMinDepth)
               s -= params_.mob_w * popcount(sm.child.moves());
             s += history_[sq] / params_.hist_div;
+            // The previous placement carries local board context that the global
+            // destination-square history cannot distinguish. A pass preserves it.
+            if (prev_move < 64)
+              s += continuation_history_[prev_move][sq] / params_.hist_div;
             if (odd_regions & square_bb(sq))
               s += params_.parity_bonus; // sq's connected region has odd empties
             sm.score = s;
@@ -1191,10 +1198,10 @@ namespace islay {
 
       int s;
       if (ord == 0 || !kUsePVS) {
-        s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -beta, -alpha, ply + 1, ~stm);
+        s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -beta, -alpha, ply + 1, ~stm, sm.sq);
       } else {
         if constexpr (kStats) ++sacc.pvs_scout;
-        s = -pvs<R, Pat>(sm.child, depth - 1 + ext - red, -alpha - 1, -alpha, ply + 1, ~stm);
+        s = -pvs<R, Pat>(sm.child, depth - 1 + ext - red, -alpha - 1, -alpha, ply + 1, ~stm, sm.sq);
         // Calibration sample: was reducing THIS move at THIS (depth, ordinal) a mistake?
         if constexpr (kStats)
           if (red) stats_->lmr_sample(depth, ord, s > alpha);
@@ -1202,13 +1209,13 @@ namespace islay {
         // before trusting it.
         if (red && s > alpha) {
           if constexpr (kStats) ++sacc.lmr_re;
-          s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -alpha - 1, -alpha, ply + 1, ~stm);
+          s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -alpha - 1, -alpha, ply + 1, ~stm, sm.sq);
         }
         // Re-search with the FULL window (-beta,-alpha), not (-beta,-score).
         // `s < beta` is what keeps a zero-width window from ever re-searching.
         if (s > alpha && s < beta) {
           if constexpr (kStats) ++sacc.pvs_re;
-          s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -beta, -alpha, ply + 1, ~stm);
+          s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -beta, -alpha, ply + 1, ~stm, sm.sq);
         }
       }
       if (stopped_) {
@@ -1233,6 +1240,12 @@ namespace islay {
           if (history_[sm.sq] > (1 << 20)) // keep it from saturating
             for (int &h: history_)
               h >>= 1;
+          if (prev_move < 64) {
+            continuation_history_[prev_move][sm.sq] += depth * depth;
+            if (continuation_history_[prev_move][sm.sq] > (1 << 20))
+              for (int &h: continuation_history_[prev_move])
+                h >>= 1;
+          }
         }
         return 1;
       }
@@ -1348,11 +1361,11 @@ namespace islay {
 
       int s;
       if (i == 0 || !kUsePVS) {
-        s = -pvs<R, Pat>(sm.child, depth - 1, -beta, -alpha, 1, ~stm);
+        s = -pvs<R, Pat>(sm.child, depth - 1, -beta, -alpha, 1, ~stm, sm.sq);
       } else {
-        s = -pvs<R, Pat>(sm.child, depth - 1, -alpha - 1, -alpha, 1, ~stm);
+        s = -pvs<R, Pat>(sm.child, depth - 1, -alpha - 1, -alpha, 1, ~stm, sm.sq);
         if (s > alpha && s < beta)
-          s = -pvs<R, Pat>(sm.child, depth - 1, -beta, -alpha, 1, ~stm);
+          s = -pvs<R, Pat>(sm.child, depth - 1, -beta, -alpha, 1, ~stm, sm.sq);
       }
       if (stopped_)
         return; // leave res holding the last COMPLETED iteration
