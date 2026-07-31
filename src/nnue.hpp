@@ -54,18 +54,20 @@ namespace islay {
     [[nodiscard]] float *b2() noexcept { return b2_.data(); }
     [[nodiscard]] std::size_t features() const noexcept { return feat_; } // per_stage + kNnueRFeat
 
-    /** Build the int16 inference table (x kNnueQuant) from the float one and drop the
-     *  float one: halves the table so the cold misses that dominate the leaf halve too.
+    /** Build the int16 inference table from the float one and drop the float table.
      *  Called by load(); a trainer that keeps the net live calls it after save(). */
     void quantize();
 
   private:
+    void choose_chunk_rows() noexcept;
+
     std::vector<float>        emb_;   // [kStageCount][feat_][kNnueHidden], training + file IO
     std::vector<std::int16_t> emb16_; // same layout, x kNnueQuant -- what score() reads
     std::vector<float>        w2a_;   // [kStageCount][kNnueHidden]
     std::vector<float>        w2h_;   // [kStageCount][kNnueHidden]
     std::vector<float>        b2_;    // [kStageCount]
     std::size_t               feat_ = 0;
+    int                       chunk_rows_ = 1;
     bool                      loaded_ = false;
   };
 

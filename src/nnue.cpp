@@ -40,11 +40,22 @@ namespace islay {
     loaded_ = true;
   }
 
+  void NnueNet::choose_chunk_rows() noexcept {
+    int peak = 0;
+    for (const std::int16_t value: emb16_)
+      peak = std::max(peak, std::abs(static_cast<int>(value)));
+    // A chunk's worst possible lane sum stays inside int16; v19 therefore adds
+    // ten rows per vector before it needs the wider int32 accumulator.
+    chunk_rows_ = peak == 0 ? kPatternInstances + 9 : std::max(1, 32767 / peak);
+    chunk_rows_ = std::min(chunk_rows_, kPatternInstances + 9);
+  }
+
   void NnueNet::quantize() {
     emb16_.resize(emb_.size());
     for (std::size_t i = 0; i < emb_.size(); ++i)
       emb16_[i] = static_cast<std::int16_t>(
           std::clamp(std::lround(emb_[i] * kNnueQuant), -32767L, 32767L));
+    choose_chunk_rows();
     emb_.clear();
     emb_.shrink_to_fit(); // inference never reads the float table; 80MB back to the OS
   }
@@ -61,12 +72,16 @@ namespace islay {
     constexpr float kInv = 1.0f / kNnueQuant;
 #if defined(__ARM_NEON)
     static_assert(kNnueHidden == 8, "the NEON path is written for H = 8");
-    // int16 rows into a widening int32 accumulate (n rows x <=32767 fits 32 bits).
     int32x4_t s0 = vdupq_n_s32(0), s1 = vdupq_n_s32(0);
-    for (int i = 0; i < n; ++i) {
-      const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[i]) * kNnueHidden);
-      s0                  = vaddw_s16(s0, vget_low_s16(row));
-      s1                  = vaddw_s16(s1, vget_high_s16(row));
+    for (int first = 0; first < n; first += chunk_rows_) {
+      const int end = std::min(first + chunk_rows_, n);
+      int16x8_t chunk = vdupq_n_s16(0);
+      for (int i = first; i < end; ++i) {
+        const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[i]) * kNnueHidden);
+        chunk               = vaddq_s16(chunk, row);
+      }
+      s0 = vaddw_s16(s0, vget_low_s16(chunk));
+      s1 = vaddw_s16(s1, vget_high_s16(chunk));
     }
     const float32x4_t acc0 = vmulq_n_f32(vcvtq_f32_s32(s0), kInv);
     const float32x4_t acc1 = vmulq_n_f32(vcvtq_f32_s32(s1), kInv);
@@ -168,6 +183,8 @@ namespace islay {
     loaded_ = true;
     if (is2)
       quantize(); // float NN2 -> the int16 inference table
+    else
+      choose_chunk_rows();
     log << "info string nnue: loaded " << path << " (" << (emb16_.size() * 2 / (1024 * 1024)) << " MiB)\n";
     return true;
   }
