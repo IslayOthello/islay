@@ -1084,17 +1084,22 @@ namespace islay {
     }
 
     // Endgame parity, for move ordering only (never changes a score -- the oracle
-    // still holds). In the endgame the empties split into regions; a region with an
-    // ODD count hands its last move to the side that moves into it, so playing into
-    // an odd region is usually strong. Quadrant parity is a cheap self-made proxy for
-    // the true connected-region parity: mark the quadrants holding an odd number of
-    // empties, and nudge moves that land in one up the order. Only while solving.
-    unsigned odd_quads = 0;
+    // still holds). Empty squares separated by occupied walls are independent move
+    // regions; entering an odd-sized one tends to secure its last move. True
+    // connected regions avoid the false merges/splits caused by fixed quadrants.
+    Bitboard odd_regions = 0;
     if (kUseParity && endgame_enabled_ && solving) {
       const Bitboard empties = ~(b.player | b.opponent);
-      for (unsigned q = 0; q < 4; ++q)
-        if (popcount(empties & kQuadrant[q]) & 1)
-          odd_quads |= (1u << q);
+      // Region flood-fill pays once occupied walls have fragmented the board.
+      // Above 12 empties the old four-quadrant proxy is cheaper and usually
+      // equivalent; below it, exact regions materially improve move order.
+      if (eg_empties <= 12) {
+        odd_regions = odd_empty_regions(empties);
+      } else {
+        for (unsigned q = 0; q < 4; ++q)
+          if (popcount(empties & kQuadrant[q]) & 1)
+            odd_regions |= empties & kQuadrant[q];
+      }
     }
 
     // --- build + score the move list -----------------------------------------
@@ -1128,8 +1133,8 @@ namespace islay {
             if (depth >= kOrderMobilityMinDepth)
               s -= params_.mob_w * popcount(sm.child.moves());
             s += history_[sq] / params_.hist_div;
-            if (odd_quads & (1u << quadrant_of(sq)))
-              s += params_.parity_bonus; // sq's quadrant has odd empties -> nudge it earlier
+            if (odd_regions & square_bb(sq))
+              s += params_.parity_bonus; // sq's connected region has odd empties
             sm.score = s;
           }
         } else {
@@ -1655,6 +1660,18 @@ namespace islay {
   }
 
   bool search_selftest() noexcept {
+    // Connected-region parity: an odd component is marked in full, an even one
+    // is omitted, and rank edges must not wrap h-file into the next a-file.
+    {
+      const Bitboard odd_three = square_bb(0) | square_bb(1) | square_bb(2);
+      const Bitboard even_two  = square_bb(62) | square_bb(63);
+      if (odd_empty_regions(odd_three | even_two) != odd_three)
+        return false;
+      const Bitboard no_wrap = square_bb(7) | square_bb(8);
+      if (odd_empty_regions(no_wrap) != no_wrap)
+        return false;
+    }
+
     std::uint64_t s   = 0x9E3779B97F4A7C15ULL;
     const auto    rnd = [&s]() noexcept {
       s ^= s << 13;

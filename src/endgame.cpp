@@ -73,17 +73,14 @@ namespace islay {
     }
 
     // Move ordering. PARITY is primary -- an empty region with an ODD count hands its
-    // last move to whoever plays into it, so odd-quadrant moves go first (a cheap proxy
-    // for true region parity). MOBILITY is the secondary key, but only from `empties`
+    // last move to whoever plays into it, so true odd connected regions go first.
+    // MOBILITY is the secondary key, but only from `empties`
     // >= kOrderMobility: it costs a get_moves per move, which is worth it up top (few
     // nodes, big subtrees, ordering drives the alpha-beta) but not down among the many
     // near-leaf nodes. Reorders only -- never a score change.
     constexpr int  kOrderMobility = 5;
     const Bitboard empt = ~(b.player | b.opponent);
-    unsigned       odd  = 0;
-    for (unsigned q = 0; q < 4; ++q)
-      if (popcount(empt & kQuadrant[q]) & 1)
-        odd |= (1u << q);
+    const Bitboard odd = odd_empty_regions(empt);
     const bool with_mob = empties >= kOrderMobility;
 
     Board child[36];
@@ -92,7 +89,7 @@ namespace islay {
     int    n = 0;
     for (Bitboard m = moves; m;) {
       const Square s = pop_lsb(m);
-      int          k = ((odd >> quadrant_of(s)) & 1u) ? (1 << 16) : 0;
+      int          k = (odd & square_bb(s)) ? (1 << 16) : 0;
       if (with_mob) {
         child[n] = b.play(s);                 // cache: the loop below would play it anyway
         k -= popcount(child[n].moves());      // fewer opponent replies first

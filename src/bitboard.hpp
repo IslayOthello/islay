@@ -74,6 +74,29 @@ namespace islay {
     return (static_cast<unsigned>(sq) >> 5 << 1) | ((static_cast<unsigned>(sq) >> 2) & 1u);
   }
 
+  /**
+   * Empty squares that belong to an odd-sized orthogonally connected region.
+   * Occupied walls can split a quadrant, and a region can cross a quadrant
+   * boundary, so this is the endgame-parity mask rather than a geometric proxy.
+   */
+  [[nodiscard]] ISLAY_FORCEINLINE Bitboard odd_empty_regions(Bitboard empties) noexcept {
+    Bitboard remaining = empties;
+    Bitboard odd       = 0;
+    while (remaining) {
+      Bitboard region = remaining & (0 - remaining);
+      Bitboard prev;
+      do {
+        prev = region;
+        const Bitboard east_west = ((region << 1) & ~kFileA) | ((region >> 1) & ~kFileH);
+        region |= (east_west | (region << 8) | (region >> 8)) & empties;
+      } while (region != prev);
+      if (popcount(region) & 1)
+        odd |= region;
+      remaining &= ~region;
+    }
+    return odd;
+  }
+
   /** The X-square diagonally adjacent to corner `sq`; 0 if `sq` is not a corner. */
   [[nodiscard]] ISLAY_FORCEINLINE Bitboard x_square_of_corner(Square sq) noexcept {
     switch (sq) {
