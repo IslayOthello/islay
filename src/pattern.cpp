@@ -320,8 +320,9 @@ namespace islay {
     // the expensive part of the leaf (~+9% search time for both colours), and it is
     // deliberately the real one: a cheap corner-anchored approximation would be a
     // function of the edge configuration that Edge2X already encodes exactly.
-    const int my_st  = stable_count(b.player, b.opponent);
-    const int opp_st = stable_count(b.opponent, b.player);
+    const StableCounts stability = stable_counts(b.player, b.opponent);
+    const int          my_st     = stability.player;
+    const int          opp_st    = stability.opponent;
     MobCounts m;
     m.black_mob  = (stm == Color::Black) ? my_mob : opp_mob;
     m.white_mob  = (stm == Color::Black) ? opp_mob : my_mob;

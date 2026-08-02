@@ -196,6 +196,45 @@ namespace islay {
       return flipped;
     }
 
+#if defined(ISLAY_MOVEGEN_HYBRID)
+
+    [[nodiscard]] ISLAY_FORCEINLINE uint64x2_t reverse_bits_u64(uint64x2_t v) noexcept {
+      const uint8x16_t bytes = vreinterpretq_u8_u64(v);
+      return vreinterpretq_u64_u8(vrev64q_u8(vrbitq_u8(bytes)));
+    }
+
+    // Apple Silicon has only two 64-bit NEON lanes, so a full vector flip loses
+    // to the scalar carry kernel. The MS1B half is different: scalar needs four
+    // serial clz/variable-shift chains. Reverse two rays per vector, apply the
+    // cheap LS1B carry to both lanes, then reverse the captured runs back.
+    [[nodiscard]] Bitboard flip_hybrid(Square sq, Bitboard p, Bitboard o) noexcept {
+      Bitboard flipped = 0;
+      for (int d = 0; d < 4; ++d) {
+        const Bitboard mask     = MASKS.m[sq][d];
+        Bitboard       outflank = (o | ~mask) + 1;
+        outflank &= p & mask;
+        const Bitboard nz = -static_cast<Bitboard>(outflank != 0);
+        flipped |= (outflank - 1) & mask & nz;
+      }
+
+      const uint64x2_t one = vdupq_n_u64(1);
+      const uint64x2_t rp  = reverse_bits_u64(vdupq_n_u64(p));
+      const uint64x2_t ro  = reverse_bits_u64(vdupq_n_u64(o));
+      const uint64x2_t rm0 = reverse_bits_u64(vld1q_u64(&MASKS.m[sq][4]));
+      const uint64x2_t rm1 = reverse_bits_u64(vld1q_u64(&MASKS.m[sq][6]));
+
+      uint64x2_t out0     = vaddq_u64(vornq_u64(ro, rm0), one);
+      uint64x2_t out1     = vaddq_u64(vornq_u64(ro, rm1), one);
+      out0                = vandq_u64(out0, vandq_u64(rp, rm0));
+      out1                = vandq_u64(out1, vandq_u64(rp, rm1));
+      const uint64x2_t f0 = reverse_bits_u64(vandq_u64(rm0, vqsubq_u64(out0, one)));
+      const uint64x2_t f1 = reverse_bits_u64(vandq_u64(rm1, vqsubq_u64(out1, one)));
+      const uint64x2_t fv = vorrq_u64(f0, f1);
+      return flipped | vgetq_lane_u64(fv, 0) | vgetq_lane_u64(fv, 1);
+    }
+
+#endif // ISLAY_MOVEGEN_HYBRID
+
 // ============================================================================
 //  NEON kernels -- used by both the all-NEON path and the hybrid path.
 // ============================================================================
@@ -473,6 +512,8 @@ namespace islay {
     return flip_avx2(sq, p, o);
 #elif defined(ISLAY_MOVEGEN_NEON)
     return flip_neon(sq, p, o);
+#elif defined(ISLAY_MOVEGEN_HYBRID)
+    return flip_hybrid(sq, p, o);
 #else
     return flip_scalar(sq, p, o);
 #endif

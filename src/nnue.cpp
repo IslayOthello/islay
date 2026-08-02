@@ -82,15 +82,40 @@ namespace islay {
 #if defined(__ARM_NEON)
     static_assert(kNnueHidden == 8, "the NEON path is written for H = 8");
     int32x4_t s0 = vdupq_n_s32(0), s1 = vdupq_n_s32(0);
-    for (int first = 0; first < n; first += chunk_rows_) {
-      const int end = std::min(first + chunk_rows_, n);
-      int16x8_t chunk = vdupq_n_s16(0);
-      for (int i = first; i < end; ++i) {
-        const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[i]) * kNnueHidden);
-        chunk               = vaddq_s16(chunk, row);
+    constexpr int kInferenceRows = kPatternInstances + 9;
+    if (n == kInferenceRows && chunk_rows_ >= 8) {
+      // v20 admits eight rows per narrow accumulator. Keeping that trip count
+      // compile-time constant lets Clang issue eight independent scattered
+      // loads without the min/compare/branch pair of the generic inner loop.
+      // Six full chunks plus the final row preserve the exact int16 grouping.
+      constexpr int kRowsPerChunk = 8;
+      constexpr int kFullRows = kInferenceRows / kRowsPerChunk * kRowsPerChunk;
+      for (int first = 0; first < kFullRows; first += kRowsPerChunk) {
+        int16x8_t chunk = vdupq_n_s16(0);
+        for (int i = 0; i < kRowsPerChunk; ++i) {
+          const int16x8_t row =
+              vld1q_s16(base + static_cast<std::size_t>(idx[first + i]) * kNnueHidden);
+          chunk = vaddq_s16(chunk, row);
+        }
+        s0 = vaddw_s16(s0, vget_low_s16(chunk));
+        s1 = vaddw_s16(s1, vget_high_s16(chunk));
       }
-      s0 = vaddw_s16(s0, vget_low_s16(chunk));
-      s1 = vaddw_s16(s1, vget_high_s16(chunk));
+      for (int i = kFullRows; i < kInferenceRows; ++i) {
+        const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[i]) * kNnueHidden);
+        s0                    = vaddw_s16(s0, vget_low_s16(row));
+        s1                    = vaddw_s16(s1, vget_high_s16(row));
+      }
+    } else {
+      for (int first = 0; first < n; first += chunk_rows_) {
+        const int end = std::min(first + chunk_rows_, n);
+        int16x8_t chunk = vdupq_n_s16(0);
+        for (int i = first; i < end; ++i) {
+          const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[i]) * kNnueHidden);
+          chunk               = vaddq_s16(chunk, row);
+        }
+        s0 = vaddw_s16(s0, vget_low_s16(chunk));
+        s1 = vaddw_s16(s1, vget_high_s16(chunk));
+      }
     }
     const float32x4_t acc0 = vmulq_n_f32(vcvtq_f32_s32(s0), kInv);
     const float32x4_t acc1 = vmulq_n_f32(vcvtq_f32_s32(s1), kInv);

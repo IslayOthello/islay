@@ -73,7 +73,51 @@ namespace islay {
     }
     inline constexpr DiagMasks kDiags = make_diags();
 
+    struct StableBases {
+      Bitboard h, v, d1, d2;
+    };
+
+    [[nodiscard]] inline StableBases stable_bases(Bitboard occ) noexcept {
+      Bitboard fh = 0, fv = 0, fd1 = 0, fd2 = 0;
+      for (int r = 0; r < 8; ++r) {
+        const Bitboard m = kRank1 << (r * 8);
+        if ((occ & m) == m)
+          fh |= m;
+      }
+      for (int f = 0; f < 8; ++f) {
+        const Bitboard m = kFileA << f;
+        if ((occ & m) == m)
+          fv |= m;
+      }
+      for (const Bitboard m: kDiags.d1)
+        if (m && (occ & m) == m)
+          fd1 |= m;
+      for (const Bitboard m: kDiags.d2)
+        if (m && (occ & m) == m)
+          fd2 |= m;
+
+      return {fh | kFileA | kFileH, fv | kRank1 | kRank8, fd1 | kEdges, fd2 | kEdges};
+    }
+
+    [[nodiscard]] ISLAY_FORCEINLINE Bitboard stable_bits(Bitboard p, const StableBases &base) noexcept {
+      Bitboard st = 0, prev;
+      do {
+        prev              = st;
+        const Bitboard h  = base.h | sE(st) | sW(st);
+        const Bitboard v  = base.v | sN(st) | sS(st);
+        const Bitboard d1 = base.d1 | sNW(st) | sSE(st);
+        const Bitboard d2 = base.d2 | sNE(st) | sSW(st);
+        st                = p & h & v & d1 & d2;
+      } while (st != prev);
+      return st;
+    }
+
   } // namespace stability_detail
+
+  struct StableCounts {
+    int player;
+    int opponent;
+  };
 
   /**
    * Count `p`'s provably-unflippable discs, given the opponent `o`. A sound LOWER
@@ -81,49 +125,15 @@ namespace islay {
    */
   [[nodiscard]] inline int stable_count(Bitboard p, Bitboard o) noexcept {
     using namespace stability_detail;
-    const Bitboard occ = p | o;
+    const StableBases base = stable_bases(p | o);
+    return popcount(stable_bits(p, base));
+  }
 
-    // Rule 1: squares lying on a FULL line, per axis.
-    Bitboard fh = 0, fv = 0, fd1 = 0, fd2 = 0;
-    for (int r = 0; r < 8; ++r) {
-      const Bitboard m = kRank1 << (r * 8);
-      if ((occ & m) == m)
-        fh |= m;
-    }
-    for (int f = 0; f < 8; ++f) {
-      const Bitboard m = kFileA << f;
-      if ((occ & m) == m)
-        fv |= m;
-    }
-    for (const Bitboard m: kDiags.d1)
-      if (m && (occ & m) == m)
-        fd1 |= m;
-    for (const Bitboard m: kDiags.d2)
-      if (m && (occ & m) == m)
-        fd2 |= m;
-
-    // Rules 1+2 give the per-axis "already safe" sets that do not depend on the
-    // fixpoint (full line, or on the edge for that axis). Diagonal endpoints all lie
-    // on a board edge, so kEdges seals a diagonal from its open end.
-    const Bitboard base_h  = fh | kFileA | kFileH;
-    const Bitboard base_v  = fv | kRank1 | kRank8;
-    const Bitboard base_d1 = fd1 | kEdges;
-    const Bitboard base_d2 = fd2 | kEdges;
-
-    // Rule 3: grow to a fixpoint. A disc is stable when it is p and safe on all four
-    // axes, where "safe" also credits a stable same-colour neighbour toward either
-    // end of the axis.
-    Bitboard st = 0, prev;
-    do {
-      prev              = st;
-      const Bitboard h  = base_h | sE(st) | sW(st);
-      const Bitboard v  = base_v | sN(st) | sS(st);
-      const Bitboard d1 = base_d1 | sNW(st) | sSE(st); // d1 = r-f const, the NW-SE axis
-      const Bitboard d2 = base_d2 | sNE(st) | sSW(st); // d2 = r+f const, the NE-SW axis
-      st                = p & h & v & d1 & d2;
-    } while (st != prev);
-
-    return popcount(st);
+  /** Count both colours while sharing their occupancy-dependent full-line scan. */
+  [[nodiscard]] inline StableCounts stable_counts(Bitboard p, Bitboard o) noexcept {
+    using namespace stability_detail;
+    const StableBases base = stable_bases(p | o);
+    return {popcount(stable_bits(p, base)), popcount(stable_bits(o, base))};
   }
 
 } // namespace islay
