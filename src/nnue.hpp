@@ -40,6 +40,12 @@ namespace islay {
     /** Allocate and zero; the trainer then fills it (see identity init there). */
     void reset();
 
+    /** Restore the float embedding table from the quantized inference table.
+     *  Heads are already stored as floats, so this makes a loaded NN3 net an exact
+     *  warm start for another training round. The inference table stays live until
+     *  the updated float table is saved and quantized. */
+    void prepare_training();
+
     /**
      * BLACK's score in centi-discs. `idx` are the flat per-stage feature indices
      * the pattern layer already produces (pattern_indices with stage 0), plus the

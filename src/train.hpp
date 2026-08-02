@@ -113,8 +113,9 @@ namespace islay {
   TrainResult run_train(const TrainConfig &cfg, std::ostream &log);
 
   /** NNUE-lite training (nnue.hpp): same self-play pipeline and disc-diff labels as
-   *  run_train, but backprop over the two-layer net. Requires EvalFile loaded -- the
-   *  linear weights are both the teacher that plays the games and the warm start. */
+   *  run_train, but backprop over the two-layer net. Requires EvalFile loaded. A
+   *  linear .pat teacher seeds the original identity net; a .nnue teacher bootstraps
+   *  the next round from its quantized embeddings and float heads. */
   struct NTrainConfig {
     int           games         = 50000;
     int           epochs        = 10;

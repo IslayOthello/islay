@@ -40,6 +40,15 @@ namespace islay {
     loaded_ = true;
   }
 
+  void NnueNet::prepare_training() {
+    if (!emb_.empty() || emb16_.empty())
+      return;
+    emb_.resize(emb16_.size());
+    constexpr float kInv = 1.0f / kNnueQuant;
+    for (std::size_t i = 0; i < emb16_.size(); ++i)
+      emb_[i] = static_cast<float>(emb16_[i]) * kInv;
+  }
+
   void NnueNet::choose_chunk_rows() noexcept {
     int peak = 0;
     for (const std::int16_t value: emb16_)

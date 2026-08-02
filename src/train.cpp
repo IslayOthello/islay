@@ -338,8 +338,9 @@ namespace islay {
 
   TrainResult run_ntrain(const NTrainConfig &cfg, std::ostream &log) {
     TrainResult res;
-    if (!pattern_weights().loaded()) {
-      log << "info error: ntrain needs pattern weights loaded (EvalFile) -- they are the teacher AND the warm start\n";
+    const bool nnue_teacher = nnue_enabled();
+    if (!nnue_teacher && !pattern_weights().loaded()) {
+      log << "info error: ntrain needs a .pat or .nnue EvalFile -- it is the teacher AND the warm start\n";
       return res;
     }
     constexpr int     H   = kNnueHidden;
@@ -350,7 +351,7 @@ namespace islay {
         << " stages -> " << cfg.out << '\n';
     log.flush();
 
-    // --- phase 1: generate (the teacher is the loaded linear eval) --------------
+    // --- phase 1: generate (the teacher is the loaded EvalFile) ------------------
     // Games are independent, so generation fans out across threads: each worker has
     // its own Searcher, TT and Rng, and the shared eval weights are read-only during
     // a search. The fit that follows stays single-threaded (it is not the bottleneck).
@@ -414,28 +415,34 @@ namespace islay {
     // Train in DISCS (labels /100): cd-scale activations would give ~1e5 head
     // gradients and no single lr would fit both layers.
     NnueNet &net = nnue_net();
-    net.reset();
+    if (nnue_teacher)
+      net.prepare_training();
+    else
+      net.reset();
     float *emb = net.emb(), *w2a = net.w2a(), *w2h = net.w2h(), *b2 = net.b2();
-    (void) b2; // starts 0; the bias feature row already carries the linear eval's bias
-
-    const auto frand = [&](float a) { // uniform in [-a, a]
-      return (static_cast<float>(rng.next() >> 40) / 16777216.0f * 2.0f - 1.0f) * a;
-    };
-    // Warm start = the teacher: emb dim 0 = the v18 weight for that stage, W2a dim 0 = 1,
-    // everything else small noise. r rows start at 0 (v18 has no interp term to copy).
     const std::size_t   fper = per + kNnueRFeat; // net feature space: per_stage + r rows
-    const std::int16_t *w18  = pattern_weights().data();
-    for (int st = 0; st < kStageCount; ++st)
-      for (std::size_t f = 0; f < fper; ++f) {
-        float *row = emb + (static_cast<std::size_t>(st) * fper + f) * H;
-        row[0]     = f < per ? static_cast<float>(w18[static_cast<std::size_t>(st) * per + f]) / 100.0f : 0.0f;
-        for (int j = 1; j < H; ++j)
-          row[j] = frand(0.05f);
+    if (nnue_teacher) {
+      log << "info string ntrain: warm-starting from loaded NNUE teacher\n";
+    } else {
+      (void) b2; // starts 0; the bias feature row carries the linear eval's bias
+      const auto frand = [&](float a) { // uniform in [-a, a]
+        return (static_cast<float>(rng.next() >> 40) / 16777216.0f * 2.0f - 1.0f) * a;
+      };
+      // Linear warm start: emb dim 0 = the teacher weight, W2a dim 0 = 1,
+      // everything else small noise. r rows start at 0 (the .pat has no such term).
+      const std::int16_t *linear = pattern_weights().data();
+      for (int st = 0; st < kStageCount; ++st)
+        for (std::size_t f = 0; f < fper; ++f) {
+          float *row = emb + (static_cast<std::size_t>(st) * fper + f) * H;
+          row[0]     = f < per ? static_cast<float>(linear[static_cast<std::size_t>(st) * per + f]) / 100.0f : 0.0f;
+          for (int j = 1; j < H; ++j)
+            row[j] = frand(0.05f);
+        }
+      for (int st = 0; st < kStageCount; ++st) {
+        w2a[static_cast<std::size_t>(st) * H + 0] = 1.0f;
+        for (int j = 0; j < H; ++j)
+          w2h[static_cast<std::size_t>(st) * H + j] = frand(0.05f);
       }
-    for (int st = 0; st < kStageCount; ++st) {
-      w2a[static_cast<std::size_t>(st) * H + 0] = 1.0f;
-      for (int j = 0; j < H; ++j)
-        w2h[static_cast<std::size_t>(st) * H + j] = frand(0.05f);
     }
 
     // --- phase 3: fit -----------------------------------------------------------
@@ -524,17 +531,23 @@ namespace islay {
       return count ? std::sqrt(sse / static_cast<double>(count)) * 100.0 : 0.0; // cd
     };
 
-    // Sanity: the warm start should already fit near the teacher before any step.
-    log << "info string ntrain: warm-start val_rmse " << static_cast<int>(nval ? pass(0, nval, false, nullptr) : 0.0)
-        << " cd\n";
-    log.flush();
-
     // Early stop by snapshot (like the linear trainer): train the full budget, keep
-    // the best-held-out epoch.
+    // the best-held-out epoch. For an NNUE bootstrap, epoch 0 is the teacher and
+    // must remain eligible: a bad continuation round should reproduce the teacher,
+    // not force-promote its least-bad trained epoch.
     std::vector<float> best_emb, best_a, best_h, best_b;
-    double             best_val = 1e30;
-    int                best_ep  = 0;
     const std::size_t  esz = static_cast<std::size_t>(kStageCount) * fper * H;
+    const double       warm_val = nval ? pass(0, nval, false, nullptr) : 0.0;
+    double             best_val = nnue_teacher && nval ? warm_val : 1e30;
+    int                best_ep  = 0;
+    if (nnue_teacher && nval) {
+      best_emb.assign(emb, emb + esz);
+      best_a.assign(w2a, w2a + static_cast<std::size_t>(kStageCount) * H);
+      best_h.assign(w2h, w2h + static_cast<std::size_t>(kStageCount) * H);
+      best_b.assign(net.b2(), net.b2() + kStageCount);
+    }
+    log << "info string ntrain: warm-start val_rmse " << static_cast<int>(warm_val) << " cd\n";
+    log.flush();
 
     for (int ep = 0; ep < cfg.epochs; ++ep) {
       for (std::size_t i = games.size(); i > nval + 1; --i) {
@@ -575,7 +588,7 @@ namespace islay {
     net.quantize(); // the float table just went to disk; inference wants the int16 one
     log << "ntrain done: " << res.games << " games, " << res.positions << " positions/epoch -> " << cfg.out << '\n'
         << "  NOTE: strength is settled by match, never by rmse. A/B via fastothello:\n"
-        << "        EvalFile " << cfg.out << "  vs  the teacher .pat\n";
+        << "        EvalFile " << cfg.out << "  vs  the loaded teacher EvalFile\n";
     log.flush();
     res.ok = true;
     return res;

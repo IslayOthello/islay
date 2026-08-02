@@ -1131,7 +1131,8 @@ namespace islay {
       }
 
       /** ntrain [games] [epochs] [depth] [lr_emb] [lr_out] [out] [seed] -- NNUE-lite
-       *  training (train.hpp). Needs EvalFile loaded: teacher and warm start. */
+       *  training (train.hpp). A loaded .pat starts a new net; a loaded .nnue
+       *  bootstraps another round from that teacher and warm start. */
       void cmd_ntrain(std::istringstream &is) {
         NTrainConfig cfg;
         cfg.rule = options_.rule;
