@@ -149,6 +149,15 @@ namespace islay {
       return r < 0 ? 0 : r;
     }
 
+    constexpr int kHistoryLimit = 1 << 20;
+
+    ISLAY_FORCEINLINE void update_history(int (&row)[64], Square sq, int bonus) noexcept {
+      row[sq] += bonus;
+      if (row[sq] > kHistoryLimit || row[sq] < -kHistoryLimit)
+        for (int &value: row)
+          value /= 2;
+    }
+
     // Endgame stability cutoff (exact; oracle-checked). Strong fixpoint in stability.hpp.
     constexpr bool kUseStabilityCut = true;
     // Endgame parity move ordering (reorders only -> exact; oracle-checked).
@@ -611,6 +620,7 @@ namespace islay {
     std::memset(killers_, 0, sizeof killers_);
     std::memset(history_, 0, sizeof history_);
     std::memset(continuation_history_, 0, sizeof continuation_history_);
+    std::memset(continuation_history_2_, 0, sizeof continuation_history_2_);
   }
 
   void Searcher::new_search(const SearchLimits &limits) noexcept {
@@ -838,7 +848,7 @@ namespace islay {
   }
 
   template<Rule R, bool Pat>
-  int Searcher::pvs(Board b, int depth, int alpha, int beta, int ply, Color stm, Square prev_move,
+  int Searcher::pvs(Board b, int depth, int alpha, int beta, int ply, Color stm, Square prev_move, Square prev2_move,
                     bool can_null) noexcept {
     if (stopped_)
       return 0;
@@ -872,7 +882,7 @@ namespace islay {
           if constexpr (Pat)
             if (ply + 1 < kMaxPly)
             ps_[ply + 1] = ps_[ply];
-          return -pvs<R, Pat>(passed, depth, -beta, -alpha, ply + 1, ~stm, prev_move);
+          return -pvs<R, Pat>(passed, depth, -beta, -alpha, ply + 1, ~stm, prev_move, prev2_move);
         }
       }
       return terminal_score(b);
@@ -989,7 +999,7 @@ namespace islay {
       // v_d >= beta  <=  a*v_{d-2} + b - t*sigma >= beta
       const int hi = static_cast<int>((static_cast<float>(beta) + probcut_t_ * f.sigma - f.b) / f.a);
       const bool try_hi = !probcut_gate_enabled_ || (predf + gate >= static_cast<float>(hi));
-      if (try_hi && hi < kScoreMax && pvs<R, Pat>(b, d2, hi - 1, hi, ply, stm, prev_move) >= hi) {
+      if (try_hi && hi < kScoreMax && pvs<R, Pat>(b, d2, hi - 1, hi, ply, stm, prev_move, prev2_move) >= hi) {
         if constexpr (kStats) { ++sacc.pc_cut; sacc.pc_probe_nodes += nodes_ - pc0; stats_->flush(depth, sg, SearchStats::Cut, sacc); }
         return beta;
       }
@@ -1000,7 +1010,7 @@ namespace islay {
       const std::uint64_t lo0 = kStats ? nodes_ : 0; // the lo-probe's own cost
       if constexpr (kStats)
         if (try_lo && lo > -kScoreMax) ++sacc.pc_lo_try;
-      if (try_lo && lo > -kScoreMax && pvs<R, Pat>(b, d2, lo, lo + 1, ply, stm, prev_move) <= lo) {
+      if (try_lo && lo > -kScoreMax && pvs<R, Pat>(b, d2, lo, lo + 1, ply, stm, prev_move, prev2_move) <= lo) {
         if constexpr (kStats) {
           ++sacc.pc_cut; ++sacc.pc_lo_cut;
           sacc.pc_lo_nodes += nodes_ - lo0;
@@ -1047,7 +1057,7 @@ namespace islay {
           if (ply + 1 < kMaxPly)
             ps_[ply + 1] = ps_[ply]; // a pass leaves every feature unchanged
         const int score =
-                -pvs<R, Pat>(passed, nd, -beta, -beta + 1, ply + 1, ~stm, prev_move, /*can_null=*/false);
+                -pvs<R, Pat>(passed, nd, -beta, -beta + 1, ply + 1, ~stm, prev_move, prev2_move, /*can_null=*/false);
         if (stopped_)
           return 0;
         if (score >= beta) {
@@ -1140,6 +1150,8 @@ namespace islay {
             // destination-square history cannot distinguish. A pass preserves it.
             if (prev_move < 64)
               s += continuation_history_[prev_move][sq] / params_.hist_div;
+            if (prev2_move < 64)
+              s += continuation_history_2_[prev2_move][sq] / params_.hist_div;
             if (odd_regions & square_bb(sq))
               s += params_.parity_bonus; // sq's connected region has odd empties
             sm.score = s;
@@ -1153,6 +1165,8 @@ namespace islay {
     int    best       = -kInf;
     Square best_move  = NOMOVE;
     bool   aborted    = false;
+    Square searched_moves[36];
+    int    searched_count = 0;
 
     // The move-search body, shared by the two execution orders below. `idx` picks the
     // move from the list; `ord` is its position in the ACTUAL search order, which is
@@ -1196,12 +1210,14 @@ namespace islay {
         ps_[ply + 1].update(sm.sq, flipped, stm);
       }
 
+      searched_moves[searched_count++] = sm.sq;
+
       int s;
       if (ord == 0 || !kUsePVS) {
-        s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -beta, -alpha, ply + 1, ~stm, sm.sq);
+        s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -beta, -alpha, ply + 1, ~stm, sm.sq, prev_move);
       } else {
         if constexpr (kStats) ++sacc.pvs_scout;
-        s = -pvs<R, Pat>(sm.child, depth - 1 + ext - red, -alpha - 1, -alpha, ply + 1, ~stm, sm.sq);
+        s = -pvs<R, Pat>(sm.child, depth - 1 + ext - red, -alpha - 1, -alpha, ply + 1, ~stm, sm.sq, prev_move);
         // Calibration sample: was reducing THIS move at THIS (depth, ordinal) a mistake?
         if constexpr (kStats)
           if (red) stats_->lmr_sample(depth, ord, s > alpha);
@@ -1209,13 +1225,13 @@ namespace islay {
         // before trusting it.
         if (red && s > alpha) {
           if constexpr (kStats) ++sacc.lmr_re;
-          s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -alpha - 1, -alpha, ply + 1, ~stm, sm.sq);
+          s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -alpha - 1, -alpha, ply + 1, ~stm, sm.sq, prev_move);
         }
         // Re-search with the FULL window (-beta,-alpha), not (-beta,-score).
         // `s < beta` is what keeps a zero-width window from ever re-searching.
         if (s > alpha && s < beta) {
           if constexpr (kStats) ++sacc.pvs_re;
-          s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -beta, -alpha, ply + 1, ~stm, sm.sq);
+          s = -pvs<R, Pat>(sm.child, depth - 1 + ext, -beta, -alpha, ply + 1, ~stm, sm.sq, prev_move);
         }
       }
       if (stopped_) {
@@ -1236,16 +1252,22 @@ namespace islay {
             killers_[ply][1] = killers_[ply][0];
             killers_[ply][0] = sm.sq;
           }
-          history_[sm.sq] += depth * depth;
-          if (history_[sm.sq] > (1 << 20)) // keep it from saturating
-            for (int &h: history_)
-              h >>= 1;
-          if (prev_move < 64) {
-            continuation_history_[prev_move][sm.sq] += depth * depth;
-            if (continuation_history_[prev_move][sm.sq] > (1 << 20))
-              for (int &h: continuation_history_[prev_move])
-                h >>= 1;
+          const int bonus = depth * depth;
+          // Moves that failed before the cutoff are negative evidence for this
+          // node's global and continuation contexts. The cutoff move gets the
+          // symmetric reward. Passes preserve both previous placement contexts.
+          for (int i = 0; i + 1 < searched_count; ++i) {
+            update_history(history_, searched_moves[i], -bonus);
+            if (prev_move < 64)
+              update_history(continuation_history_[prev_move], searched_moves[i], -bonus);
+            if (prev2_move < 64)
+              update_history(continuation_history_2_[prev2_move], searched_moves[i], -bonus);
           }
+          update_history(history_, sm.sq, bonus);
+          if (prev_move < 64)
+            update_history(continuation_history_[prev_move], sm.sq, bonus);
+          if (prev2_move < 64)
+            update_history(continuation_history_2_[prev2_move], sm.sq, bonus);
         }
         return 1;
       }
@@ -1361,11 +1383,11 @@ namespace islay {
 
       int s;
       if (i == 0 || !kUsePVS) {
-        s = -pvs<R, Pat>(sm.child, depth - 1, -beta, -alpha, 1, ~stm, sm.sq);
+        s = -pvs<R, Pat>(sm.child, depth - 1, -beta, -alpha, 1, ~stm, sm.sq, NOMOVE);
       } else {
-        s = -pvs<R, Pat>(sm.child, depth - 1, -alpha - 1, -alpha, 1, ~stm, sm.sq);
+        s = -pvs<R, Pat>(sm.child, depth - 1, -alpha - 1, -alpha, 1, ~stm, sm.sq, NOMOVE);
         if (s > alpha && s < beta)
-          s = -pvs<R, Pat>(sm.child, depth - 1, -beta, -alpha, 1, ~stm, sm.sq);
+          s = -pvs<R, Pat>(sm.child, depth - 1, -beta, -alpha, 1, ~stm, sm.sq, NOMOVE);
       }
       if (stopped_)
         return; // leave res holding the last COMPLETED iteration

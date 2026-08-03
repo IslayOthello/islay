@@ -372,6 +372,7 @@ namespace islay {
     Square killers_[kMaxPly][2]{};
     int    history_[64]{};
     int    continuation_history_[64][64]{};
+    int    continuation_history_2_[64][64]{};
 
     std::uint64_t nodes_    = 0;
     std::uint64_t node_cap_ = 0;
@@ -405,7 +406,8 @@ namespace islay {
     // carries no colour of its own.
     template<Rule R, bool Pat>
     ISLAY_HOT ISLAY_FLATTEN int pvs(Board b, int depth, int alpha, int beta, int ply, Color stm,
-                                    Square prev_move = NOMOVE, bool can_null = true) noexcept;
+                                    Square prev_move = NOMOVE, Square prev2_move = NOMOVE,
+                                    bool can_null = true) noexcept;
     template<Rule R, bool Pat>
     void root_search(const Board &root, int depth, Color stm, int alpha, int beta, SearchResult &res) noexcept;
     template<bool Pat>
