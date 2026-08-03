@@ -218,7 +218,36 @@ namespace islay {
       }
     };
     constexpr int kInferenceRows = kPatternInstances + 9;
-    if (n == kInferenceRows) {
+    if (n == kInferenceRows && chunk_rows_ >= 8) {
+      // The normal leaf always has 55 rows. Six fixed eight-row chunks plus
+      // seven tails let Clang fully unroll the scattered loads, while widening
+      // each chunk separately preserves the int16 overflow bound.
+      const auto add8 = [&](int group, int first) {
+        int16x8_t chunk = vdupq_n_s16(0);
+        for (int i = 0; i < 8; ++i) {
+          const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[first + i]) * kNnueHidden);
+          chunk               = vaddq_s16(chunk, row);
+        }
+        gs0[group] = vaddw_s16(gs0[group], vget_low_s16(chunk));
+        gs1[group] = vaddw_s16(gs1[group], vget_high_s16(chunk));
+      };
+      const auto add_tail = [&](int group, int first, int count) {
+        for (int i = 0; i < count; ++i) {
+          const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[first + i]) * kNnueHidden);
+          gs0[group]          = vaddw_s16(gs0[group], vget_low_s16(row));
+          gs1[group]          = vaddw_s16(gs1[group], vget_high_s16(row));
+        }
+      };
+      add8(0, 0);
+      add8(0, 38);
+      add8(1, 8);
+      add_tail(1, 16, 4);
+      add8(2, 20);
+      add8(2, 28);
+      add_tail(2, 36, 2);
+      add8(3, 46);
+      add_tail(3, 54, 1);
+    } else if (n == kInferenceRows) {
       add_range(0, 0, 8);
       add_range(1, 8, 20);
       add_range(2, 20, 38);
