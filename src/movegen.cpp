@@ -9,7 +9,8 @@
  * The per-square directional masks that drive the vector flip (Edax's
  * MASK_LR[]) are regenerated here from board geometry at compile time, so no
  * hand-transcribed constant table is needed. The single flat layout
- * MASKS.m[sq][0..7] feeds both the NEON and AVX2 kernels unchanged.
+ * MASKS.m[sq][0..7] feeds every kernel. In the arm64 hybrid build its upper
+ * four rays are stored reversed at compile time for the hot carry-based flip.
  *
  * Direction index -> (drank, dfile) and equivalent bit shift:
  *   0:E(+1)  1:N(+8)  2:NE(+9)  3:NW(+7)   <- toward higher indices (LS1B)
@@ -69,6 +70,20 @@ namespace islay {
       std::array<std::array<Bitboard, 8>, 66> m; // 64 squares + PASS + NOMOVE (zero)
     };
 
+    constexpr Bitboard reverse_bits_constexpr(Bitboard b) noexcept {
+      constexpr Bitboard k1 = 0x5555555555555555ULL;
+      constexpr Bitboard k2 = 0x3333333333333333ULL;
+      constexpr Bitboard k4 = 0x0F0F0F0F0F0F0F0FULL;
+      constexpr Bitboard k8 = 0x00FF00FF00FF00FFULL;
+      constexpr Bitboard k16 = 0x0000FFFF0000FFFFULL;
+      b                       = ((b >> 1) & k1) | ((b & k1) << 1);
+      b                       = ((b >> 2) & k2) | ((b & k2) << 2);
+      b                       = ((b >> 4) & k4) | ((b & k4) << 4);
+      b                       = ((b >> 8) & k8) | ((b & k8) << 8);
+      b                       = ((b >> 16) & k16) | ((b & k16) << 16);
+      return (b >> 32) | (b << 32);
+    }
+
     constexpr MaskTable make_masks() noexcept {
       MaskTable t{};
       for (Square sq = 0; sq < 64; ++sq) {
@@ -83,6 +98,10 @@ namespace islay {
             rr += kDr[d];
             ff += kDf[d];
           }
+#if defined(ISLAY_MOVEGEN_HYBRID)
+          if (d >= 4)
+            ray = reverse_bits_constexpr(ray);
+#endif
           t.m[sq][d] = ray;
         }
       }
@@ -188,7 +207,13 @@ namespace islay {
       // Directions 4..7 (toward lower bit indices): the boundary is the
       // most-significant non-opponent square on the ray.
       for (int d = 4; d < 8; ++d) {
-        const Bitboard mask     = MASKS.m[sq][d];
+#if defined(ISLAY_MOVEGEN_HYBRID)
+        // The production hybrid table stores this half reversed for its hot
+        // carry kernel; restore the geometric ray for this scalar cross-check.
+        const Bitboard mask = reverse_bits_constexpr(MASKS.m[sq][d]);
+#else
+        const Bitboard mask = MASKS.m[sq][d];
+#endif
         const Bitboard non_o    = mask & ~o;
         const Bitboard boundary = non_o ? square_bb(msb(non_o)) : 0; // MS1B
         flipped |= (boundary & p) ? (mask & ~((boundary << 1) - 1)) : 0;
@@ -220,8 +245,8 @@ namespace islay {
       const uint64x2_t one = vdupq_n_u64(1);
       const uint64x2_t rp  = reverse_bits_u64(vdupq_n_u64(p));
       const uint64x2_t ro  = reverse_bits_u64(vdupq_n_u64(o));
-      const uint64x2_t rm0 = reverse_bits_u64(vld1q_u64(&MASKS.m[sq][4]));
-      const uint64x2_t rm1 = reverse_bits_u64(vld1q_u64(&MASKS.m[sq][6]));
+      const uint64x2_t rm0 = vld1q_u64(&MASKS.m[sq][4]);
+      const uint64x2_t rm1 = vld1q_u64(&MASKS.m[sq][6]);
 
       uint64x2_t out0     = vaddq_u64(vornq_u64(ro, rm0), one);
       uint64x2_t out1     = vaddq_u64(vornq_u64(ro, rm1), one);
