@@ -40,9 +40,9 @@ liệu hóa để tích hợp với GUI, trình chạy trận đấu và công c
 
 Bộ đánh giá NNUE-lite tái sử dụng các pattern feature incremental của engine.
 Các hàng feature đang hoạt động được cộng vào tám giá trị ẩn, sau đó được đánh
-giá bởi các head tuyến tính và ReLU theo từng giai đoạn. Phiên bản 20 được
-warm-start từ mạng v19 đã lượng tử hóa và huấn luyện bằng khoảng năm triệu ván
-self-play mới.
+giá bởi các head tuyến tính và ReLU theo từng giai đoạn. Phiên bản 21 được
+warm-start từ v20 và huấn luyện trên 20.000 ván, dùng score tìm kiếm depth 10 làm
+target distillation; quá trình sinh dữ liệu được giới hạn ở bốn worker.
 
 ## Elo ước tính
 
@@ -56,14 +56,15 @@ màu, và chỉ mang ý nghĩa tương đối so với các bộ đánh giá `is
 | NNUE v19 với pattern v18 | equal time 100 ms | ledger của dự án | +31,4 | [19,8; 42,9] | 100% |
 | NNUE v20 với NNUE v19 | 200k nodes | 4.000 | +8,08 | [2,24; 13,92] | 99,67% |
 | NNUE v20 với NNUE v19 | equal time 100 ms | 2.280 | +3,51 | [-4,25; 11,27] | 81,23% |
+| NNUE v21 với NNUE v20 | 20k nodes, book d8 cân bằng | 1.506 | +56,32 | [43,22; 69,58] | 100% |
 
 Phép đo equal-time của v20 đã dừng trước mức dự kiến 4.000 ván, vì vậy
 confidence interval vẫn bao gồm 0.
 
-Vì vậy, ước tính thực tế hiện tại là **v20 ≈ +3,5 Elo so với v19 ở equal
-time**. Cộng hai ước tính equal-time nối tiếp cho kết quả gần đúng
-**v20 ≈ +35 Elo so với v18**. Đây là ước tính định hướng của dự án, không phải
-confidence interval tổng hợp chính thức hay rating thi đấu tuyệt đối.
+Vì vậy, ước tính fixed-node hiện tại là **v21 ≈ +56 Elo so với v20**. SPRT đã
+accept H1 tại LLR 2,964 trước giới hạn 10.000 ván. Đây là ước tính định hướng
+của dự án, không phải rating thi đấu tuyệt đối; vẫn nên xác nhận thêm bằng
+equal-time dù v20 và v21 dùng cùng kiến trúc inference.
 
 ## Build
 
@@ -97,7 +98,7 @@ Khởi động một phiên engine tương tác:
 Nạp bộ đánh giá được khuyến nghị và tìm kiếm từ thế cờ ban đầu:
 
 ```sh
-printf 'uci\nsetoption name EvalFile value weights/v20.nnue\nisready\nposition startpos\ngo depth 10\nquit\n' \
+printf 'uci\nsetoption name EvalFile value weights/v21.nnue\nisready\nposition startpos\ngo depth 10\nquit\n' \
   | ./build/islay
 ```
 

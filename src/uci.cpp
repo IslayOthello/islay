@@ -1130,9 +1130,9 @@ namespace islay {
         run_train(cfg, std::cout);
       }
 
-      /** ntrain [games] [epochs] [depth] [lr_emb] [lr_out] [out] [seed] -- NNUE-lite
-       *  training (train.hpp). A loaded .pat starts a new net; a loaded .nnue
-       *  bootstraps another round from that teacher and warm start. */
+      /** ntrain [games] [epochs] [depth] [lr_emb] [lr_out] [out] [seed] [workers]
+       *  -- NNUE search distillation (train.hpp). A loaded .pat starts a new net;
+       *  a loaded .nnue bootstraps another round. Generation is capped at 4 workers. */
       void cmd_ntrain(std::istringstream &is) {
         NTrainConfig cfg;
         cfg.rule = options_.rule;
@@ -1141,7 +1141,7 @@ namespace islay {
         if (!(is >> cfg.epochs) || cfg.epochs < 1)
           cfg.epochs = 10;
         if (!(is >> cfg.depth) || cfg.depth < 1)
-          cfg.depth = 4;
+          cfg.depth = 10;
         if (!(is >> cfg.lr_emb) || cfg.lr_emb <= 0.0)
           cfg.lr_emb = 1e-3;
         if (!(is >> cfg.lr_out) || cfg.lr_out <= 0.0)
@@ -1152,6 +1152,8 @@ namespace islay {
         std::uint64_t sd = 0;
         if (is >> sd)
           cfg.seed = sd;
+        if (!(is >> cfg.workers) || cfg.workers < 1)
+          cfg.workers = 4;
         run_ntrain(cfg, std::cout);
       }
 

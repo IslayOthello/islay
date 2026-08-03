@@ -12,12 +12,15 @@
  * already tight: the effective branching factor is 2.31, below the sqrt(b) ~= 3.16
  * that perfect ordering buys. There is no more search to win. There is eval.
  *
- * THE SHAPE, and why each choice is what it is.
+ * THE SHAPE, and why each choice is what it is. Unless stated otherwise, this
+ * section describes the linear `train`; the `ntrain` contract is documented below.
  *
- *  * **The label is the game's final disc difference, never a search score.** The
+ *  * **For linear `train`, the label is the game's final disc difference.** The
  *    engine's search is only as good as the eval it is fitted from, so training on
  *    its scores would fit this eval's own noise and call it progress. The final
  *    result is what the eval is supposed to predict, and it is ground truth.
+ *    `ntrain` is deliberately different: a warm-started NNUE distils depth-10
+ *    search scores, learning the teacher's lookahead corrections in its static eval.
  *  * **The endgame is played EXACTLY** (`solve_empties`). A pass costs no depth, so
  *    `depth >= empties` makes every leaf terminal and the score the true game value
  *    -- this engine has an exact solver for free (search.hpp). Without it the label
@@ -112,14 +115,15 @@ namespace islay {
   /** Generate, fit, and write `cfg.out`. Progress streams to `log`. */
   TrainResult run_train(const TrainConfig &cfg, std::ostream &log);
 
-  /** NNUE-lite training (nnue.hpp): same self-play pipeline and disc-diff labels as
-   *  run_train, but backprop over the two-layer net. Requires EvalFile loaded. A
-   *  linear .pat teacher seeds the original identity net; a .nnue teacher bootstraps
-   *  the next round from its quantized embeddings and float heads. */
+  /** NNUE-lite search distillation (nnue.hpp). The loaded EvalFile searches every
+   *  post-opening position and its Black-perspective score is the target; the final
+   *  result remains only a game record. A .pat teacher seeds a new net, while a
+   *  .nnue teacher warm-starts the next round from its embeddings and heads. */
   struct NTrainConfig {
     int           games         = 50000;
     int           epochs        = 10;
-    int           depth         = 4;
+    int           depth         = 10;
+    int           workers       = 4; // generation only; hard-capped at 4 single-threaded Searchers
     int           opening_plies = 10;
     int           solve_empties = 12;
     double        lr_emb        = 1e-3; // embedding rows (per-disc units; see train.cpp)

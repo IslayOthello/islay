@@ -475,7 +475,17 @@ namespace islay {
         return eval(b, moves); // hand-written eval (eval.cpp) is the default
       PatternState s;
       s.set(b, stm);
-      const int black = pattern_weights().score_phase(s, b.count(), mob_counts(b, stm, moves), pattern_stage_interp());
+      int black;
+      if (nnue_enabled()) {
+        std::uint32_t idx[kPatternInstances + 9];
+        const int     discs = b.count();
+        int           n     = pattern_indices(s, 0, mob_counts(b, stm, moves), idx);
+        idx[n++]            = static_cast<std::uint32_t>(nnue_net().features() - kNnueRFeat +
+                                                         (discs >= 4 ? (discs - 4) % 4 : 0));
+        black               = nnue_net().score(idx, n, pattern_stage(discs));
+      } else {
+        black = pattern_weights().score_phase(s, b.count(), mob_counts(b, stm, moves), pattern_stage_interp());
+      }
       const int mover = (stm == Color::Black) ? black : -black; // zero-sum: White is minus Black
       return std::clamp(mover, -kEvalMax, kEvalMax);
     }

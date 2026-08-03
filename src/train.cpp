@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -42,12 +43,21 @@ namespace islay {
       std::int16_t result = 0; // final disc difference, centi-discs, BLACK's point of view
     };
 
+    constexpr std::int16_t kNoTeacherScore = std::numeric_limits<std::int16_t>::min();
+    struct DistillGame {
+      Game         game;
+      std::int16_t teacher[64]; // deep-search score before moves[i], BLACK's point of view
+    };
+
     /** Random legal opening, then the engine plays it out. Returns false if it died. */
-    [[nodiscard]] bool play_one(Game &g, Searcher &s, Rng &rng, const TrainConfig &cfg) {
+    [[nodiscard]] bool play_one(Game &g, Searcher &s, Rng &rng, const TrainConfig &cfg,
+                                std::int16_t *teacher = nullptr) {
       Board              b   = Board::start();
       Color              stm = Color::Black;
       std::ostringstream sink; // the engine's info lines are noise here
       g.n = 0;
+      if (teacher)
+        std::fill(teacher, teacher + 64, kNoTeacherScore);
 
       // Random opening: both engines are deterministic, so without this every game
       // would be the same game and the whole run would fit one line.
@@ -100,6 +110,8 @@ namespace islay {
           g.moves[g.n++] = kPassByte;
           continue;
         }
+        if (teacher)
+          teacher[g.n] = static_cast<std::int16_t>((stm == Color::Black) ? r.score : -r.score);
         b   = b.play(r.best);
         stm = ~stm;
         g.moves[g.n++] = static_cast<std::uint8_t>(r.best);
@@ -345,10 +357,11 @@ namespace islay {
     }
     constexpr int     H   = kNnueHidden;
     const std::size_t per = pattern_weights_per_stage();
+    const unsigned workers = static_cast<unsigned>(std::clamp(cfg.workers, 1, 4));
 
-    log << "info string ntrain: " << cfg.games << " games @ depth " << cfg.depth << ", " << cfg.epochs
+    log << "info string ntrain: " << cfg.games << " games @ teacher depth " << cfg.depth << ", " << cfg.epochs
         << " epochs, lr_emb " << cfg.lr_emb << ", lr_out " << cfg.lr_out << ", H " << H << " x " << kStageCount
-        << " stages -> " << cfg.out << '\n';
+        << " stages, " << workers << " generation workers -> " << cfg.out << '\n';
     log.flush();
 
     // --- phase 1: generate (the teacher is the loaded EvalFile) ------------------
@@ -362,13 +375,11 @@ namespace islay {
     gen.rule          = cfg.rule;
 
     const std::uint64_t seed0 = cfg.seed ? cfg.seed : 0x9E3779B97F4A7C15ULL;
-    unsigned            nthreads = std::thread::hardware_concurrency();
-    if (nthreads < 1)
-      nthreads = 1;
+    unsigned            nthreads = workers;
     if (static_cast<int>(nthreads) > cfg.games)
       nthreads = static_cast<unsigned>(cfg.games);
 
-    std::vector<std::vector<Game>> parts(nthreads);
+    std::vector<std::vector<DistillGame>> parts(nthreads);
     std::atomic<int>               done{0};
     const auto worker = [&](unsigned t) {
       Rng      rng{seed0 + static_cast<std::uint64_t>(t) * 0x9E3779B97F4A7C15ULL};
@@ -377,12 +388,12 @@ namespace islay {
       const int hi = static_cast<int>(static_cast<std::uint64_t>(cfg.games) * (t + 1) / nthreads);
       parts[t].reserve(static_cast<std::size_t>(hi - lo));
       for (int i = lo; i < hi; ++i) {
-        Game g;
+        DistillGame g;
         s.clear();
-        if (play_one(g, s, rng, gen))
+        if (play_one(g.game, s, rng, gen, g.teacher))
           parts[t].push_back(g);
         const int n = done.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (t == 0 && (n % 20000) == 0) {
+        if (t == 0 && (n % 5000) == 0) {
           log << "info string ntrain: generated ~" << n << "/" << cfg.games << " games\n";
           log.flush();
         }
@@ -395,7 +406,7 @@ namespace islay {
     for (auto &th : pool)
       th.join();
 
-    std::vector<Game> games;
+    std::vector<DistillGame> games;
     std::size_t       total = 0;
     for (auto &p : parts)
       total += p.size();
@@ -465,50 +476,53 @@ namespace islay {
       double        sse   = 0.0;
       std::uint64_t count = 0;
       for (std::size_t gi = begin; gi < end; ++gi) {
-        const Game  &g   = games[gi];
-        Board        b   = Board::start();
-        Color        stm = Color::Black;
+        const DistillGame &dg  = games[gi];
+        const Game        &g   = dg.game;
+        Board              b   = Board::start();
+        Color              stm = Color::Black;
         PatternState st;
         st.set(b, stm);
-        const float label = static_cast<float>(g.result) / 100.0f; // discs
 
         for (int m = 0; m < g.n; ++m) {
-          const MobCounts mc    = mob_counts(b, stm);
-          const int       discs = b.count();
-          const int       stage = pattern_stage(discs);
-          int             n     = pattern_indices(st, 0, mc, idx); // FLAT (stage-0) ids
-          const int       r     = discs >= 4 ? (discs - 4) % 4 : 0;
-          idx[n++]              = static_cast<std::uint32_t>(per + r); // the interp input
-          float          *base  = emb + static_cast<std::size_t>(stage) * fper * H;
-          float          *a     = w2a + static_cast<std::size_t>(stage) * H;
-          float          *h     = w2h + static_cast<std::size_t>(stage) * H;
+          if (dg.teacher[m] != kNoTeacherScore) {
+            const MobCounts mc    = mob_counts(b, stm);
+            const int       discs = b.count();
+            const int       stage = pattern_stage(discs);
+            int             n     = pattern_indices(st, 0, mc, idx); // FLAT (stage-0) ids
+            const int       r     = discs >= 4 ? (discs - 4) % 4 : 0;
+            idx[n++]              = static_cast<std::uint32_t>(per + r); // the interp input
+            float          *base  = emb + static_cast<std::size_t>(stage) * fper * H;
+            float          *a     = w2a + static_cast<std::size_t>(stage) * H;
+            float          *h     = w2h + static_cast<std::size_t>(stage) * H;
 
-          float acc[H] = {};
-          for (int k = 0; k < n; ++k) {
-            const float *row = base + static_cast<std::size_t>(idx[k]) * H;
-            for (int j = 0; j < H; ++j)
-              acc[j] += row[j];
-          }
-          float pred = net.b2()[stage];
-          for (int j = 0; j < H; ++j)
-            pred += a[j] * acc[j] + (acc[j] > 0.0f ? h[j] * acc[j] : 0.0f);
-
-          const float err = pred - label;
-          sse += static_cast<double>(err) * err;
-          ++count;
-
-          if (update) {
-            float dacc[H]; // d(loss)/d(acc), using the heads BEFORE they step
-            for (int j = 0; j < H; ++j) {
-              dacc[j] = err * (a[j] + (acc[j] > 0.0f ? h[j] : 0.0f));
-              a[j] -= lro * err * acc[j];
-              h[j] -= lro * err * (acc[j] > 0.0f ? acc[j] : 0.0f);
-            }
-            net.b2()[stage] -= lro * err;
+            float acc[H] = {};
             for (int k = 0; k < n; ++k) {
-              float *row = base + static_cast<std::size_t>(idx[k]) * H;
+              const float *row = base + static_cast<std::size_t>(idx[k]) * H;
               for (int j = 0; j < H; ++j)
-                row[j] -= lre * dacc[j];
+                acc[j] += row[j];
+            }
+            float pred = net.b2()[stage];
+            for (int j = 0; j < H; ++j)
+              pred += a[j] * acc[j] + (acc[j] > 0.0f ? h[j] * acc[j] : 0.0f);
+
+            const float label = static_cast<float>(dg.teacher[m]) / 100.0f; // discs, Black POV
+            const float err   = pred - label;
+            sse += static_cast<double>(err) * err;
+            ++count;
+
+            if (update) {
+              float dacc[H]; // d(loss)/d(acc), using the heads BEFORE they step
+              for (int j = 0; j < H; ++j) {
+                dacc[j] = err * (a[j] + (acc[j] > 0.0f ? h[j] : 0.0f));
+                a[j] -= lro * err * acc[j];
+                h[j] -= lro * err * (acc[j] > 0.0f ? acc[j] : 0.0f);
+              }
+              net.b2()[stage] -= lro * err;
+              for (int k = 0; k < n; ++k) {
+                float *row = base + static_cast<std::size_t>(idx[k]) * H;
+                for (int j = 0; j < H; ++j)
+                  row[j] -= lre * dacc[j];
+              }
             }
           }
 

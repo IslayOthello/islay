@@ -40,8 +40,9 @@ and command-line analysis.
 
 The NNUE-lite evaluator reuses the engine's incremental pattern features. Active
 feature rows are accumulated into eight hidden values, then evaluated by
-per-stage linear and ReLU heads. Version 20 was warm-started from the quantized
-v19 network and trained on approximately five million new self-play games.
+per-stage linear and ReLU heads. Version 21 was warm-started from v20 and trained
+on 20,000 games using depth-10 search scores as distillation targets; data
+generation was capped at four workers.
 
 ## Estimated Elo
 
@@ -55,14 +56,15 @@ paired, color-reversed estimates relative to earlier `islay` evaluators.
 | v19 NNUE vs v18 patterns | 100 ms equal time | repository ledger | +31.4 | [19.8, 42.9] | 100% |
 | v20 NNUE vs v19 NNUE | 200k nodes | 4,000 | +8.08 | [2.24, 13.92] | 99.67% |
 | v20 NNUE vs v19 NNUE | 100 ms equal time | 2,280 | +3.51 | [-4.25, 11.27] | 81.23% |
+| v21 NNUE vs v20 NNUE | 20k nodes, balanced d8 book | 1,506 | +56.32 | [43.22, 69.58] | 100% |
 
 The v20 equal-time run was stopped before its planned 4,000-game cap, so its
 confidence interval still includes zero.
 
-The current practical estimate is therefore **v20 ≈ +3.5 Elo over v19 at equal
-time**. Adding the two sequential equal-time estimates gives a rough
-**v20 ≈ +35 Elo over v18**. This is a directional project estimate, not a formal
-combined confidence interval or an absolute playing rating.
+The current fixed-node estimate is therefore **v21 ≈ +56 Elo over v20**. The
+SPRT accepted H1 at LLR 2.964 before its 10,000-game cap. This is a directional
+project estimate, not an absolute playing rating; an equal-time confirmation is
+still useful even though v20 and v21 share the same inference architecture.
 
 ## Build
 
@@ -96,7 +98,7 @@ Start an interactive engine session:
 Load the recommended evaluator and search the initial position:
 
 ```sh
-printf 'uci\nsetoption name EvalFile value weights/v20.nnue\nisready\nposition startpos\ngo depth 10\nquit\n' \
+printf 'uci\nsetoption name EvalFile value weights/v21.nnue\nisready\nposition startpos\ngo depth 10\nquit\n' \
   | ./build/islay
 ```
 
