@@ -465,6 +465,63 @@ namespace islay {
             18, -4, 4, 2, 2, 4, -4, 18};
 
     /**
+     * Compact no-TT move policy, distilled from 20k independent v22 searches at
+     * depth 10. The 120 int16 weights use D4-invariant square/relative-geometry
+     * buckets, so the model is 240 bytes and cannot learn a spurious board
+     * orientation. Held-out top-1 teacher-move accuracy: 32.12% -> 37.50%; MRR:
+     * 0.5335 -> 0.5794. It replaces only the hand-written square/mobility prior;
+     * dynamic killer/history/continuation evidence is still added afterwards.
+     */
+    constexpr int kOrderSquareOrbit[64] = {
+            0, 1, 2, 3, 3, 2, 1, 0, //
+            1, 4, 5, 6, 6, 5, 4, 1, //
+            2, 5, 7, 8, 8, 7, 5, 2, //
+            3, 6, 8, 9, 9, 8, 6, 3, //
+            3, 6, 8, 9, 9, 8, 6, 3, //
+            2, 5, 7, 8, 8, 7, 5, 2, //
+            1, 4, 5, 6, 6, 5, 4, 1, //
+            0, 1, 2, 3, 3, 2, 1, 0};
+    constexpr std::int16_t kOrderSquare[4][10] = {
+            {55, -39, 12, -7, -139, 20, 43, 85, 106, 8},
+            {88, -50, 1, -3, -79, 6, 20, 68, 85, 8},
+            {88, -6, 9, 5, -46, 0, 5, 36, 45, 8},
+            {83, 4, 18, 9, -24, -26, 4, 41, 27, 8},
+    };
+    constexpr std::int16_t kOrderFlip[4]     = {-40, -26, -2, -4};
+    constexpr std::int16_t kOrderMobility[4] = {-31, -30, -35, -58};
+    constexpr std::int16_t kOrderPrev[36] = {
+            0, 4, 0, 14, -2, 7, 1, 4, 10, 20, -5, -4, -2, 6, -1, 13, -10, 7,
+            -9, -11, -7, -8, -5, 3, -6, 16, -5, 8, 2, -13, 1, -7, -2, 3, -9, -12,
+    };
+    constexpr std::int16_t kOrderPrev2[36] = {
+            0, 18, 2, -2, 12, -21, 12, 9, 0, 2, -7, 10, 1, 6, -12, 0, 3, 10,
+            2, -9, 0, -12, 5, -3, -11, 1, -6, -1, -7, 5, 6, -10, -2, -3, -10, 11,
+    };
+
+    [[nodiscard]] ISLAY_FORCEINLINE int order_relation(Square previous, Square square) noexcept {
+      if (previous < 0 || previous >= 64)
+        return 0;
+      int dx = (previous & 7) - (square & 7);
+      int dy = (previous >> 3) - (square >> 3);
+      dx = dx < 0 ? -dx : dx;
+      dy = dy < 0 ? -dy : dy;
+      if (dx > dy)
+        std::swap(dx, dy);
+      return dy * (dy + 1) / 2 + dx;
+    }
+
+    [[nodiscard]] ISLAY_FORCEINLINE int learned_order_score(const Board &b, const Board &child, Square square,
+                                                             int replies, Square prev, Square prev2) noexcept {
+      int phase = pattern_stage(b.count()) / 4;
+      if (phase > 3)
+        phase = 3;
+      const int flips = popcount(b.player ^ child.opponent ^ square_bb(square));
+      return kOrderSquare[phase][kOrderSquareOrbit[square]] + kOrderFlip[phase] * flips +
+             kOrderMobility[phase] * replies + kOrderPrev[order_relation(prev, square)] +
+             kOrderPrev2[order_relation(prev2, square)];
+    }
+
+    /**
      * Leaf value, from scratch. Used by the ORACLE, so it must agree with the
      * search's incremental path -- which is exactly what makes the oracle test
      * also a test of PatternState::update. Rebuilding the features here is O(64)
@@ -756,6 +813,10 @@ namespace islay {
       << " attempts (" << pct(gtot.pc_lo_cut, gtot.pc_lo_try) << "%), "
       << gtot.pc_lo_nodes << " nodes = " << pct(gtot.pc_lo_nodes, total_nodes)
       << "% of the whole search\n";
+    o << "no-TT ordering: " << gtot.order_no_tt << " of " << gtot.order_nodes
+      << " ordered nodes (" << pct(gtot.order_no_tt, gtot.order_nodes) << "%), "
+      << gtot.order_no_tt_fh << " fail-highs, " << gtot.order_no_tt_fh_first
+      << " on the first move (" << pct(gtot.order_no_tt_fh_first, gtot.order_no_tt_fh) << "%).\n";
 
     // LMR calibration: re-search rate per (remaining depth x move ordinal). This is the
     // fit input for a reduction table -- a bucket whose reduced scouts almost never come
@@ -1144,7 +1205,10 @@ namespace islay {
           if (sq == tt_move) {
             sm.score = 1 << 24;
           } else {
-            int s = kSquareValue[sq] * params_.sqv_mult;
+            const bool learned = tt_move == NOMOVE && depth >= kOrderMobilityMinDepth;
+            const int  replies = depth >= kOrderMobilityMinDepth ? popcount(sm.child.moves()) : 0;
+            int s = learned ? learned_order_score(b, sm.child, sq, replies, prev_move, prev2_move)
+                            : kSquareValue[sq] * params_.sqv_mult;
             if constexpr (kUseKillers) {
               if (sq == killers_[ply][0])
                 s += params_.killer0;
@@ -1153,8 +1217,8 @@ namespace islay {
             }
             // Fewer replies for the opponent is the strongest cheap signal, but
             // it costs a get_moves per move -- only worth it deeper up the tree.
-            if (depth >= kOrderMobilityMinDepth)
-              s -= params_.mob_w * popcount(sm.child.moves());
+            if (!learned && depth >= kOrderMobilityMinDepth)
+              s -= params_.mob_w * replies;
             s += history_[sq] / params_.hist_div;
             // The previous placement carries local board context that the global
             // destination-square history cannot distinguish. A pass preserves it.
@@ -1170,6 +1234,12 @@ namespace islay {
           sm.score = 0;
         }
       }
+    }
+
+    if constexpr (kStats) {
+      ++sacc.order_nodes;
+      if (tt_move == NOMOVE)
+        ++sacc.order_no_tt;
     }
 
     int    best       = -kInf;
@@ -1257,6 +1327,13 @@ namespace islay {
         alpha = s;
       if (alpha >= beta) { // fail high
         if constexpr (kStats) sacc.cut_idx = ord; // ordinal of the cutoff move
+        if constexpr (kStats) {
+          if (tt_move == NOMOVE) {
+            ++sacc.order_no_tt_fh;
+            if (ord == 0)
+              ++sacc.order_no_tt_fh_first;
+          }
+        }
         if constexpr (kUseKillers) {
           if (killers_[ply][0] != sm.sq) {
             killers_[ply][1] = killers_[ply][0];

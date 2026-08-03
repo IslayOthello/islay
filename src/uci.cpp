@@ -29,6 +29,7 @@
  *   match ...                   -> engine-vs-engine A/B harness
  *   features                    -> dump the eval's feature indices for this position
  *   pcdata [n] [maxdepth]       -> CSV (stage,depth,score,standpat) to fit ProbCut against
+ *   orderdata [n] [depth] [seed] -> CSV move-order labels from independent teacher searches
  *   train [games] [epochs] ...  -> fit pattern weights from self-play
  *   backend                     -> report the active SIMD back-end
  *   searchstats [full]          -> search telemetry for the last `go`
@@ -315,7 +316,7 @@ namespace islay {
       /** The commands that exist only while `debug on` is in effect. */
       [[nodiscard]] static bool is_debug_command(const std::string &c) noexcept {
         return c == "d" || c == "display" || c == "board" || c == "bench" || c == "test" ||
-               c == "selftest" || c == "match" || c == "features" || c == "pcdata" ||
+               c == "selftest" || c == "match" || c == "features" || c == "pcdata" || c == "orderdata" ||
                c == "train" || c == "ntrain" || c == "book" || c == "backend" || c == "searchstats" || c == "tune";
       }
 
@@ -332,6 +333,8 @@ namespace islay {
           cmd_features();
         } else if (cmd == "pcdata") {
           cmd_pcdata(is);
+        } else if (cmd == "orderdata") {
+          cmd_orderdata(is);
         } else if (cmd == "train") {
           cmd_train(is);
         } else if (cmd == "ntrain") {
@@ -1086,6 +1089,89 @@ namespace islay {
           }
         }
         std::cout << "info string pcdata: " << emitted << " rows\n";
+      }
+
+      /**
+       * Learned-ordering data: one row per legal move at an independently generated
+       * position. The depth-limited search supplies the label; the remaining columns
+       * are deliberately cheap features available while the normal move list is built.
+       * Clearing the tiny teacher before every sample guarantees the root has no TT
+       * move, which is exactly the runtime slice the learned policy will serve.
+       */
+      void cmd_orderdata(std::istringstream &is) {
+        int           n = 10000, depth = 10;
+        std::uint64_t seed = 0xD1B54A32D192ED03ULL;
+        if (!(is >> n) || n < 1)
+          n = 10000;
+        if (!(is >> depth) || depth < 2)
+          depth = 10;
+        if (!(is >> seed))
+          seed = 0xD1B54A32D192ED03ULL;
+
+        const auto next = [&seed]() noexcept {
+          seed ^= seed << 13;
+          seed ^= seed >> 7;
+          seed ^= seed << 17;
+          return seed;
+        };
+
+        std::cout << "sample,stage,prev,prev2,square,flips,replies,label\n";
+        Searcher teacher(1);
+        int      emitted = 0;
+        for (int attempt = 0; emitted < n && attempt < n * 4; ++attempt) {
+          Board  b     = Board::start();
+          Color  stm   = Color::Black;
+          Square prev  = NOMOVE;
+          Square prev2 = NOMOVE;
+          const int plies = 4 + static_cast<int>(next() % 46);
+          bool dead = false;
+          for (int k = 0; k < plies; ++k) {
+            Bitboard moves = b.moves();
+            if (moves == 0) {
+              const Board passed = b.passed();
+              if (!passed.has_moves()) {
+                dead = true;
+                break;
+              }
+              b   = passed;
+              stm = ~stm;
+              continue; // a pass preserves both placement contexts
+            }
+            unsigned pick = static_cast<unsigned>(next() % static_cast<unsigned>(popcount(moves)));
+            while (pick-- > 0)
+              moves &= moves - 1;
+            const Square sq = lsb(moves);
+            b     = b.play(sq);
+            stm   = ~stm;
+            prev2 = prev;
+            prev  = sq;
+          }
+
+          const Bitboard moves = dead ? 0 : b.moves();
+          if (popcount(moves) < 2)
+            continue;
+
+          teacher.clear();
+          std::ostringstream sink;
+          const SearchResult result = teacher.search(b, SearchLimits{depth, 0, 0.0}, options_.rule, stm, sink);
+          if (result.best < 0 || result.best >= 64 || !(moves & square_bb(result.best)))
+            continue;
+
+          Bitboard rest = moves;
+          while (rest) {
+            const Square sq      = pop_lsb(rest);
+            const Board  child   = b.play(sq);
+            const int    flips   = popcount(b.player ^ child.opponent ^ square_bb(sq));
+            const int    replies = popcount(child.moves());
+            std::cout << emitted << ',' << pattern_stage(b.count()) << ','
+                      << (prev < 64 ? static_cast<int>(prev) : 64) << ','
+                      << (prev2 < 64 ? static_cast<int>(prev2) : 64) << ','
+                      << static_cast<int>(sq) << ',' << flips << ',' << replies << ','
+                      << (sq == result.best ? 1 : 0) << '\n';
+          }
+          ++emitted;
+        }
+        std::cout << "info string orderdata: " << emitted << " positions at depth " << depth << "\n";
       }
 
       // train [games] [epochs] [depth] [solve_empties] [lr] [l2] [mob0/1] [c2x50/1] [out]

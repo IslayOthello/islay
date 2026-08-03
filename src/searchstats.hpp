@@ -48,6 +48,8 @@ namespace islay {
       std::uint64_t nodes = 0;
       std::uint64_t tt_probe = 0, tt_hit = 0, tt_cut = 0;
       std::uint64_t fh = 0, fh_first = 0, cut_idx_sum = 0; // fail-high accounting / ordering
+      std::uint64_t order_nodes = 0, order_no_tt = 0;
+      std::uint64_t order_no_tt_fh = 0, order_no_tt_fh_first = 0;
       std::uint64_t moves_searched = 0;                    // for the branching factor
       std::uint64_t lmr_try = 0, lmr_re = 0;
       std::uint64_t fut_try = 0, fut_cut = 0;
@@ -62,6 +64,8 @@ namespace islay {
         nodes += o.nodes;
         tt_probe += o.tt_probe; tt_hit += o.tt_hit; tt_cut += o.tt_cut;
         fh += o.fh; fh_first += o.fh_first; cut_idx_sum += o.cut_idx_sum;
+        order_nodes += o.order_nodes; order_no_tt += o.order_no_tt;
+        order_no_tt_fh += o.order_no_tt_fh; order_no_tt_fh_first += o.order_no_tt_fh_first;
         moves_searched += o.moves_searched;
         lmr_try += o.lmr_try; lmr_re += o.lmr_re;
         fut_try += o.fut_try; fut_cut += o.fut_cut;
@@ -115,6 +119,8 @@ namespace islay {
       std::uint64_t pc_probe_nodes = 0, pc_lo_nodes = 0;
       std::uint32_t pvs_scout = 0, pvs_re = 0;
       std::uint32_t moves_searched = 0;
+      std::uint32_t order_nodes = 0, order_no_tt = 0;
+      std::uint32_t order_no_tt_fh = 0, order_no_tt_fh_first = 0;
       int           cut_idx = -1; // move index that produced the fail-high, -1 = none
     };
 
@@ -127,6 +133,8 @@ namespace islay {
       ++c.nodes;
       c.tt_probe += a.tt_probe; c.tt_hit += a.tt_hit; c.tt_cut += a.tt_cut;
       c.moves_searched += a.moves_searched;
+      c.order_nodes += a.order_nodes; c.order_no_tt += a.order_no_tt;
+      c.order_no_tt_fh += a.order_no_tt_fh; c.order_no_tt_fh_first += a.order_no_tt_fh_first;
       c.lmr_try += a.lmr_try; c.lmr_re += a.lmr_re;
       c.fut_try += a.fut_try; c.fut_cut += a.fut_cut;
       c.pc_try += a.pc_try; c.pc_cut += a.pc_cut; c.pc_probe_nodes += a.pc_probe_nodes;
