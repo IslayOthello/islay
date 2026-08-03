@@ -1130,9 +1130,10 @@ namespace islay {
         run_train(cfg, std::cout);
       }
 
-      /** ntrain [games] [epochs] [depth] [lr_emb] [lr_out] [out] [seed] [workers]
+      /** ntrain [games] [epochs] [depth] [lr_emb] [lr_out] [out] [seed] [workers] [grouped]
        *  -- NNUE search distillation (train.hpp). A loaded .pat starts a new net;
-       *  a loaded .nnue bootstraps another round. Generation is capped at 4 workers. */
+       *  a loaded .nnue bootstraps another round. Generation is capped at 4 workers.
+       *  grouped=1 trains NN4; grouped=0 is the legacy-head A/B control. */
       void cmd_ntrain(std::istringstream &is) {
         NTrainConfig cfg;
         cfg.rule = options_.rule;
@@ -1154,6 +1155,9 @@ namespace islay {
           cfg.seed = sd;
         if (!(is >> cfg.workers) || cfg.workers < 1)
           cfg.workers = 4;
+        int grouped = 1;
+        if (is >> grouped)
+          cfg.grouped = grouped != 0;
         run_ntrain(cfg, std::cout);
       }
 
@@ -1329,13 +1333,17 @@ namespace islay {
         const bool pattern_ok = pattern_selftest();
         std::cout << (pattern_ok ? "ok\n" : "FAILED\n");
 
+        std::cout << "nnue self-test (legacy/grouped equivalence) ... " << std::flush;
+        const bool nnue_ok = NnueNet::selftest();
+        std::cout << (nnue_ok ? "ok\n" : "FAILED\n");
+
         std::cout << "book self-test (probe symmetry mapping) ... " << std::flush;
         const bool book_ok = book_selftest();
         std::cout << (book_ok ? "ok\n" : "FAILED\n");
 
         constexpr std::array<std::uint64_t, 9> known{0, 4, 12, 56, 244, 1396, 8200, 55092, 390216};
         const Board                            start  = Board::start();
-        bool                                   all_ok = eval_ok && search_ok && pattern_ok && book_ok;
+        bool                                   all_ok = eval_ok && search_ok && pattern_ok && nnue_ok && book_ok;
         for (int d = 1; d <= 8; ++d) {
           const std::uint64_t got = perft(start, d, Rule::Othello);
           const bool          ok  = (got == known[static_cast<std::size_t>(d)]);

@@ -361,7 +361,8 @@ namespace islay {
 
     log << "info string ntrain: " << cfg.games << " games @ teacher depth " << cfg.depth << ", " << cfg.epochs
         << " epochs, lr_emb " << cfg.lr_emb << ", lr_out " << cfg.lr_out << ", H " << H << " x " << kStageCount
-        << " stages, " << workers << " generation workers -> " << cfg.out << '\n';
+        << " stages, head " << (cfg.grouped ? "grouped-interaction NN4" : "legacy NN3") << ", " << workers
+        << " generation workers -> " << cfg.out << '\n';
     log.flush();
 
     // --- phase 1: generate (the teacher is the loaded EvalFile) ------------------
@@ -430,7 +431,9 @@ namespace islay {
       net.prepare_training();
     else
       net.reset();
+    net.set_grouped(cfg.grouped);
     float *emb = net.emb(), *w2a = net.w2a(), *w2h = net.w2h(), *b2 = net.b2();
+    float *wgroup = net.wgroup(), *winter = net.winter();
     const std::size_t   fper = per + kNnueRFeat; // net feature space: per_stage + r rows
     if (nnue_teacher) {
       log << "info string ntrain: warm-starting from loaded NNUE teacher\n";
@@ -494,16 +497,33 @@ namespace islay {
             float          *base  = emb + static_cast<std::size_t>(stage) * fper * H;
             float          *a     = w2a + static_cast<std::size_t>(stage) * H;
             float          *h     = w2h + static_cast<std::size_t>(stage) * H;
+            float          *wg    = cfg.grouped ? wgroup + static_cast<std::size_t>(stage) * kNnueGroups * H : nullptr;
+            float          *wi    = cfg.grouped ? winter + static_cast<std::size_t>(stage) * kNnuePairs * H : nullptr;
 
-            float acc[H] = {};
+            float gacc[kNnueGroups][H] = {};
             for (int k = 0; k < n; ++k) {
               const float *row = base + static_cast<std::size_t>(idx[k]) * H;
+              const int    group = nnue_feature_group(k);
               for (int j = 0; j < H; ++j)
-                acc[j] += row[j];
+                gacc[group][j] += row[j];
             }
+            float acc[H] = {};
             float pred = net.b2()[stage];
-            for (int j = 0; j < H; ++j)
+            for (int j = 0; j < H; ++j) {
+              for (int group = 0; group < kNnueGroups; ++group)
+                acc[j] += gacc[group][j];
               pred += a[j] * acc[j] + (acc[j] > 0.0f ? h[j] * acc[j] : 0.0f);
+              if (cfg.grouped) {
+                for (int group = 0; group < kNnueGroups; ++group)
+                  pred += wg[static_cast<std::size_t>(group) * H + j] * std::max(gacc[group][j], 0.0f);
+                for (int group = 0; group < kNnueGroups; ++group)
+                  for (int other = group + 1; other < kNnueGroups; ++other) {
+                    const int pair = nnue_pair_index(group, other);
+                    pred += wi[static_cast<std::size_t>(pair) * H + j] * std::max(gacc[group][j], 0.0f) *
+                            std::max(gacc[other][j], 0.0f) / kNnueInteractionScale;
+                  }
+              }
+            }
 
             const float label = static_cast<float>(dg.teacher[m]) / 100.0f; // discs, Black POV
             const float err   = pred - label;
@@ -511,17 +531,44 @@ namespace islay {
             ++count;
 
             if (update) {
-              float dacc[H]; // d(loss)/d(acc), using the heads BEFORE they step
+              float dgacc[kNnueGroups][H]; // d(loss)/d(group acc), before any head steps
               for (int j = 0; j < H; ++j) {
-                dacc[j] = err * (a[j] + (acc[j] > 0.0f ? h[j] : 0.0f));
+                const float common = a[j] + (acc[j] > 0.0f ? h[j] : 0.0f);
+                for (int group = 0; group < kNnueGroups; ++group) {
+                  float residual = 0.0f;
+                  if (cfg.grouped && gacc[group][j] > 0.0f) {
+                    residual += wg[static_cast<std::size_t>(group) * H + j];
+                    for (int other = 0; other < kNnueGroups; ++other) {
+                      if (other == group)
+                        continue;
+                      const int pair = nnue_pair_index(group, other);
+                      residual += wi[static_cast<std::size_t>(pair) * H + j] * std::max(gacc[other][j], 0.0f) /
+                                  kNnueInteractionScale;
+                    }
+                  }
+                  dgacc[group][j] = err * (common + residual);
+                }
                 a[j] -= lro * err * acc[j];
                 h[j] -= lro * err * (acc[j] > 0.0f ? acc[j] : 0.0f);
+                if (cfg.grouped) {
+                  for (int group = 0; group < kNnueGroups; ++group)
+                    wg[static_cast<std::size_t>(group) * H + j] -=
+                        lro * err * std::max(gacc[group][j], 0.0f);
+                  for (int group = 0; group < kNnueGroups; ++group)
+                    for (int other = group + 1; other < kNnueGroups; ++other) {
+                      const int pair = nnue_pair_index(group, other);
+                      wi[static_cast<std::size_t>(pair) * H + j] -=
+                          lro * err * std::max(gacc[group][j], 0.0f) * std::max(gacc[other][j], 0.0f) /
+                          kNnueInteractionScale;
+                    }
+                }
               }
               net.b2()[stage] -= lro * err;
               for (int k = 0; k < n; ++k) {
                 float *row = base + static_cast<std::size_t>(idx[k]) * H;
+                const int group = nnue_feature_group(k);
                 for (int j = 0; j < H; ++j)
-                  row[j] -= lre * dacc[j];
+                  row[j] -= lre * dgacc[group][j];
               }
             }
           }
@@ -549,7 +596,7 @@ namespace islay {
     // the best-held-out epoch. For an NNUE bootstrap, epoch 0 is the teacher and
     // must remain eligible: a bad continuation round should reproduce the teacher,
     // not force-promote its least-bad trained epoch.
-    std::vector<float> best_emb, best_a, best_h, best_b;
+    std::vector<float> best_emb, best_a, best_h, best_group, best_inter, best_b;
     const std::size_t  esz = static_cast<std::size_t>(kStageCount) * fper * H;
     const double       warm_val = nval ? pass(0, nval, false, nullptr) : 0.0;
     double             best_val = nnue_teacher && nval ? warm_val : 1e30;
@@ -558,6 +605,10 @@ namespace islay {
       best_emb.assign(emb, emb + esz);
       best_a.assign(w2a, w2a + static_cast<std::size_t>(kStageCount) * H);
       best_h.assign(w2h, w2h + static_cast<std::size_t>(kStageCount) * H);
+      if (cfg.grouped) {
+        best_group.assign(wgroup, wgroup + static_cast<std::size_t>(kStageCount) * kNnueGroups * H);
+        best_inter.assign(winter, winter + static_cast<std::size_t>(kStageCount) * kNnuePairs * H);
+      }
       best_b.assign(net.b2(), net.b2() + kStageCount);
     }
     log << "info string ntrain: warm-start val_rmse " << static_cast<int>(warm_val) << " cd\n";
@@ -580,6 +631,10 @@ namespace islay {
         best_emb.assign(emb, emb + esz);
         best_a.assign(w2a, w2a + static_cast<std::size_t>(kStageCount) * H);
         best_h.assign(w2h, w2h + static_cast<std::size_t>(kStageCount) * H);
+        if (cfg.grouped) {
+          best_group.assign(wgroup, wgroup + static_cast<std::size_t>(kStageCount) * kNnueGroups * H);
+          best_inter.assign(winter, winter + static_cast<std::size_t>(kStageCount) * kNnuePairs * H);
+        }
         best_b.assign(net.b2(), net.b2() + kStageCount);
       }
       log << "info string ntrain: epoch " << (ep + 1) << "/" << cfg.epochs << "  positions " << count << "  rmse "
@@ -591,6 +646,10 @@ namespace islay {
       std::copy(best_emb.begin(), best_emb.end(), emb);
       std::copy(best_a.begin(), best_a.end(), w2a);
       std::copy(best_h.begin(), best_h.end(), w2h);
+      if (cfg.grouped) {
+        std::copy(best_group.begin(), best_group.end(), wgroup);
+        std::copy(best_inter.begin(), best_inter.end(), winter);
+      }
       std::copy(best_b.begin(), best_b.end(), net.b2());
       res.val_rmse = best_val;
       log << "info string ntrain: keeping epoch " << best_ep << " (best val_rmse " << static_cast<int>(best_val)

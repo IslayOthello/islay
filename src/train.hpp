@@ -129,6 +129,7 @@ namespace islay {
     double        lr_emb        = 1e-3; // embedding rows (per-disc units; see train.cpp)
     double        lr_out        = 1e-5; // heads see acc ~ tens, so their gradient is ~100x larger
     double        val_frac      = 0.1;
+    bool          grouped       = true; // NN4 semantic accumulators + pairwise interaction residuals
     std::uint64_t seed          = 0;
     Rule          rule          = Rule::Othello;
     std::string   out           = "islay.nnue";
