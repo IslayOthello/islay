@@ -78,6 +78,7 @@ option name EvalFile type string default
 option name OwnBook type check default false
 option name BookFile type string default
 option name StageInterpolation type check default true
+option name CorrectionHistory type spin default 200 min 0 max 200
 option name PerftHash type spin default 256 min 1 max 65536
 option name Threads type spin default 1 min 1 max 64
 option name Hash type spin default 256 min 1 max 65536
@@ -211,6 +212,7 @@ setoption name <name> value <value>
 | `OwnBook` | `check` | `false` | Play instantly from the opening book when it contains the position |
 | `BookFile` | `string` | Empty | Path to an opening-book file; an empty value disables the book |
 | `StageInterpolation` | `check` | `true` | Linearly interpolates the pattern evaluation across game-stage boundaries |
+| `CorrectionHistory` | `spin` | `200` | Maximum online correction applied only to the ProbCut probe gate, in centi-discs; `0` disables it |
 | `Threads` | `spin` | `1` | Search threads (lazy SMP); range `1`–`64` |
 | `Hash` | `spin` | `256` | Search transposition-table size in MiB; range `1`–`65536` |
 | `PerftHash` | `spin` | `256` | Transposition-table size in MiB for `go perft`; range `1`–`65536` |
@@ -222,6 +224,7 @@ setoption name Rule value Reversi
 setoption name Hash value 512
 setoption name EvalFile value weights/v20.nnue
 setoption name StageInterpolation value false
+setoption name CorrectionHistory value 0
 ```
 
 After a valid option change, the transposition tables are invalidated and the

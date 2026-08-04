@@ -165,6 +165,24 @@ namespace islay {
     std::atomic<std::size_t>   used_{0};
   };
 
+  /** Small online residual model used only by the ProbCut probe gate. */
+  class CorrectionHistory {
+  public:
+    void clear() noexcept;
+    [[nodiscard]] int predict(const Board &b, int stage, Square prev_move, Square prev2_move) const noexcept;
+    void update(const Board &b, int stage, Square prev_move, Square prev2_move,
+                int deep_score, int static_score, int depth) noexcept;
+
+  private:
+    [[nodiscard]] static unsigned edge_bucket(const Board &b) noexcept;
+    static void update_entry(std::int16_t &entry, int target, int rate) noexcept;
+
+    std::int16_t stage_[kStageCount]{};
+    std::int16_t prev_[kStageCount][64]{};
+    std::int16_t prev2_[kStageCount][64]{};
+    std::int16_t edge_[kStageCount][256]{};
+  };
+
   class Searcher {
   public:
     explicit Searcher(std::size_t mib = 256)
@@ -278,6 +296,10 @@ namespace islay {
      *  probabilistic cut only ever makes a node more accurate. */
     void set_probcut_gate_enabled(bool on) noexcept { probcut_gate_enabled_ = on; }
 
+    /** Online correction for the ProbCut gate. Zero disables it; 100/200 are
+     *  conservative A/B candidates in centi-discs. */
+    void set_correction_history_cap(int cap) noexcept;
+
     /** Probe across 4 plies instead of 2 at deep nodes: same parity, ~5x cheaper probe.
      *  MEASURED +19 Elo, 95% CI [4, 34], z=2.47 over 600 pairs, all six seeds positive,
      *  and it raises completed depth at equal time at both 50ms and 500ms. The node
@@ -342,6 +364,7 @@ namespace islay {
     float              probcut_t_         = 1.5f;
     bool               probcut_gap4_         = true;  // MEASURED +19 Elo; see kProbCutFit4
     bool               probcut_gate_enabled_ = true;  // MEASURED +25 Elo; see kProbCutGateFit
+    int                correction_history_cap_ = 200; // +4.54 Elo at 50ms; zero is the A/B baseline
     bool               lmr_enabled_       = true;
     bool               lmr_calibrated_    = false; // MEASURED WORSE -- see lmr_reduction
     bool               lmp_enabled_       = false;
@@ -373,6 +396,7 @@ namespace islay {
     int    history_[64]{};
     int    continuation_history_[64][64]{};
     int    continuation_history_2_[64][64]{};
+    CorrectionHistory correction_history_{};
 
     std::uint64_t nodes_    = 0;
     std::uint64_t node_cap_ = 0;

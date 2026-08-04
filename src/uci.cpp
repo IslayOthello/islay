@@ -290,6 +290,8 @@ namespace islay {
           stm_   = Color::Black;
           tt_.clear();
           searcher_.clear(); // TT + killers + history: nothing carries into a new game
+          for (auto &h: helpers_)
+            h->clear();
         } else if (cmd == "position") {
           cmd_position(is);
         } else if (cmd == "setoption") {
@@ -617,8 +619,11 @@ namespace islay {
         search_infinite_ = (lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0 && lim.time_ms == 0.0);
         size_helpers();
         searcher_.set_abdada(kUseAbdada && options_.threads > 1);
+        searcher_.set_correction_history_cap(options_.correction_history);
         for (auto &h: helpers_)
           h->set_abdada(kUseAbdada && options_.threads > 1);
+        for (auto &h: helpers_)
+          h->set_correction_history_cap(options_.correction_history);
         searcher_.arm(); // clear any earlier stop HERE, not on the search thread
         for (auto &h: helpers_)
           h->arm();

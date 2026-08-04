@@ -33,6 +33,7 @@ namespace islay {
     int  hash_mib       = 256; // SEARCH transposition table size, in MiB
     int  perft_hash_mib = 256; // perft transposition table size, in MiB (separate table)
     bool stage_interp   = true;  // linear stage interpolation of the pattern eval (+~58 Elo, see uci.cpp)
+    int  correction_history = 200; // ProbCut-gate residual cap in centi-discs; zero disables it
     bool own_book       = false; // play from the opening book when it has the position
     std::string book_file;       // ISLAYBK1 opening book; empty = none
   };

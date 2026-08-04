@@ -63,6 +63,23 @@ namespace islay {
                          o.stage_interp = iequals(v, "true") || v == "1";
                          return true;
                        }},
+            OptionSpec{"CorrectionHistory",
+                       "spin",
+                       "200",
+                       {},
+                       0,
+                       200,
+                       [](Options &o, const std::string &v) {
+                         try {
+                           const long cap = std::stol(v);
+                           if (cap < 0 || cap > 200)
+                             return false;
+                           o.correction_history = static_cast<int>(cap);
+                           return true;
+                         } catch (...) {
+                           return false;
+                         }
+                       }},
             // Hash sizes the SEARCH table (the conventional UCI meaning). perft
             // keeps its own table -- pointing both at one option would silently
             // allocate twice the memory the user asked for.

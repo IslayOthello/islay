@@ -676,6 +676,57 @@ namespace islay {
     return mask_ ? static_cast<int>(used_.load(std::memory_order_relaxed) * 1000 / (mask_ + 1)) : 0;
   }
 
+  unsigned CorrectionHistory::edge_bucket(const Board &b) noexcept {
+    std::uint64_t x = (b.player & kEdges) * 0x9E3779B185EBCA87ULL;
+    x ^= (b.opponent & kEdges) * 0xC2B2AE3D27D4EB4FULL;
+    x ^= x >> 33;
+    x *= 0xFF51AFD7ED558CCDULL;
+    return static_cast<unsigned>((x ^ (x >> 32)) & 255U);
+  }
+
+  void CorrectionHistory::clear() noexcept {
+    std::memset(stage_, 0, sizeof stage_);
+    std::memset(prev_, 0, sizeof prev_);
+    std::memset(prev2_, 0, sizeof prev2_);
+    std::memset(edge_, 0, sizeof edge_);
+  }
+
+  int CorrectionHistory::predict(const Board &b, int stage, Square prev_move, Square prev2_move) const noexcept {
+    stage = std::clamp(stage, 0, kStageCount - 1);
+    int sum = stage_[stage] + edge_[stage][edge_bucket(b)];
+    int n   = 2;
+    if (prev_move < 64) {
+      sum += prev_[stage][prev_move];
+      ++n;
+    }
+    if (prev2_move < 64) {
+      sum += prev2_[stage][prev2_move];
+      ++n;
+    }
+    return sum / n;
+  }
+
+  void CorrectionHistory::update_entry(std::int16_t &entry, int target, int rate) noexcept {
+    const int value = entry;
+    int       step  = (target - value) * rate / 256;
+    if (step == 0 && value != target)
+      step = target > value ? 1 : -1;
+    entry = static_cast<std::int16_t>(std::clamp(value + step, -400, 400));
+  }
+
+  void CorrectionHistory::update(const Board &b, int stage, Square prev_move, Square prev2_move,
+                                 int deep_score, int static_score, int depth) noexcept {
+    stage            = std::clamp(stage, 0, kStageCount - 1);
+    const int target = std::clamp(deep_score - static_score, -400, 400);
+    const int rate   = std::clamp(4 + 2 * depth, 4, 32);
+    update_entry(stage_[stage], target, rate);
+    update_entry(edge_[stage][edge_bucket(b)], target, rate);
+    if (prev_move < 64)
+      update_entry(prev_[stage][prev_move], target, rate);
+    if (prev2_move < 64)
+      update_entry(prev2_[stage][prev2_move], target, rate);
+  }
+
   void Searcher::resize(std::size_t mib) {
     tt_->resize(mib);
     clear();
@@ -688,6 +739,15 @@ namespace islay {
     std::memset(history_, 0, sizeof history_);
     std::memset(continuation_history_, 0, sizeof continuation_history_);
     std::memset(continuation_history_2_, 0, sizeof continuation_history_2_);
+    correction_history_.clear();
+  }
+
+  void Searcher::set_correction_history_cap(int cap) noexcept {
+    cap = std::clamp(cap, 0, 200);
+    if (cap != correction_history_cap_) {
+      correction_history_cap_ = cap;
+      correction_history_.clear();
+    }
   }
 
   void Searcher::new_search(const SearchLimits &limits) noexcept {
@@ -1061,11 +1121,17 @@ namespace islay {
       // v_{d2}; if even the optimistic bound cannot reach hi, the hi-probe is hopeless
       // (symmetric for lo). Off (probcut_gate_enabled_ == false) reproduces the ungated
       // behaviour exactly, for the equal-time A/B. The leaf eval is only paid when on.
-      const ProbCutFit &g     = kProbCutGateFit[d2 < 0 ? 0 : (d2 > kProbCutMaxFitDepth ? kProbCutMaxFitDepth : d2)];
-      const float       gate  = kProbCutGateT * g.sigma;
-      const float       predf = probcut_gate_enabled_
-                                  ? g.a * static_cast<float>(leaf_eval<Pat>(b, moves, ply, stm)) + g.b
-                                  : 0.0f;
+      const ProbCutFit &g    = kProbCutGateFit[d2 < 0 ? 0 : (d2 > kProbCutMaxFitDepth ? kProbCutMaxFitDepth : d2)];
+      const float       gate = kProbCutGateT * g.sigma;
+      float             predf = 0.0f;
+      if (probcut_gate_enabled_) {
+        const int raw = leaf_eval<Pat>(b, moves, ply, stm);
+        const int correction = correction_history_cap_ > 0
+                                 ? std::clamp(correction_history_.predict(b, sg, prev_move, prev2_move),
+                                              -correction_history_cap_, correction_history_cap_)
+                                 : 0;
+        predf = g.a * static_cast<float>(raw + correction) + g.b;
+      }
 
       // v_d >= beta  <=  a*v_{d-2} + b - t*sigma >= beta
       const int hi = static_cast<int>((static_cast<float>(beta) + probcut_t_ * f.sigma - f.b) / f.a);
@@ -1409,10 +1475,18 @@ namespace islay {
     if (aborted)
       return 0;
 
+    const std::uint8_t bound = best <= alpha_orig ? kUpper : (best >= beta ? kLower : kExact);
+    if constexpr (Pat) {
+      if (correction_history_cap_ > 0 && !solving && depth >= kProbCutMinDepth && is_pv && bound == kExact) {
+        const int raw = leaf_eval<Pat>(b, moves, ply, stm);
+        correction_history_.update(b, pattern_stage(b.count()), prev_move, prev2_move, best, raw, depth);
+      }
+    }
+
     if (kUseTT && tt_enabled_) {
       if (!stopped_) { // never poison the table with an aborted node's score
         tt_->store(key, std::clamp(best, -kScoreMax, kScoreMax), depth,
-                   best <= alpha_orig ? kUpper : (best >= beta ? kLower : kExact),
+                   bound,
                    best_move >= 0 && best_move < 64 ? static_cast<std::uint8_t>(best_move) : 255);
       }
     }
@@ -1782,6 +1856,25 @@ namespace islay {
   }
 
   bool search_selftest() noexcept {
+    {
+      CorrectionHistory h;
+      const Board       b     = Board::start();
+      const int         stage = pattern_stage(b.count());
+      if (h.predict(b, stage, 19, 26) != 0)
+        return false;
+      h.update(b, stage, 19, 26, 600, 100, 8);
+      const int learned = h.predict(b, stage, 19, 26);
+      if (learned <= 0 || h.predict(b, stage, 20, 26) >= learned)
+        return false;
+      for (int i = 0; i < 256; ++i)
+        h.update(b, stage, 19, 26, 5000, 0, 16);
+      if (h.predict(b, stage, 19, 26) > 400)
+        return false;
+      h.clear();
+      if (h.predict(b, stage, 19, 26) != 0)
+        return false;
+    }
+
     // Connected-region parity: an odd component is marked in full, an even one
     // is omitted, and rank edges must not wrap h-file into the next a-file.
     {
