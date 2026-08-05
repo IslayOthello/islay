@@ -233,29 +233,32 @@ namespace islay {
     // serial clz/variable-shift chains. Reverse two rays per vector, apply the
     // cheap LS1B carry to both lanes, then reverse the captured runs back.
     [[nodiscard]] Bitboard flip_hybrid(Square sq, Bitboard p, Bitboard o) noexcept {
-      Bitboard flipped = 0;
-      for (int d = 0; d < 4; ++d) {
-        const Bitboard mask     = MASKS.m[sq][d];
-        Bitboard       outflank = (o | ~mask) + 1;
-        outflank &= p & mask;
-        const Bitboard nz = -static_cast<Bitboard>(outflank != 0);
-        flipped |= (outflank - 1) & mask & nz;
-      }
-
       const uint64x2_t one = vdupq_n_u64(1);
-      const uint64x2_t rp  = reverse_bits_u64(vdupq_n_u64(p));
-      const uint64x2_t ro  = reverse_bits_u64(vdupq_n_u64(o));
+      const uint64x2_t pp  = vdupq_n_u64(p);
+      const uint64x2_t oo  = vdupq_n_u64(o);
+      const uint64x2_t m0  = vld1q_u64(&MASKS.m[sq][0]);
+      const uint64x2_t m1  = vld1q_u64(&MASKS.m[sq][2]);
+
+      uint64x2_t out0 = vaddq_u64(vornq_u64(oo, m0), one);
+      uint64x2_t out1 = vaddq_u64(vornq_u64(oo, m1), one);
+      out0            = vandq_u64(out0, vandq_u64(pp, m0));
+      out1            = vandq_u64(out1, vandq_u64(pp, m1));
+      const uint64x2_t f = vorrq_u64(vandq_u64(m0, vqsubq_u64(out0, one)),
+                                     vandq_u64(m1, vqsubq_u64(out1, one)));
+
+      const uint64x2_t rp  = reverse_bits_u64(pp);
+      const uint64x2_t ro  = reverse_bits_u64(oo);
       const uint64x2_t rm0 = vld1q_u64(&MASKS.m[sq][4]);
       const uint64x2_t rm1 = vld1q_u64(&MASKS.m[sq][6]);
 
-      uint64x2_t out0     = vaddq_u64(vornq_u64(ro, rm0), one);
-      uint64x2_t out1     = vaddq_u64(vornq_u64(ro, rm1), one);
+      out0                = vaddq_u64(vornq_u64(ro, rm0), one);
+      out1                = vaddq_u64(vornq_u64(ro, rm1), one);
       out0                = vandq_u64(out0, vandq_u64(rp, rm0));
       out1                = vandq_u64(out1, vandq_u64(rp, rm1));
       const uint64x2_t f0 = reverse_bits_u64(vandq_u64(rm0, vqsubq_u64(out0, one)));
       const uint64x2_t f1 = reverse_bits_u64(vandq_u64(rm1, vqsubq_u64(out1, one)));
-      const uint64x2_t fv = vorrq_u64(f0, f1);
-      return flipped | vgetq_lane_u64(fv, 0) | vgetq_lane_u64(fv, 1);
+      const uint64x2_t fv = vorrq_u64(f, vorrq_u64(f0, f1));
+      return vgetq_lane_u64(fv, 0) | vgetq_lane_u64(fv, 1);
     }
 
 #endif // ISLAY_MOVEGEN_HYBRID
