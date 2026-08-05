@@ -1,39 +1,4 @@
-/**
- * @file uci.cpp
- * @brief A small chess-UCI-flavoured protocol for Othello.
- *
- * The surface is deliberately split in two. RELEASE commands are what UCI.md
- * documents and what a GUI may rely on; DEVELOPMENT commands exist only while
- * `debug on` is in effect and are absent from the documentation. While debug is
- * off they answer with the ordinary "unknown command" error, so a client cannot
- * tell a hidden command from a typo and the shipped protocol is exactly the
- * documented one.
- *
- * Release:
- *   uci                         -> id + options + "uciok"
- *   isready                     -> "readyok"
- *   ucinewgame                  -> reset to the opening, clear all tables
- *   position startpos [moves ..]        set the opening (optionally play moves)
- *   position fen <64> <stm> [moves ..]  set an arbitrary diagram
- *   setoption name <N> value <V>-> set an engine option (e.g. name Rule value Reversi)
- *   go [depth N] [movetime MS] [nodes N] -> search, ends with "bestmove"
- *   go perft <depth> [nocache]  -> perft with bulk-counting (cache on by default)
- *   stop                        -> end the search in progress (it still emits bestmove)
- *   debug [ on | off ]          -> toggle the development surface below
- *   quit | exit                 -> leave
- *
- * Development (requires `debug on`; see is_debug_command / dispatch_debug):
- *   d | display | board         -> pretty-print the board
- *   bench [depth]               -> timed perft sweep from the opening
- *   test | selftest             -> run every self-check (movegen, eval, search oracle)
- *   match ...                   -> engine-vs-engine A/B harness
- *   features                    -> dump the eval's feature indices for this position
- *   pcdata [n] [maxdepth]       -> CSV (stage,depth,score,standpat) to fit ProbCut against
- *   orderdata [n] [depth] [seed] -> CSV move-order labels from independent teacher searches
- *   train [games] [epochs] ...  -> fit pattern weights from self-play
- *   backend                     -> report the active SIMD back-end
- *   searchstats [full]          -> search telemetry for the last `go`
- */
+// Public and debug-only commands are documented in UCI.md.
 #include "uci.hpp"
 
 #include <array>
@@ -64,16 +29,7 @@
 namespace islay {
   namespace {
 
-    // ABDADA work deferral under lazy SMP: mark subtrees being searched in a shared
-    // busy table; other threads defer a busy child to the end of the node instead of
-    // duplicating it. MEASURED AND OFF: -6.5 Elo, 95% CI [-20, 7], 700 games at equal
-    // time against plain 4-thread SMP -- the FOURTH parallel-shaping idea to return
-    // nothing (after three divergence schemes). Same root cause every time: this tree
-    // cuts on the first move 82.7% of the time at branching 2.27, so the non-first
-    // children whose duplication ABDADA prevents are tiny scouts not worth deferring,
-    // while its bookkeeping (and a full sort where lazy selection used to stop at the
-    // first cutoff) is paid at every deep node. Parallel search here is capped by the
-    // narrowness of the tree, not by how cleverly the threads are arranged.
+    // ABDADA deferral lost 6.5 Elo against plain four-thread lazy SMP.
     constexpr bool kUseAbdada = false;
 
     constexpr const char *kName   = "islay 0.1.0";
@@ -95,14 +51,7 @@ namespace islay {
       return os.str();
     }
 
-    /**
-     * The search runs on its own thread while the command loop keeps reading stdin, so
-     * two threads can reach stdout at once. Whole lines may interleave harmlessly; half
-     * an `info` line spliced into `readyok` breaks a GUI. So the search writes through
-     * this buffer, which accumulates until a newline and then emits the COMPLETE line
-     * under a shared mutex, and the command loop takes the same mutex for the handful
-     * of replies it can still emit while a search is running.
-     */
+    // Serialize complete protocol lines across command and search threads.
     std::mutex g_out_mu;
 
     class LineSyncBuf final : public std::streambuf {
@@ -135,7 +84,6 @@ namespace islay {
       std::string buf_;
     };
 
-    /** One whole line to stdout, atomically against the search thread. */
     void say(const std::string &line) {
       const std::lock_guard<std::mutex> lk(g_out_mu);
       std::cout << line;
@@ -180,47 +128,11 @@ namespace islay {
       Book     book_{};
       bool     debug_ = false; // `debug on` unlocks the development commands
 
-      // At most one search at a time. `joinable()` IS the "is a search running" flag --
-      // a separate bool could disagree with reality, this cannot.
+      // joinable() is the search-running state.
       std::thread search_thread_;
       bool        search_infinite_ = false; // only ever touched by the command thread
 
-      /**
-       * LAZY SMP. The helpers do NOT divide the tree -- they run the same iterative
-       * deepening on the same root, and everything they discover lands in the SHARED
-       * transposition table, where the main thread finds it already answered. That
-       * sharing is the entire mechanism; helpers with private tables would be N
-       * independent searches and worth nothing.
-       *
-       * Each helper needs its own Searcher because killers, history, the pattern stack
-       * and the node counter are per-thread state -- only the table is shared. They are
-       * built once and kept, because constructing one allocates that per-thread state.
-       *
-       * A small depth offset stops them all grinding the identical iteration at the same
-       * instant; from there the table itself keeps them diverged.
-       *
-       * THREE DIVERGENCE SCHEMES WERE TRIED. Two neutral, one negative -- do not reach
-       * for a fourth without new evidence:
-       *   per-node move-order jitter  +2.8 Elo, 95% CI [-12, 17], 500 games
-       *   root-only move-order jitter +2.3 Elo, 95% CI [-11, 16], 600 games
-       *   WIDER helpers (t=2.5 / gate off / full-width PVS)  -26.7 Elo, CI [-42,-12], 600 games
-       * The jitter results carry a warning about the ordering here: perturbing it at every
-       * node cost 39% MORE nodes at fixed depth for a jitter of only +-3, and up to 73%
-       * for larger ones, on an erratic non-monotone profile. Near-ties are common and
-       * breaking them makes each helper markedly worse at its own job. The root-only form
-       * avoids that cost -- one node, a handful of moves -- and still gained nothing.
-       *
-       * The WIDE-helper attempt was the sharpest lesson. The idea was to have helpers
-       * prune less so they explore the parts of the tree the main search cut, which
-       * targets the real reason SMP under-delivers: the tree is so narrow (branching
-       * 2.27, a first-move cutoff 82.7% of the time) that identically-configured helpers
-       * mostly re-do the main thread's work. But wider = more nodes per ply, so the
-       * helpers, sharing the same cores, STARVE the main thread -- it reached depth 18
-       * where plain SMP reached 19 at the same time -- and the played move comes from the
-       * main thread. Helpers must be at least as CHEAP as the main search, never more
-       * expensive. Divergence is not the lever here; the shared table's +23.5 is the
-       * ceiling the tree's narrowness allows.
-       */
+      // Lazy-SMP helpers keep private search state and share only the TT.
       std::vector<std::unique_ptr<Searcher>> helpers_;
 
       void size_helpers() {
@@ -237,19 +149,7 @@ namespace islay {
         }
       }
 
-      /**
-       * `abandon` distinguishes the two reasons a search ends early.
-       *
-       * TRUE for `stop` and for any command that takes the engine state over: the
-       * result is being thrown away, so cut it off now.
-       *
-       * FALSE for `quit` and end-of-input, where a BOUNDED search is allowed to finish
-       * first. That is not politeness -- every batch script in this project is
-       * `printf '... go depth N\nquit\n' | islay`, and cutting the search off there
-       * would silently truncate it and hand back a shallower result that still looks
-       * well-formed. A bounded search always terminates, so waiting is safe; an
-       * unlimited one never would, so it is still stopped.
-       */
+      // EOF/quit lets bounded batch searches finish; stop abandons them.
       void stop_search_and_join(bool abandon = true) {
         if (!search_thread_.joinable())
           return;
@@ -258,14 +158,7 @@ namespace islay {
         search_thread_.join(); // the join is also what publishes the search's writes
       }
 
-      /**
-       * `stop`, `isready` and `debug` are the only commands that may be answered WHILE a
-       * search is running -- that is the entire point of `stop`, and `isready` is
-       * defined to reply at once. Everything else reads or mutates state the search
-       * thread is using (board_, options_, the table), so it first stops and joins.
-       * A GUI should not send those mid-search anyway; stopping is the forgiving
-       * response, and it is what keeps the shared state race-free by construction.
-       */
+      // Commands that own engine state must join the search first.
       void dispatch(const std::string &cmd, std::istringstream &is) {
         if (cmd == "stop") {
           stop_search_and_join();
@@ -299,9 +192,6 @@ namespace islay {
         } else if (cmd == "go") {
           cmd_go(is);
         } else if (is_debug_command(cmd)) {
-          // Development surface. Hidden unless `debug on`, and when hidden it must be
-          // INDISTINGUISHABLE from a typo -- same error as any unknown word -- so the
-          // release protocol is exactly what UCI.md documents and nothing more.
           if (!debug_)
             unknown(cmd);
           else
@@ -315,7 +205,6 @@ namespace islay {
         std::cout << "info error: unknown command '" << cmd << "'\n";
       }
 
-      /** The commands that exist only while `debug on` is in effect. */
       [[nodiscard]] static bool is_debug_command(const std::string &c) noexcept {
         return c == "d" || c == "display" || c == "board" || c == "bench" || c == "test" ||
                c == "selftest" || c == "match" || c == "features" || c == "pcdata" || c == "orderdata" ||
@@ -357,9 +246,6 @@ namespace islay {
         }
       }
 
-      // debug [ on | off ] -- the UCI-standard switch. Here it also gates the whole
-      // development command surface (see is_debug_command). A bare `debug` reports the
-      // current state rather than guessing at one.
       void cmd_debug(std::istringstream &is) {
         std::string tok;
         if (!(is >> tok)) {
@@ -377,7 +263,6 @@ namespace islay {
         std::cout << "info string debug " << (debug_ ? "on" : "off") << '\n';
       }
 
-      // setoption name <Name...> value <Value...>  (both may contain spaces)
       void cmd_setoption(std::istringstream &is) {
         std::string tok;
         if (!(is >> tok) || tok != "name") {
@@ -405,10 +290,7 @@ namespace islay {
         const std::string name  = join(name_toks);
         const std::string value = join(value_toks);
         if (apply_option(options_, name, value)) {
-          // A size change resizes (which also wipes); any other option change
-          // still invalidates both tables, because their contents are
-          // rule-specific -- the two rules disagree on what a stuck position is
-          // worth, so an Othello score is simply wrong under Reversi.
+          // Option changes invalidate rule-dependent caches.
           if (perft_tt_mib_ != options_.perft_hash_mib) {
             perft_tt_mib_ = options_.perft_hash_mib;
             tt_.resize(static_cast<std::size_t>(perft_tt_mib_));
@@ -426,10 +308,7 @@ namespace islay {
             ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
           pattern_set_stage_interp(options_.stage_interp); // keep the eval flag in sync
           if (lname == "evalfile") {
-            // Empty value UNLOADS to the hand-written eval; a failed load must not leave
-            // stale weights active, so it also unloads (a defined state, not the old one).
-            // A `.nnue` file loads the NNUE-lite net (nnue.hpp) instead of linear
-            // weights; exactly one of the two is ever active.
+            // Failed loads leave no stale evaluator active.
             const std::string &ev     = options_.eval_file;
             const bool         is_net = ev.size() > 5 && ev.compare(ev.size() - 5, 5, ".nnue") == 0;
             nnue_set_active(false);
@@ -455,10 +334,7 @@ namespace islay {
         }
       }
 
-      // position startpos [moves ...] | position fen <diagram> <stm> [moves ...]
-      // Fully TRANSACTIONAL: the base position AND every move are validated on a
-      // temporary board; `board_`/`stm_` are assigned only when the whole command is
-      // legal, so any error leaves the previous position untouched.
+      // Commit the new position only after every move validates.
       void cmd_position(std::istringstream &is) {
         std::string tok;
         if (!(is >> tok))
@@ -490,8 +366,6 @@ namespace islay {
           while (is >> mv) {
             const Square sq = parse_square(mv);
             if (sq == PASS) {
-              // A pass is legal only when the mover is stuck AND (Othello) the opponent
-              // can still move; if neither can move the game is over -- no pass.
               if (options_.rule != Rule::Othello || tb.has_moves() || !tb.passed().has_moves()) {
                 std::cout << "info error: illegal pass\n";
                 return;
@@ -511,9 +385,6 @@ namespace islay {
         stm_   = ts;
       }
 
-      // go [depth N] [movetime MS] [nodes N] | go perft <depth> [nocache]
-      // `perft` is an argument of `go`, not a separate command, so it stays on the
-      // release surface with the rest of `go`.
       void cmd_go(std::istringstream &is) {
         std::string tok;
         is >> tok;
@@ -530,15 +401,9 @@ namespace islay {
           return;
         }
 
-        // Validate each limit; a malformed or out-of-range value REJECTS the command
-        // rather than silently starting an unlimited/exact search. `tok` already holds
-        // the first keyword (read above), so process it before pulling the next one.
         SearchLimits lim;
         bool         infinite = false;
-        // NOTE the loop has NO increment. It once had `tok.clear()` there, which runs
-        // AFTER the body reads the next keyword and so wiped it -- the loop processed
-        // exactly one token, silently, since the day it was written. Single-limit
-        // commands hid it; the four-token clock form exposed it.
+        // The body reads the next token; keep the loop increment empty.
         for (; !tok.empty();) {
           if (tok == "depth") {
             long v;
@@ -564,8 +429,6 @@ namespace islay {
           } else if (tok == "infinite") {
             infinite = true; // no limit at all: run until `stop`, or until the position is solved
           } else if (tok == "wtime" || tok == "btime" || tok == "winc" || tok == "binc") {
-            // Standard UCI clock. Board is mover-relative, so pick out the MOVER's pair;
-            // the opponent's clock is irrelevant to allocating this move.
             double v;
             if (!(is >> v) || v < 0.0) {
               std::cout << "info error: " << tok << " must be non-negative\n";
@@ -583,8 +446,6 @@ namespace islay {
           if (!(is >> tok))
             break;
         }
-        // Opening book: if it recommends a move here, play it at once and skip the
-        // search entirely. `go infinite` is analysis and keeps searching.
         if (options_.own_book && book_.loaded() && !infinite) {
           const Square bm = book_.probe(board_, stm_);
           if (bm != NOMOVE) {
@@ -594,24 +455,13 @@ namespace islay {
           }
         }
 
-        // A bare `go` still has to return a move; `go infinite` deliberately must not
-        // get that default, which is the only thing distinguishing the two.
         if (!infinite && lim.depth == 0 && lim.nodes == 0 && lim.movetime_ms == 0.0 && lim.time_ms == 0.0)
           lim.depth = 8;
 
         run_search(lim);
       }
 
-      /**
-       * Hands the search to its own thread and returns at once, so the command loop can
-       * still read `stop`. The board, side to move and rule are COPIED into the thread:
-       * the caller has already joined any previous search, so nothing else can be
-       * touching them, and a copy removes the question entirely.
-       *
-       * `bestmove` is printed by the search thread when it finishes, which is what keeps
-       * the "exactly one bestmove per go, after its info lines" ordering true whether the
-       * search ended on its own or was stopped.
-       */
+      // Copy root state into the asynchronous search.
       void run_search(const SearchLimits &lim) {
         const Board root = board_;
         const Color stm  = stm_;
@@ -628,9 +478,7 @@ namespace islay {
         for (auto &h: helpers_)
           h->arm();
         search_thread_ = std::thread([this, lim, root, stm, rule] {
-          // Helpers run UNLIMITED and are cut off when the main search is done: their
-          // job is to keep filling the table for as long as the main thread is thinking,
-          // not to finish anything of their own.
+          // Helpers run until the main search stops them.
           std::vector<std::thread> hthreads;
           hthreads.reserve(helpers_.size());
           for (auto &h: helpers_)
@@ -648,7 +496,6 @@ namespace islay {
           for (auto &t: hthreads)
             t.join();
           if (r.best == NOMOVE) {
-            // Reversi with no move, or both sides stuck: there is nothing to play.
             out << "info string game over (final score " << r.score / 100 << ")\n"
                 << "bestmove --\n";
             return;
@@ -686,7 +533,6 @@ namespace islay {
             total += cnt;
           }
         } else if (rule == Rule::Othello && board_.passed().has_moves()) {
-          // Only Othello passes; under Reversi no move means the game is over.
           const std::uint64_t cnt = count_child(board_.passed());
           lines << "pass: " << cnt << '\n';
           total = cnt;
@@ -722,14 +568,6 @@ namespace islay {
         }
       }
 
-      // match [pairs] [depth] [evalA] [evalB]  -- "" or "-" means the hand-written eval
-      // match pc [pairs] [movetime_ms]         -- ProbCut on vs off, same eval
-      //
-      // The `pc` form takes a movetime, not a depth, on purpose: a pruning technique
-      // only ever removes work, so at equal depth it can only lose, and its entire
-      // case is the depth that the saved time buys back. Equal depth would answer a
-      // question nobody asked. LMP is why this rule is written down: it cut nodes
-      // 55% and cost 154 Elo.
       void cmd_match(std::istringstream &is) {
         MatchConfig cfg;
         cfg.rule = options_.rule;
@@ -746,19 +584,13 @@ namespace islay {
           cfg.movetime_ms = ms;
           cfg.pc_a        = true;
           cfg.pc_b        = false;
-          // Both sides get the SAME eval -- otherwise this measures the eval, not
-          // ProbCut. It takes an argument because ProbCut's whole viability hangs on
-          // eval quality, so testing it against the hand-written eval answers a
-          // question about the wrong engine.
           std::string ev;
           if (is >> ev && ev != "-")
             cfg.eval_a = cfg.eval_b = ev;
           run_match(cfg, std::cout);
           return;
         }
-        if (first == "et") { // EVAL vs EVAL at equal TIME -- the honest test for a feature
-          // that costs search speed. The fixed-depth form measures only what the eval
-          // KNOWS; this one also charges it for what it costs to know it.
+        if (first == "et") {
           int ms = 50;
           if (!(is >> cfg.pairs) || cfg.pairs < 1) cfg.pairs = 50;
           if (!(is >> ms) || ms < 1) ms = 50;
@@ -990,9 +822,6 @@ namespace islay {
         run_match(cfg, std::cout);
       }
 
-      // Training hook: the flat weight indices this position contributes to. The
-      // eval is their weights summed, so a design row is exactly these indices --
-      // a tuner needs nothing else from the engine.
       void cmd_features() {
         std::uint32_t idx[64];
         const int     n = pattern_features(board_, stm_, idx);
@@ -1004,23 +833,6 @@ namespace islay {
         std::cout << '\n';
       }
 
-      /**
-       * ProbCut data hook: `pcdata [positions] [maxdepth]` prints one CSV row per
-       * (position, depth) as `stage,depth,score`.
-       *
-       * This exists because ProbCut is the one selective technique here whose
-       * parameters are FITTED rather than guessed: it predicts the depth-d score
-       * from a depth-(d-r) one, and the prediction is only worth making if the
-       * relationship is actually measured on THIS engine's eval. Four hand-tuned
-       * techniques were already rejected on measurement; this one gets its numbers
-       * from data or it does not go in.
-       *
-       * Iterative deepening already computes every intermediate depth on the way to
-       * `maxdepth`, so one search yields a whole column of (d', d) pairs for free.
-       * The scores are read back out of the engine's own info lines -- the same
-       * surface an external tuner would use, which keeps this a hook and not a
-       * second implementation that could drift from the real search.
-       */
       void cmd_pcdata(std::istringstream &is) {
         int           n = 200, maxd = 12;
         std::uint64_t seed = 0x9E3779B97F4A7C15ULL;
@@ -1040,9 +852,6 @@ namespace islay {
         Searcher s(64);
         int      emitted = 0;
         for (int i = 0; i < n; ++i) {
-          // A random playout to a random ply: the fit has to cover every stage,
-          // because the shallow-to-deep relationship is not the same in the opening
-          // as it is at move 50.
           Board b     = Board::start();
           Color stm   = Color::Black;
           const int plies = 4 + static_cast<int>(next() % 46);
@@ -1096,13 +905,6 @@ namespace islay {
         std::cout << "info string pcdata: " << emitted << " rows\n";
       }
 
-      /**
-       * Learned-ordering data: one row per legal move at an independently generated
-       * position. The depth-limited search supplies the label; the remaining columns
-       * are deliberately cheap features available while the normal move list is built.
-       * Clearing the tiny teacher before every sample guarantees the root has no TT
-       * move, which is exactly the runtime slice the learned policy will serve.
-       */
       void cmd_orderdata(std::istringstream &is) {
         int           n = 10000, depth = 10;
         std::uint64_t seed = 0xD1B54A32D192ED03ULL;
@@ -1179,7 +981,6 @@ namespace islay {
         std::cout << "info string orderdata: " << emitted << " positions at depth " << depth << "\n";
       }
 
-      // train [games] [epochs] [depth] [solve_empties] [lr] [l2] [mob0/1] [c2x50/1] [out]
       void cmd_train(std::istringstream &is) {
         TrainConfig cfg;
         cfg.rule = options_.rule;
@@ -1215,16 +1016,9 @@ namespace islay {
         int itp = 0;
         if (is >> itp)
           cfg.interp = (itp != 0); // fit for StageInterpolation
-        // The teacher must be the eval as it stands, not a half-loaded set: an
-        // EvalFile left over from an earlier setoption would quietly change what is
-        // being bootstrapped from.
         run_train(cfg, std::cout);
       }
 
-      /** ntrain [games] [epochs] [depth] [lr_emb] [lr_out] [out] [seed] [workers] [grouped]
-       *  -- NNUE search distillation (train.hpp). A loaded .pat starts a new net;
-       *  a loaded .nnue bootstraps another round. Generation is capped at 4 workers.
-       *  grouped=1 trains NN4; grouped=0 is the legacy-head A/B control. */
       void cmd_ntrain(std::istringstream &is) {
         NTrainConfig cfg;
         cfg.rule = options_.rule;
@@ -1252,8 +1046,6 @@ namespace islay {
         run_ntrain(cfg, std::cout);
       }
 
-      // book gen [plies] [depth] [out]  -- build an opening book (uses the loaded EvalFile)
-      // book probe                      -- show the current position's book move, if any
       void cmd_book(std::istringstream &is) {
         std::string sub;
         if (!(is >> sub) || sub == "probe") {
@@ -1282,20 +1074,7 @@ namespace islay {
         build_book(cfg, std::cout);
       }
 
-      /**
-       * tune spsa [iters] [movetime_ms] [eval] [seed] -- SPSA over SearchParams.
-       *
-       * Classic sign-SPSA, one colour-paired game pair per iteration: perturb every
-       * parameter by +-c_k simultaneously, play theta+ against theta- from a random
-       * opening (both colours), and step each parameter towards the side that won.
-       * One pair is a hopelessly noisy estimate on its own -- the method works because
-       * thousands of noisy steps average into the gradient, which is exactly the
-       * regime this engine can afford: in-process games at a small movetime are cheap.
-       *
-       * The RESULT IS A CANDIDATE, NOT A VERDICT. SPSA's own trajectory is not
-       * evidence; whatever it converges to must beat the shipped defaults in an
-       * independent match before anything changes.
-       */
+      // Sign-SPSA uses one colour-reversed pair per iteration.
       void cmd_tune(std::istringstream &is) {
         std::string sub;
         if (!(is >> sub) || sub != "spsa") {
@@ -1339,7 +1118,6 @@ namespace islay {
         pattern_set_active(ev.empty() || ev == "-" ? nullptr : &w);
         pattern_set_stage_interp(options_.stage_interp);
 
-        // One game: `first` plays Black. Returns Black's points {0, .5, 1}.
         auto play = [&](Board b, Color stm, Searcher &black, Searcher &white) -> double {
           std::ostringstream sink;
           black.clear(); white.clear();
@@ -1374,7 +1152,6 @@ namespace islay {
           }
           sa.set_params(to_params(vp));
           sb.set_params(to_params(vm));
-          // random legal opening, then BOTH colours (the same pairing the match uses)
           Board ob = Board::start(); Color os = Color::Black; bool ok = true;
           for (int i = 0; i < 6; ++i) {
             Bitboard m = ob.moves();
@@ -1442,14 +1219,11 @@ namespace islay {
           std::cout << "perft(" << d << ") = " << got << (ok ? "  ok\n" : "  MISMATCH\n");
         }
 
-        // Cached and uncached perft must agree.
         PerftTT    tt(64);
         const bool cache_ok = (perft(start, 8, Rule::Othello) == perft_cached(start, 8, tt, Rule::Othello));
         all_ok              = all_ok && cache_ok;
         std::cout << "cache consistency perft(8): " << (cache_ok ? "ok" : "MISMATCH") << '\n';
 
-        // Symmetry: perft is invariant under all 8 rotations/mirrors, and the
-        // symmetry-aware cache must still match the uncached count.
         const Board         asym   = Board::start().play(parse_square("d3")).play(parse_square("c3"));
         const std::uint64_t base   = perft(asym, 6, Rule::Othello);
         bool                sym_ok = true;
@@ -1461,8 +1235,6 @@ namespace islay {
         std::cout << "symmetry invariance perft(6): " << (sym_ok ? "ok" : "MISMATCH") << '\n'
                   << "symmetry cache perft(7): " << (symcache_ok ? "ok" : "MISMATCH") << '\n';
 
-        // Rule: at a position where the mover is stuck but the opponent can move,
-        // Othello passes (perft > 0) while Reversi ends the game (perft == 0).
         std::uint64_t s   = 0x9E3779B97F4A7C15ULL;
         const auto    rnd = [&s]() noexcept {
           s ^= s << 13;

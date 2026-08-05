@@ -1,7 +1,3 @@
-/**
- * @file board.cpp
- * @brief Board text (de)serialization and square naming.
- */
 #include "board.hpp"
 
 #include <array>

@@ -1,7 +1,3 @@
-/**
- * @file nnue.cpp
- * @brief NNUE-lite net: storage, file IO, and the leaf-time forward pass (nnue.hpp).
- */
 #include "nnue.hpp"
 
 #include <algorithm>
@@ -41,7 +37,7 @@ namespace islay {
     winter_.clear();
     b2_.assign(kStageCount, 0.0f);
     grouped_ = false;
-    loaded_ = true;
+    loaded_  = true;
   }
 
   void NnueNet::set_grouped(bool on) {
@@ -69,8 +65,7 @@ namespace islay {
     int peak = 0;
     for (const std::int16_t value: emb16_)
       peak = std::max(peak, std::abs(static_cast<int>(value)));
-    // A chunk's worst possible lane sum stays inside int16; v19 therefore adds
-    // ten rows per vector before it needs the wider int32 accumulator.
+    // Keep each lane sum inside int16.
     chunk_rows_ = peak == 0 ? kPatternInstances + 9 : std::max(1, 32767 / peak);
     chunk_rows_ = std::min(chunk_rows_, kPatternInstances + 9);
   }
@@ -78,8 +73,7 @@ namespace islay {
   void NnueNet::quantize() {
     emb16_.resize(emb_.size());
     for (std::size_t i = 0; i < emb_.size(); ++i)
-      emb16_[i] = static_cast<std::int16_t>(
-          std::clamp(std::lround(emb_[i] * kNnueQuant), -32767L, 32767L));
+      emb16_[i] = static_cast<std::int16_t>(std::clamp(std::lround(emb_[i] * kNnueQuant), -32767L, 32767L));
     choose_chunk_rows();
     emb_.clear();
     emb_.shrink_to_fit(); // inference never reads the float table; 80MB back to the OS
@@ -88,9 +82,9 @@ namespace islay {
   bool NnueNet::selftest() noexcept {
     static_assert(nnue_pair_index(0, 1) == 0 && nnue_pair_index(0, 3) == 2 && nnue_pair_index(1, 2) == 3 &&
                   nnue_pair_index(2, 3) == 5);
-    NnueNet net;
+    NnueNet       net;
     constexpr int n = kPatternInstances + 9;
-    net.feat_ = n;
+    net.feat_       = n;
     net.emb_.assign(static_cast<std::size_t>(kStageCount) * n * kNnueHidden, 1.0f / kNnueQuant);
     net.w2a_.assign(static_cast<std::size_t>(kStageCount) * kNnueHidden, 0.0f);
     net.w2h_.assign(static_cast<std::size_t>(kStageCount) * kNnueHidden, 0.0f);
@@ -104,8 +98,8 @@ namespace islay {
       idx[i] = static_cast<std::uint32_t>(i);
     const int legacy = net.score(idx, n, 0);
     net.set_grouped(true); // zero residual heads must be an exact NN3 warm start
-    const int zero_grouped = net.score(idx, n, 0);
-    net.wgroup_[0] = 1.0f;
+    const int zero_grouped   = net.score(idx, n, 0);
+    net.wgroup_[0]           = 1.0f;
     const int active_grouped = net.score(idx, n, 0);
     net.set_grouped(false);
     return legacy == zero_grouped && active_grouped > zero_grouped && net.score(idx, n, 0) == legacy;
@@ -114,44 +108,39 @@ namespace islay {
   int NnueNet::score(const std::uint32_t *idx, int n, int stage) const noexcept {
     if (grouped_)
       return score_grouped(idx, n, stage);
-    // The rows are scattered across a cold 40MB table, so their addresses are all
-    // prefetched up front to overlap the misses before any row is summed.
+    // Prefetch scattered embedding rows before accumulation.
     const std::int16_t *base = emb16_.data() + static_cast<std::size_t>(stage) * feat_ * kNnueHidden;
     for (int i = 0; i < n; ++i)
       __builtin_prefetch(base + static_cast<std::size_t>(idx[i]) * kNnueHidden, 0, 0);
-    const float *a = w2a_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
-    const float *h = w2h_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
-    float        s;
+    const float    *a = w2a_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
+    const float    *h = w2h_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
+    float           s;
     constexpr float kInv = 1.0f / kNnueQuant;
 #if defined(__ARM_NEON)
     static_assert(kNnueHidden == 8, "the NEON path is written for H = 8");
-    int32x4_t s0 = vdupq_n_s32(0), s1 = vdupq_n_s32(0);
+    int32x4_t     s0 = vdupq_n_s32(0), s1 = vdupq_n_s32(0);
     constexpr int kInferenceRows = kPatternInstances + 9;
     if (n == kInferenceRows && chunk_rows_ >= 8) {
-      // v20 admits eight rows per narrow accumulator. Keeping that trip count
-      // compile-time constant lets Clang issue eight independent scattered
-      // loads without the min/compare/branch pair of the generic inner loop.
-      // Six full chunks plus the final row preserve the exact int16 grouping.
+      // Fixed chunks let Clang unroll loads without overflowing int16.
       constexpr int kRowsPerChunk = 8;
-      constexpr int kFullRows = kInferenceRows / kRowsPerChunk * kRowsPerChunk;
+      constexpr int kFullRows     = kInferenceRows / kRowsPerChunk * kRowsPerChunk;
       for (int first = 0; first < kFullRows; first += kRowsPerChunk) {
         int16x8_t chunk = vdupq_n_s16(0);
         for (int i = 0; i < kRowsPerChunk; ++i) {
-          const int16x8_t row =
-              vld1q_s16(base + static_cast<std::size_t>(idx[first + i]) * kNnueHidden);
-          chunk = vaddq_s16(chunk, row);
+          const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[first + i]) * kNnueHidden);
+          chunk               = vaddq_s16(chunk, row);
         }
         s0 = vaddw_s16(s0, vget_low_s16(chunk));
         s1 = vaddw_s16(s1, vget_high_s16(chunk));
       }
       for (int i = kFullRows; i < kInferenceRows; ++i) {
         const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[i]) * kNnueHidden);
-        s0                    = vaddw_s16(s0, vget_low_s16(row));
-        s1                    = vaddw_s16(s1, vget_high_s16(row));
+        s0                  = vaddw_s16(s0, vget_low_s16(row));
+        s1                  = vaddw_s16(s1, vget_high_s16(row));
       }
     } else {
       for (int first = 0; first < n; first += chunk_rows_) {
-        const int end = std::min(first + chunk_rows_, n);
+        const int end   = std::min(first + chunk_rows_, n);
         int16x8_t chunk = vdupq_n_s16(0);
         for (int i = first; i < end; ++i) {
           const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[i]) * kNnueHidden);
@@ -163,13 +152,13 @@ namespace islay {
     }
     const float32x4_t acc0 = vmulq_n_f32(vcvtq_f32_s32(s0), kInv);
     const float32x4_t acc1 = vmulq_n_f32(vcvtq_f32_s32(s1), kInv);
-    const float32x4_t r0 = vmaxq_f32(acc0, vdupq_n_f32(0.0f)); // relu
-    const float32x4_t r1 = vmaxq_f32(acc1, vdupq_n_f32(0.0f));
-    float32x4_t       sv = vmulq_f32(vld1q_f32(a), acc0);
-    sv                   = vmlaq_f32(sv, vld1q_f32(a + 4), acc1);
-    sv                   = vmlaq_f32(sv, vld1q_f32(h), r0);
-    sv                   = vmlaq_f32(sv, vld1q_f32(h + 4), r1);
-    s                    = vaddvq_f32(sv) + b2_[static_cast<std::size_t>(stage)];
+    const float32x4_t r0   = vmaxq_f32(acc0, vdupq_n_f32(0.0f)); // relu
+    const float32x4_t r1   = vmaxq_f32(acc1, vdupq_n_f32(0.0f));
+    float32x4_t       sv   = vmulq_f32(vld1q_f32(a), acc0);
+    sv                     = vmlaq_f32(sv, vld1q_f32(a + 4), acc1);
+    sv                     = vmlaq_f32(sv, vld1q_f32(h), r0);
+    sv                     = vmlaq_f32(sv, vld1q_f32(h + 4), r1);
+    s                      = vaddvq_f32(sv) + b2_[static_cast<std::size_t>(stage)];
 #else
     std::int32_t acci[kNnueHidden] = {};
     for (int i = 0; i < n; ++i) {
@@ -183,7 +172,7 @@ namespace islay {
       s += a[j] * aj + (aj > 0.0f ? h[j] * aj : 0.0f);
     }
 #endif
-    // discs -> centi-discs, clamped inside the terminal range like the linear eval.
+    // Keep static scores below the terminal range.
     const long cd = std::lround(static_cast<double>(s) * 100.0);
     return static_cast<int>(std::clamp(cd, -6399L, 6399L));
   }
@@ -192,11 +181,11 @@ namespace islay {
     const std::int16_t *base = emb16_.data() + static_cast<std::size_t>(stage) * feat_ * kNnueHidden;
     for (int i = 0; i < n; ++i)
       __builtin_prefetch(base + static_cast<std::size_t>(idx[i]) * kNnueHidden, 0, 0);
-    const float *a  = w2a_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
-    const float *h  = w2h_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
-    const float *wg = wgroup_.data() + static_cast<std::size_t>(stage) * kNnueGroups * kNnueHidden;
-    const float *wi = winter_.data() + static_cast<std::size_t>(stage) * kNnuePairs * kNnueHidden;
-    float        s;
+    const float    *a  = w2a_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
+    const float    *h  = w2h_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
+    const float    *wg = wgroup_.data() + static_cast<std::size_t>(stage) * kNnueGroups * kNnueHidden;
+    const float    *wi = winter_.data() + static_cast<std::size_t>(stage) * kNnuePairs * kNnueHidden;
+    float           s;
     constexpr float kInv = 1.0f / kNnueQuant;
 #if defined(__ARM_NEON)
     static_assert(kNnueHidden == 8, "the NEON path is written for H = 8");
@@ -207,7 +196,7 @@ namespace islay {
     }
     const auto add_range = [&](int group, int first, int end) {
       for (; first < end; first += chunk_rows_) {
-        const int stop = std::min(first + chunk_rows_, end);
+        const int stop  = std::min(first + chunk_rows_, end);
         int16x8_t chunk = vdupq_n_s16(0);
         for (int i = first; i < stop; ++i) {
           const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[i]) * kNnueHidden);
@@ -219,9 +208,7 @@ namespace islay {
     };
     constexpr int kInferenceRows = kPatternInstances + 9;
     if (n == kInferenceRows && chunk_rows_ >= 8) {
-      // The normal leaf always has 55 rows. Six fixed eight-row chunks plus
-      // seven tails let Clang fully unroll the scattered loads, while widening
-      // each chunk separately preserves the int16 overflow bound.
+      // Fixed chunks preserve the int16 overflow bound.
       const auto add8 = [&](int group, int first) {
         int16x8_t chunk = vdupq_n_s16(0);
         for (int i = 0; i < 8; ++i) {
@@ -257,8 +244,8 @@ namespace islay {
       for (int i = 0; i < n; ++i) {
         const int16x8_t row = vld1q_s16(base + static_cast<std::size_t>(idx[i]) * kNnueHidden);
         const int       g   = nnue_feature_group(i);
-        gs0[g]               = vaddw_s16(gs0[g], vget_low_s16(row));
-        gs1[g]               = vaddw_s16(gs1[g], vget_high_s16(row));
+        gs0[g]              = vaddw_s16(gs0[g], vget_low_s16(row));
+        gs1[g]              = vaddw_s16(gs1[g], vget_high_s16(row));
       }
     }
     float32x4_t gr0[kNnueGroups], gr1[kNnueGroups];
@@ -266,10 +253,10 @@ namespace islay {
     for (int g = 0; g < kNnueGroups; ++g) {
       const float32x4_t ga0 = vmulq_n_f32(vcvtq_f32_s32(gs0[g]), kInv);
       const float32x4_t ga1 = vmulq_n_f32(vcvtq_f32_s32(gs1[g]), kInv);
-      acc0 = vaddq_f32(acc0, ga0);
-      acc1 = vaddq_f32(acc1, ga1);
-      gr0[g] = vmaxq_f32(ga0, vdupq_n_f32(0.0f));
-      gr1[g] = vmaxq_f32(ga1, vdupq_n_f32(0.0f));
+      acc0                  = vaddq_f32(acc0, ga0);
+      acc1                  = vaddq_f32(acc1, ga1);
+      gr0[g]                = vmaxq_f32(ga0, vdupq_n_f32(0.0f));
+      gr1[g]                = vmaxq_f32(ga1, vdupq_n_f32(0.0f));
     }
     const float32x4_t r0 = vmaxq_f32(acc0, vdupq_n_f32(0.0f));
     const float32x4_t r1 = vmaxq_f32(acc1, vdupq_n_f32(0.0f));
@@ -279,17 +266,17 @@ namespace islay {
     sv                   = vmlaq_f32(sv, vld1q_f32(h + 4), r1);
     for (int g = 0; g < kNnueGroups; ++g) {
       const float *head = wg + static_cast<std::size_t>(g) * kNnueHidden;
-      sv = vmlaq_f32(sv, vld1q_f32(head), gr0[g]);
-      sv = vmlaq_f32(sv, vld1q_f32(head + 4), gr1[g]);
+      sv                = vmlaq_f32(sv, vld1q_f32(head), gr0[g]);
+      sv                = vmlaq_f32(sv, vld1q_f32(head + 4), gr1[g]);
     }
     int pair = 0;
     for (int g = 0; g < kNnueGroups; ++g)
       for (int q = g + 1; q < kNnueGroups; ++q) {
-        const float *head = wi + static_cast<std::size_t>(pair++) * kNnueHidden;
-        const float32x4_t x0 = vmulq_n_f32(vmulq_f32(gr0[g], gr0[q]), 1.0f / kNnueInteractionScale);
-        const float32x4_t x1 = vmulq_n_f32(vmulq_f32(gr1[g], gr1[q]), 1.0f / kNnueInteractionScale);
-        sv = vmlaq_f32(sv, vld1q_f32(head), x0);
-        sv = vmlaq_f32(sv, vld1q_f32(head + 4), x1);
+        const float      *head = wi + static_cast<std::size_t>(pair++) * kNnueHidden;
+        const float32x4_t x0   = vmulq_n_f32(vmulq_f32(gr0[g], gr0[q]), 1.0f / kNnueInteractionScale);
+        const float32x4_t x1   = vmulq_n_f32(vmulq_f32(gr1[g], gr1[q]), 1.0f / kNnueInteractionScale);
+        sv                     = vmlaq_f32(sv, vld1q_f32(head), x0);
+        sv                     = vmlaq_f32(sv, vld1q_f32(head + 4), x1);
       }
     s = vaddvq_f32(sv) + b2_[static_cast<std::size_t>(stage)];
 #else
@@ -314,18 +301,14 @@ namespace islay {
       int pair = 0;
       for (int g = 0; g < kNnueGroups; ++g)
         for (int q = g + 1; q < kNnueGroups; ++q)
-          s += wi[(static_cast<std::size_t>(pair++) * kNnueHidden) + j] * gr[g] * gr[q] /
-               kNnueInteractionScale;
+          s += wi[(static_cast<std::size_t>(pair++) * kNnueHidden) + j] * gr[g] * gr[q] / kNnueInteractionScale;
     }
 #endif
     const long cd = std::lround(static_cast<double>(s) * 100.0);
     return static_cast<int>(std::clamp(cd, -6399L, 6399L));
   }
 
-  // The shipped file (NN3) stores the embedding table as int16 -- exactly what inference
-  // reads, half the size, no float precision wasted on disk. NN2 (float emb) is still
-  // accepted so trained nets from before the format change load; a float NN2 is
-  // quantized on load, an int16 NN3 goes straight to emb16_.
+  // NN2 float embeddings remain loadable; NN3 and NN4 store int16.
   bool NnueNet::save(const std::string &path, std::ostream &log) const {
     std::FILE *f = std::fopen(path.c_str(), "wb");
     if (!f) {
@@ -336,8 +319,8 @@ namespace islay {
     for (std::size_t i = 0; i < emb_.size(); ++i)
       q[i] = static_cast<std::int16_t>(std::clamp(std::lround(emb_[i] * kNnueQuant), -32767L, 32767L));
     std::uint32_t hidden = kNnueHidden, phases = 0, stages = kStageCount;
-    std::uint64_t feat = feat_;
-    const char *magic = grouped_ ? kMagic4 : kMagic3;
+    std::uint64_t feat  = feat_;
+    const char   *magic = grouped_ ? kMagic4 : kMagic3;
     bool ok = std::fwrite(magic, 1, 8, f) == 8 && rw_all(f, &hidden, 4, true) && rw_all(f, &phases, 4, true) &&
               rw_all(f, &stages, 4, true) && rw_all(f, &feat, 8, true) && rw_all(f, q.data(), q.size() * 2, true) &&
               rw_all(f, const_cast<float *>(w2a_.data()), w2a_.size() * 4, true) &&
@@ -355,7 +338,7 @@ namespace islay {
   }
 
   bool NnueNet::load(const std::string &path, std::ostream &log) {
-    loaded_ = false;
+    loaded_      = false;
     std::FILE *f = std::fopen(path.c_str(), "rb");
     if (!f) {
       log << "info error: cannot open " << path << '\n';
@@ -364,8 +347,8 @@ namespace islay {
     char          magic[8];
     std::uint32_t hidden = 0, phases = 0, stages = 0;
     std::uint64_t feat = 0;
-    bool hdr = std::fread(magic, 1, 8, f) == 8 && rw_all(f, &hidden, 4, false) && rw_all(f, &phases, 4, false) &&
-               rw_all(f, &stages, 4, false) && rw_all(f, &feat, 8, false);
+    bool       hdr = std::fread(magic, 1, 8, f) == 8 && rw_all(f, &hidden, 4, false) && rw_all(f, &phases, 4, false) &&
+                     rw_all(f, &stages, 4, false) && rw_all(f, &feat, 8, false);
     const bool is3 = hdr && std::memcmp(magic, kMagic3, 8) == 0;
     const bool is2 = hdr && std::memcmp(magic, kMagic, 8) == 0;
     const bool is4 = hdr && std::memcmp(magic, kMagic4, 8) == 0;
@@ -375,7 +358,7 @@ namespace islay {
       log << "info error: " << path << " is not a compatible ISLAY NNUE net\n";
       return false;
     }
-    feat_ = feat;
+    feat_                  = feat;
     const std::size_t embn = static_cast<std::size_t>(kStageCount) * feat_ * kNnueHidden;
     w2a_.resize(static_cast<std::size_t>(kStageCount) * kNnueHidden);
     w2h_.resize(static_cast<std::size_t>(kStageCount) * kNnueHidden);
@@ -406,7 +389,7 @@ namespace islay {
       log << "info error: short read from " << path << '\n';
       return false;
     }
-    loaded_ = true;
+    loaded_  = true;
     grouped_ = is4;
     if (is2)
       quantize(); // float NN2 -> the int16 inference table

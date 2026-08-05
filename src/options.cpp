@@ -1,7 +1,3 @@
-/**
- * @file options.cpp
- * @brief Option registry and the `setoption` value parsers.
- */
 #include "options.hpp"
 
 #include <cctype>
@@ -55,9 +51,6 @@ namespace islay {
                          o.book_file = v; // uci.cpp loads it; empty = no book
                          return true;
                        }},
-            // Linear interpolation of the pattern eval across stage boundaries. MEASURED
-            // +58/+66 Elo (fixed depth 6, two seeds) on weights/v12.pat; default off keeps
-            // the baseline byte-identical, so it is opt-in until a set is trained for it.
             OptionSpec{"StageInterpolation", "check", "true", {}, 0, 0,
                        [](Options &o, const std::string &v) {
                          o.stage_interp = iequals(v, "true") || v == "1";
@@ -80,9 +73,6 @@ namespace islay {
                            return false;
                          }
                        }},
-            // Hash sizes the SEARCH table (the conventional UCI meaning). perft
-            // keeps its own table -- pointing both at one option would silently
-            // allocate twice the memory the user asked for.
             OptionSpec{"PerftHash",
                        "spin",
                        "256",
@@ -134,8 +124,6 @@ namespace islay {
                            return false;
                          }
                        }},
-            // Register further options here: give a name/type/default and an apply
-            // lambda that parses the value string into the matching Options field.
     };
     return specs;
   }

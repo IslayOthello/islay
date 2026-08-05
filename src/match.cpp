@@ -1,7 +1,3 @@
-/**
- * @file match.cpp
- * @brief Engine-vs-engine match (contract and why it is shaped this way: match.hpp).
- */
 #include "match.hpp"
 
 #include <chrono>
@@ -25,11 +21,6 @@ namespace islay {
       }
     };
 
-    /**
-     * A short random opening, played legally. Returned by value so the same
-     * opening can be replayed with the engines swapped -- which is the whole
-     * point of pairing.
-     */
     struct Opening {
       Board b;
       Color stm;
@@ -58,10 +49,6 @@ namespace islay {
       return {b, stm, b.moves() != 0 || b.passed().has_moves()};
     }
 
-    /**
-     * Play one game out from `op`. `a_is_black` says which engine moves first.
-     * Returns A's result: 1 win, 0.5 draw, 0 loss.
-     */
     [[nodiscard]] double play_game(const Opening &op, bool a_is_black, PatternWeights *wa, PatternWeights *wb,
                                    Searcher &sa, Searcher &sb, const MatchConfig &cfg) {
       Board              b   = op.b;
@@ -69,9 +56,6 @@ namespace islay {
       std::ostringstream sink; // engines' info lines are noise here
       const bool         tc  = cfg.tc_base_ms > 0.0; // clock time control vs fixed depth/movetime
 
-      // Per-engine clocks (only used under `tc`). A faster engine -- e.g. one with the
-      // endgame stack -- reaches more depth per allotted millisecond, so at equal time it
-      // spends the SAME budget but plays a stronger move. That is the whole point.
       double clk_a = cfg.tc_base_ms, clk_b = cfg.tc_base_ms;
       int    flagged = 0; // 0 none, 1 = A lost on time, 2 = B lost on time
 
@@ -97,15 +81,8 @@ namespace islay {
             break;
           }
           if (a_to_move ? cfg.etm_a : cfg.etm_b) {
-            // Engine time management under test: the side gets its RAW clock and the
-            // allocation happens inside search.cpp. The wall-clock accounting and the
-            // flag rule below stay identical for both sides -- only WHO decides the
-            // budget differs, which is exactly the thing being measured.
             lim = SearchLimits{0, 0, 0.0, *clk, cfg.tc_inc_ms};
           } else {
-            // Reference policy: spread the remaining clock over the moves this side has
-            // left (~empties/2), plus the increment -- the same even split fastothello's
-            // runner uses, so beating it here means beating the incumbent.
             const int    ml     = std::max(1, (64 - b.count()) / 2);
             const double budget = std::min(*clk, *clk / ml + cfg.tc_inc_ms);
             lim                 = SearchLimits{0, 0, budget};
@@ -142,7 +119,6 @@ namespace islay {
       if (flagged == 2)
         return 1.0; // B lost on time
 
-      // Final disc difference, converted to Black's point of view.
       const int mine   = popcount(b.player); // `b` is mover-relative to `stm`
       const int theirs = popcount(b.opponent);
       const int stm_diff = mine - theirs;
@@ -211,7 +187,6 @@ namespace islay {
         --p; // opening died early; draw another
         continue;
       }
-      // Same opening both ways: Black's edge cancels, and any opening bias with it.
       double pair_sum = 0.0;
       for (int side = 0; side < 2; ++side) {
         sa.clear();
@@ -241,23 +216,13 @@ namespace islay {
     if (games == 0)
       return res;
 
-    // THE OBSERVATION IS THE PAIR, NOT THE GAME. The two games of a pair share an
-    // opening and swap colours, so they are not independent draws -- if the opening
-    // favours Black, A tends to win it as Black and lose it as White. Pooling all
-    // 2*pairs games as if they were independent is the mistake this avoids: it
-    // measures the wrong variance, and the pairing that removes the colour bias from
-    // the ESTIMATE has to be respected in its ERROR BAR too.
-    //
-    // Draws counting 0.5 need no special handling: using the actual sample variance
-    // rather than a binomial approximation absorbs them.
+    // Treat each colour-reversed pair as one correlated observation.
     res.score = psum / done_pairs;
     const double pvar = done_pairs > 1 ? (psumsq - psum * psum / done_pairs) / (done_pairs - 1) : 0.0;
     res.stderr_       = done_pairs > 1 ? std::sqrt(pvar / done_pairs) : 0.0;
     res.z             = res.stderr_ > 0.0 ? (res.score - 0.5) / res.stderr_ : 0.0;
 
-    // Measure the within-pair correlation instead of asserting its sign.
     // Var(pair mean) = sigma^2 (1 + rho) / 2, so rho = 2*Var(pair mean)/sigma^2 - 1,
-    // and the naive SE is off by exactly a factor of sqrt(1 + rho).
     const double gvar = games > 1 ? (sumsq - sum * sum / games) / (games - 1) : 0.0;
     res.pair_rho      = gvar > 0.0 ? 2.0 * pvar / gvar - 1.0 : 0.0;
     res.stderr_naive  = games > 1 ? std::sqrt(gvar / games) : 0.0;
@@ -267,11 +232,7 @@ namespace islay {
       return -400.0 * std::log10(1.0 / e - 1.0);
     };
     res.elo = to_elo(res.score);
-    // Transform the score interval, then report the BOUNDS. Halving the width
-    // into a "+/-" would be wrong: to_elo is non-linear, so the interval is
-    // asymmetric -- and a symmetric version can straddle 0 while the z-test says
-    // the difference is real, which is a contradiction the reader should never
-    // have to resolve.
+    // Transform score bounds separately because the Elo map is nonlinear.
     res.elo_lo = to_elo(std::max(res.score - 1.96 * res.stderr_, 1e-4));
     res.elo_hi = to_elo(std::min(res.score + 1.96 * res.stderr_, 1.0 - 1e-4));
 

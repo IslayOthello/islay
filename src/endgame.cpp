@@ -1,7 +1,3 @@
-/**
- * @file endgame.cpp
- * @brief The last-few-empties solver (contract and rationale: endgame.hpp).
- */
 #include "endgame.hpp"
 
 #include <utility>
@@ -13,13 +9,7 @@
 namespace islay {
   namespace {
 
-    /**
-     * Exact score of a ONE-EMPTY position, without recursing or building a board.
-     * At one empty the game is decided by how many discs the single move flips:
-     * mover ends with P+1+f, opponent with O-f, a difference of (P - O + 1 + 2f), and
-     * there are no empties left to award. Rule-aware, mirroring the search's own
-     * terminal/pass handling so the oracle can pin them together.
-     */
+    // Direct one-empty score.
     template<Rule R>
     [[nodiscard]] ISLAY_FORCEINLINE int solve1(const Board &b, Bitboard moves) noexcept {
       const int    P = popcount(b.player), O = popcount(b.opponent);
@@ -33,7 +23,7 @@ namespace islay {
         if (of != 0)
           return 100 * (P - O - 1 - 2 * popcount(of));
       }
-      // Reversi never passes; Othello here means neither side can move. Empty to the winner.
+      // Award the last empty at game over.
       if (P > O)
         return 100 * (P - O + 1);
       if (P < O)
@@ -49,10 +39,7 @@ namespace islay {
     if (empties == 1)
       return solve1<R>(b, b.moves());
 
-    // Stability cutoff. If the opponent already holds S provably-unflippable discs it
-    // finishes with at least S, so the mover's final margin is at most 64 - 2S. Cheap
-    // gate first: stable_count <= popcount(opponent), so the (pricey) fixpoint runs only
-    // when even all-opponent-stable could drop the ceiling to alpha.
+    // Opponent-stability upper bound; popcount gates the fixpoint.
     {
       const int opp = popcount(b.opponent);
       if (100 * (64 - 2 * opp) <= alpha) {
@@ -72,12 +59,7 @@ namespace islay {
       return terminal_score(b);
     }
 
-    // Move ordering. PARITY is primary -- an empty region with an ODD count hands its
-    // last move to whoever plays into it, so true odd connected regions go first.
-    // MOBILITY is the secondary key, but only from `empties`
-    // >= kOrderMobility: it costs a get_moves per move, which is worth it up top (few
-    // nodes, big subtrees, ordering drives the alpha-beta) but not down among the many
-    // near-leaf nodes. Reorders only -- never a score change.
+    // Odd regions first, then low child mobility from five empties.
     constexpr int  kOrderMobility = 5;
     const Bitboard empt = ~(b.player | b.opponent);
     const Bitboard odd = odd_empty_regions(empt);
@@ -91,8 +73,8 @@ namespace islay {
       const Square s = pop_lsb(m);
       int          k = (odd & square_bb(s)) ? (1 << 16) : 0;
       if (with_mob) {
-        child[n] = b.play(s);                 // cache: the loop below would play it anyway
-        k -= popcount(child[n].moves());      // fewer opponent replies first
+        child[n] = b.play(s);            // reused below
+        k -= popcount(child[n].moves()); // fewer replies first
       }
       sq[n]  = s;
       key[n] = k;
@@ -101,7 +83,7 @@ namespace islay {
 
     int best = -kInf;
     for (int i = 0; i < n; ++i) {
-      int pick = i; // selection sort: a cutoff must not pay to order the rest
+      int pick = i; // stop ordering after a cutoff
       for (int j = i + 1; j < n; ++j)
         if (key[j] > key[pick])
           pick = j;

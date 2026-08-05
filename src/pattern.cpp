@@ -1,12 +1,4 @@
-/**
- * @file pattern.cpp
- * @brief Pattern (n-tuple) features, incremental update, and weight I/O.
- *
- * Every table here is GENERATED from board geometry at compile time rather than
- * transcribed -- the same discipline movegen.cpp uses for MASK_LR. The square
- * lists come from one description per type plus the D4 images of it, so a typo
- * cannot silently desynchronise an instance from its weights.
- */
+// Pattern layout is generated from canonical geometry and D4 images.
 #include "pattern.hpp"
 
 #include "nnue.hpp"
@@ -19,11 +11,6 @@
 
 namespace islay {
   namespace {
-
-    // --- one description per type; instances are its D4 images ----------------
-    // Squares are listed for the "canonical" instance; the others are produced by
-    // applying symmetries, so the four members of a group really are images of
-    // each other and can share a weight table.
 
     struct TypeInfo {
       PatternType type;
@@ -40,7 +27,6 @@ namespace islay {
 
     [[nodiscard]] constexpr int sq_of(int r, int f) noexcept { return r * 8 + f; }
 
-    /** Apply D4 symmetry `s` to (rank, file). Mirrors Board::symmetry_bb's order. */
     [[nodiscard]] constexpr int sym_sq(int sq, int s) noexcept {
       int r = sq >> 3, f = sq & 7;
       if (s & 1)
@@ -56,19 +42,15 @@ namespace islay {
     }
 
     struct Layout {
-      // squares[instance][k] -- the k-th square of that instance, -1 past the end
+      // -1 terminates short instances.
       std::array<std::array<int, kMaxPatternSquares>, kPatternInstances> squares{};
       std::array<int, kPatternInstances>                                 len{};
       std::array<PatternType, kPatternInstances>                         type{};
-      // the D4 symmetry used to derive each instance from its canonical one
-      std::array<int, kPatternInstances> sym{};
-      // 0 = a normal type-based instance (weight base from kBases); 1 = Corner2x5.
-      // Appended blocks index their own shared table AFTER mobility, so older files
-      // stay loadable as a prefix. `append_block` generalizes adding more.
+      std::array<int, kPatternInstances>                                 sym{};
+      // 0 = base type, 1 = Corner2x5.
       std::array<int, kPatternInstances> ekind{};
     };
 
-    /** Canonical square list per type, written once, in geometry terms. */
     constexpr void canonical_squares(PatternType t, int *out, int &n) noexcept {
       n = 0;
       switch (t) {
@@ -115,29 +97,30 @@ namespace islay {
           for (int i = 0; i < 4; ++i)
             out[n++] = sq_of(i, i + 4);
           break;
-        default: break;
+        default:
+          break;
       }
     }
 
-    /**
-     * Instances per type, as D4 images of the canonical list. Which symmetries
-     * generate distinct images differs per type (a main diagonal has only 2
-     * distinct images, a corner block has 4), so the generators are listed
-     * explicitly and the result is checked for duplicates by the self-test.
-     */
     constexpr std::array<int, 4> generators_for(PatternType t) noexcept {
       switch (t) {
-        case PatternType::Corner3x3: return {0, 1, 2, 3}; // 4 corners
-        case PatternType::Edge2X: return {0, 2, 4, 6};    // 4 edges
+        case PatternType::Corner3x3:
+          return {0, 1, 2, 3}; // 4 corners
+        case PatternType::Edge2X:
+          return {0, 2, 4, 6}; // 4 edges
         case PatternType::Row2:
         case PatternType::Row3:
-        case PatternType::Row4: return {0, 2, 4, 6}; // 2 ranks + 2 files
-        case PatternType::Diag8: return {0, 1, 0, 0}; // only 2 distinct
+        case PatternType::Row4:
+          return {0, 2, 4, 6}; // 2 ranks + 2 files
+        case PatternType::Diag8:
+          return {0, 1, 0, 0}; // only 2 distinct
         case PatternType::Diag7:
         case PatternType::Diag6:
         case PatternType::Diag5:
-        case PatternType::Diag4: return {0, 1, 2, 3};
-        default: return {0, 0, 0, 0};
+        case PatternType::Diag4:
+          return {0, 1, 2, 3};
+        default:
+          return {0, 0, 0, 0};
       }
     }
 
@@ -156,16 +139,13 @@ namespace islay {
             L.squares[inst][j] = sym_sq(base[j], s);
           for (int j = n; j < kMaxPatternSquares; ++j)
             L.squares[inst][j] = -1;
-          L.len[inst]  = n;
-          L.type[inst] = info.type;
-          L.sym[inst]  = s;
+          L.len[inst]   = n;
+          L.type[inst]  = info.type;
+          L.sym[inst]   = s;
           L.ekind[inst] = 0;
           ++inst;
         }
       }
-      // Appended corner blocks: a WxH block in the a1 corner, then its 8 D4 images
-      // (4 corners x 2 orientations), all sharing one weight table. Corner2x5 first
-      // (ekind 1), Corner2x4 second (ekind 2).
       const auto append_block = [&](int rows, int cols, int kind, int count) constexpr {
         int blk[10]{};
         int cn = 0;
@@ -197,7 +177,6 @@ namespace islay {
       return r;
     }
 
-    /** Table base offsets within one stage; the last slot is the bias term. */
     constexpr std::array<std::size_t, kPatternTypes + 1> make_bases() noexcept {
       std::array<std::size_t, kPatternTypes + 1> b{};
       std::size_t                                acc = 0;
@@ -211,11 +190,6 @@ namespace islay {
 
     constexpr auto kBases = make_bases();
 
-    /**
-     * Per square: which instances contain it, and the base-3 place value it has
-     * there. This is what makes the update incremental -- a changed square only
-     * touches the handful of instances listed here.
-     */
     struct SquareDelta {
       int n = 0;
       int inst[24]{};
@@ -227,10 +201,10 @@ namespace islay {
       for (int i = 0; i < kPatternInstances; ++i) {
         int pv = 1;
         for (int k = 0; k < kLayout.len[i]; ++k) {
-          const int sq = kLayout.squares[i][k];
-          SquareDelta &s = d[static_cast<std::size_t>(sq)];
-          s.inst[s.n]    = i;
-          s.place[s.n]   = pv;
+          const int    sq = kLayout.squares[i][k];
+          SquareDelta &s  = d[static_cast<std::size_t>(sq)];
+          s.inst[s.n]     = i;
+          s.place[s.n]    = pv;
           ++s.n;
           pv *= 3;
         }
@@ -240,7 +214,6 @@ namespace islay {
 
     constexpr auto kSquareDelta = make_square_deltas();
 
-    /** 0 = empty, 1 = Black, 2 = White -- colour-absolute (see pattern.hpp). */
     [[nodiscard]] ISLAY_FORCEINLINE int digit_at(const Board &b, Color stm, Square sq) noexcept {
       const Bitboard bb    = square_bb(sq);
       const Bitboard black = (stm == Color::Black) ? b.player : b.opponent;
@@ -258,46 +231,35 @@ namespace islay {
   } // namespace
 
   namespace {
-    // Per-stage layout tail, tables always APPENDED so older files map into the
-    // front of a newer (wider) stage: [ ...patterns... | bias | black_mob | white_mob ].
-    // (Potential mobility was appended here and MEASURED NEUTRAL -- +9 Elo, CI [-25,43],
-    // isolated over 300 games -- so it was reverted; it is redundant with what the
-    // patterns and the actual move count already encode. See the memory note.)
-    constexpr std::size_t kMob   = static_cast<std::size_t>(kMobBuckets);
-    constexpr std::size_t kBiasBase = kBases[kPatternTypes];
-    constexpr std::size_t kBMobBase = kBiasBase + 1;
-    constexpr std::size_t kWMobBase = kBMobBase + kMob;
-    constexpr std::size_t kC2x5Base = kWMobBase + kMob;                 // shared 2x5 table
-    constexpr std::size_t kC2x5Size = static_cast<std::size_t>(ipow3(10)); // 3^10 = 59049
-    // Stability tables, appended LAST so every earlier file stays a loadable prefix.
-    constexpr std::size_t kStab  = static_cast<std::size_t>(kStabBuckets);
+    // Append new per-stage tables for prefix compatibility.
+    constexpr std::size_t kMob       = static_cast<std::size_t>(kMobBuckets);
+    constexpr std::size_t kBiasBase  = kBases[kPatternTypes];
+    constexpr std::size_t kBMobBase  = kBiasBase + 1;
+    constexpr std::size_t kWMobBase  = kBMobBase + kMob;
+    constexpr std::size_t kC2x5Base  = kWMobBase + kMob; // shared 2x5 table
+    constexpr std::size_t kC2x5Size  = static_cast<std::size_t>(ipow3(10)); // 3^10 = 59049
+    constexpr std::size_t kStab      = static_cast<std::size_t>(kStabBuckets);
     constexpr std::size_t kBStabBase = kC2x5Base + kC2x5Size;
     constexpr std::size_t kWStabBase = kBStabBase + kStab;
-    // Region parity, appended last. One table with the side to move folded into the
-    // index, which is what makes an otherwise colour-even quantity antisymmetric.
-    constexpr std::size_t kPar     = static_cast<std::size_t>(kParityBuckets);
-    constexpr std::size_t kParBase = kWStabBase + kStab;
-    // Frontier tables, appended last so earlier files stay loadable prefixes.
-    constexpr std::size_t kFront     = static_cast<std::size_t>(kFrontBuckets);
+    // Side-to-move makes the parity feature antisymmetric.
+    constexpr std::size_t kPar        = static_cast<std::size_t>(kParityBuckets);
+    constexpr std::size_t kParBase    = kWStabBase + kStab;
+    constexpr std::size_t kFront      = static_cast<std::size_t>(kFrontBuckets);
     constexpr std::size_t kBFrontBase = kParBase + 2 * kPar;
     constexpr std::size_t kWFrontBase = kBFrontBase + kFront;
     constexpr std::size_t kPerStage   = kWFrontBase + kFront;
-    // Older files load as a prefix of the current stage: v1 = patterns+bias,
-    // v2 = +mobility. Both are valid teachers with the newer tables zeroed.
+    // Older stages load as zero-padded prefixes.
     constexpr std::size_t kPerStageV1 = kBiasBase + 1;
     constexpr std::size_t kPerStageV2 = kWMobBase + kMob;
     constexpr std::size_t kPerStageV3 = kC2x5Base + kC2x5Size; // before the stability tables (v1-v12)
-    constexpr std::size_t kPerStageV4 = kWStabBase + kStab;    // before the parity table (v16)
-    constexpr std::size_t kPerStageV5 = kParBase + 2 * kPar;   // before the frontier tables (v17)
+    constexpr std::size_t kPerStageV4 = kWStabBase + kStab; // before the parity table (v16)
+    constexpr std::size_t kPerStageV5 = kParBase + 2 * kPar; // before the frontier tables (v17)
 
-    // Per-instance weight base: the kBases block for the 38 type instances, and each
-    // appended block's own shared table.
     constexpr std::array<std::size_t, kPatternInstances> make_inst_base() noexcept {
       std::array<std::size_t, kPatternInstances> b{};
       for (int i = 0; i < kPatternInstances; ++i) {
-        const int k = kLayout.ekind[static_cast<std::size_t>(i)];
-        b[static_cast<std::size_t>(i)] =
-                (k == 1) ? kC2x5Base : kBases[static_cast<std::size_t>(kLayout.type[i])];
+        const int k                    = kLayout.ekind[static_cast<std::size_t>(i)];
+        b[static_cast<std::size_t>(i)] = (k == 1) ? kC2x5Base : kBases[static_cast<std::size_t>(kLayout.type[i])];
       }
       return b;
     }
@@ -313,35 +275,27 @@ namespace islay {
   std::size_t pattern_type_base(PatternType t) noexcept { return kBases[static_cast<std::size_t>(t)]; }
 
   MobCounts mob_counts(const Board &b, Color stm, Bitboard mover_moves) noexcept {
-    const int my_mob  = popcount(mover_moves);
-    const int opp_mob = popcount(b.passed().moves());
-    // Stability is the same shape of feature as mobility -- a whole-board count no
-    // pattern window can see -- so it is gathered here alongside it. The fixpoint is
-    // the expensive part of the leaf (~+9% search time for both colours), and it is
-    // deliberately the real one: a cheap corner-anchored approximation would be a
-    // function of the edge configuration that Edge2X already encodes exactly.
+    const int          my_mob    = popcount(mover_moves);
+    const int          opp_mob   = popcount(b.passed().moves());
     const StableCounts stability = stable_counts(b.player, b.opponent);
     const int          my_st     = stability.player;
     const int          opp_st    = stability.opponent;
-    MobCounts m;
-    m.black_mob  = (stm == Color::Black) ? my_mob : opp_mob;
-    m.white_mob  = (stm == Color::Black) ? opp_mob : my_mob;
-    m.black_stab = (stm == Color::Black) ? my_st : opp_st;
-    m.white_stab = (stm == Color::Black) ? opp_st : my_st;
-    // Parity: global empty parity plus how many quadrants hold an odd empty count,
-    // with the side to move folded in so the term can be antisymmetric at all.
+    MobCounts          m;
+    m.black_mob            = (stm == Color::Black) ? my_mob : opp_mob;
+    m.white_mob            = (stm == Color::Black) ? opp_mob : my_mob;
+    m.black_stab           = (stm == Color::Black) ? my_st : opp_st;
+    m.white_stab           = (stm == Color::Black) ? opp_st : my_st;
     const Bitboard empties = ~(b.player | b.opponent);
     int            oddq    = 0;
     for (int q = 0; q < 4; ++q)
       oddq += (popcount(empties & kQuadrant[q]) & 1);
-    const int bucket = (popcount(empties) & 1) + 2 * oddq;
-    m.parity = (stm == Color::Black ? 0 : kParityBuckets) + bucket;
-    // Frontier: discs of each colour that touch an empty square. dilate8 is wrap-safe.
+    const int bucket          = (popcount(empties) & 1) + 2 * oddq;
+    m.parity                  = (stm == Color::Black ? 0 : kParityBuckets) + bucket;
     const Bitboard near_empty = dilate8(empties);
     const int      my_front   = popcount(b.player & near_empty);
     const int      opp_front  = popcount(b.opponent & near_empty);
-    m.black_front = (stm == Color::Black) ? my_front : opp_front;
-    m.white_front = (stm == Color::Black) ? opp_front : my_front;
+    m.black_front             = (stm == Color::Black) ? my_front : opp_front;
+    m.white_front             = (stm == Color::Black) ? opp_front : my_front;
     return m;
   }
 
@@ -360,8 +314,6 @@ namespace islay {
   }
 
   void PatternState::update(Square sq, Bitboard flipped, Color mover) noexcept {
-    // Colour-absolute digits: mover's colour is what lands on every changed
-    // square. Placed square: empty(0) -> mover. Flipped squares: other -> mover.
     const int mover_digit = (mover == Color::Black) ? 1 : 2;
     const int other_digit = (mover == Color::Black) ? 2 : 1;
 
@@ -372,8 +324,8 @@ namespace islay {
     }
     Bitboard m = flipped;
     while (m) {
-      const Square       s = pop_lsb(m);
-      const SquareDelta &d = kSquareDelta[static_cast<std::size_t>(s)];
+      const Square       s     = pop_lsb(m);
+      const SquareDelta &d     = kSquareDelta[static_cast<std::size_t>(s)];
       const int          delta = mover_digit - other_digit; // other -> mover
       for (int k = 0; k < d.n; ++k)
         f[d.inst[k]] += delta * d.place[k];
@@ -385,9 +337,6 @@ namespace islay {
     const int lo    = score(s, stage, mc);
     if (!interp)
       return lo;
-    // Linear interpolation toward the next stage by r = discs mod 4 (the position INSIDE
-    // the 4-disc bucket). r == 0 (a bucket boundary) or the final stage returns `lo`
-    // exactly, so with interp off/at-boundary the value is bit-identical to the baseline.
     const int r = discs >= 4 ? (discs - 4) % 4 : 0;
     if (r == 0 || stage >= kStageCount - 1)
       return lo;
@@ -408,13 +357,13 @@ namespace islay {
     [[nodiscard]] ISLAY_FORCEINLINE int front_clamp(int v) noexcept {
       return v < 0 ? 0 : (v >= kFrontBuckets ? kFrontBuckets - 1 : v);
     }
-  }
+  } // namespace
 
   int PatternWeights::score(const PatternState &s, int stage, const MobCounts &mc) const noexcept {
     if (!loaded_)
       return 0;
-    const std::int16_t *w    = w_.data() + static_cast<std::size_t>(stage) * kPerStage;
-    int                 acc  = 0;
+    const std::int16_t *w   = w_.data() + static_cast<std::size_t>(stage) * kPerStage;
+    int                 acc = 0;
     for (int i = 0; i < kPatternInstances; ++i)
       acc += w[kInstBase[static_cast<std::size_t>(i)] + static_cast<std::size_t>(s.f[i])];
     acc += w[kBiasBase]; // bias
@@ -479,17 +428,13 @@ namespace islay {
     is.read(reinterpret_cast<char *>(&ver), 4);
     is.read(reinterpret_cast<char *>(&stages), 4);
     is.read(reinterpret_cast<char *>(&per), 8);
-    // Tables are only ever APPENDED (bias, then mobility, then potential mobility),
-    // so any earlier file's per-stage block is a prefix of the current one: scatter
-    // it into the front of each (wider) stage and leave the newer tables zeroed.
-    // That one rule loads v1, v2, v3, ... with no per-version branch -- a teacher
-    // from before a feature existed simply runs with that feature off.
+    // Scatter older per-stage prefixes and leave appended features zeroed.
     const bool known = (per == kPerStageV1 || per == kPerStageV2 || per == kPerStageV3 || per == kPerStageV4 ||
                         per == kPerStageV5 || per == kPerStage);
     if (stages != static_cast<std::uint32_t>(kStageCount) || !known || per > kPerStage) {
       log << "info error: pattern weights shape mismatch (ver " << ver << ", stages " << stages << ", per " << per
-          << "; expected " << kStageCount << " stages x {" << kPerStageV1 << ',' << kPerStageV2 << ',' << kPerStageV3 << ',' << kPerStageV4 << ',' << kPerStageV5 << ',' << kPerStage
-          << "})\n";
+          << "; expected " << kStageCount << " stages x {" << kPerStageV1 << ',' << kPerStageV2 << ',' << kPerStageV3
+          << ',' << kPerStageV4 << ',' << kPerStageV5 << ',' << kPerStage << "})\n";
       return false;
     }
     w_.assign(static_cast<std::size_t>(kStageCount) * kPerStage, 0);
@@ -522,15 +467,12 @@ namespace islay {
     return static_cast<bool>(os);
   }
 
-  // The NNUE net rides on the same PatternState/feature machinery, so it counts as
-  // "pattern eval on" for the search's template selection even with no linear weights.
-  bool             pattern_enabled() noexcept { return g_active->loaded() || nnue_enabled(); }
-  PatternWeights & pattern_weights() noexcept { return *g_active; }
-  void pattern_set_active(PatternWeights *w) noexcept { g_active = w ? w : &g_weights; }
+  // NNUE also uses the pattern feature path.
+  bool            pattern_enabled() noexcept { return g_active->loaded() || nnue_enabled(); }
+  PatternWeights &pattern_weights() noexcept { return *g_active; }
+  void            pattern_set_active(PatternWeights *w) noexcept { g_active = w ? w : &g_weights; }
 
   bool pattern_selftest() noexcept {
-    // 1. Layout sanity: every instance has the right length, squares are on the
-    //    board and distinct, and the four images of a type really are distinct.
     for (int i = 0; i < kPatternInstances; ++i) {
       if (kLayout.len[i] < 4 || kLayout.len[i] > kMaxPatternSquares)
         return false;
@@ -551,7 +493,6 @@ namespace islay {
       return s;
     };
 
-    // 2. THE property that matters: incremental == from scratch, over real games.
     for (int game = 0; game < 200; ++game) {
       Board        b   = Board::start();
       Color        stm = Color::Black;
@@ -593,7 +534,6 @@ namespace islay {
       }
     }
 
-    // 3. The training surface must agree with the eval: same indices, in range.
     {
       PatternWeights w;
       w.reset_zero();
@@ -611,31 +551,24 @@ namespace islay {
           return false;
     }
 
-    // 4. Stage interpolation: the boundary is exact and the interior is a bounded blend.
-    //    Craft two adjacent stages that differ only in the bias (so the start state's
-    //    score is that bias), and check the deterministic integer formula.
     {
-      PatternWeights    w;
+      PatternWeights w;
       w.reset_zero();
-      const std::size_t per = pattern_weights_per_stage();
+      const std::size_t per         = pattern_weights_per_stage();
       w.data()[0 * per + kBiasBase] = 100; // stage 0 score for any state
       w.data()[1 * per + kBiasBase] = 500; // stage 1 score
-      Board        b = Board::start();
+      Board        b                = Board::start();
       PatternState st;
       st.set(b, Color::Black);
       const MobCounts mc{};
-      // discs 4 -> stage 0, r=0 (boundary) -> exactly the stage-0 score, interp or not.
       if (w.score_phase(st, 4, mc, true) != 100 || w.score_phase(st, 4, mc, false) != 100)
         return false;
-      // discs 5..7 -> stage 0, r=1..3 -> (100*(4-r) + 500*r)/4.
       if (w.score_phase(st, 5, mc, true) != (100 * 3 + 500 * 1) / 4) // 200
         return false;
       if (w.score_phase(st, 6, mc, true) != (100 * 2 + 500 * 2) / 4) // 300
         return false;
       if (w.score_phase(st, 7, mc, true) != (100 * 1 + 500 * 3) / 4) // 400
         return false;
-      // Antisymmetry is preserved because the blend is linear: interp(-x) == -interp(x).
-      // With interp off the value must be byte-identical to the plain per-stage score.
       if (w.score_phase(st, 5, mc, false) != w.score(st, pattern_stage(5), mc))
         return false;
     }

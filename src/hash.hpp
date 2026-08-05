@@ -1,13 +1,3 @@
-/**
- * @file hash.hpp
- * @brief Board hashing and transposition-table sizing, shared by perft and search.
- *
- * Header-only: both `PerftTT` (perft.cpp) and the search transposition table need
- * the same board mixer and the same power-of-two slot arithmetic, and the mixer
- * used to live in perft.cpp's anonymous namespace where nothing else could reach
- * it. Moved verbatim -- the hash values are unchanged, so cached perft counts and
- * `bench` timings must be identical after the move.
- */
 #ifndef ISLAY_HASH_HPP
 #define ISLAY_HASH_HPP
 
@@ -19,7 +9,6 @@
 
 namespace islay {
 
-  /** 64-bit mix (SplitMix64 finalizer over a cheap combine) for TT indexing. */
   [[nodiscard]] ISLAY_FORCEINLINE std::uint64_t hash_board(Bitboard p, Bitboard o) noexcept {
     std::uint64_t h = p * 0x9E3779B97F4A7C15ULL + (o ^ 0x0123456789ABCDEFULL);
     h ^= h >> 30;
@@ -30,10 +19,7 @@ namespace islay {
     return h;
   }
 
-  /**
-   * Slot count for a table of about `mib` mebibytes of `entry_bytes` entries:
-   * rounded *down* to a power of two (so the index is a mask), floored at 1024.
-   */
+  // Round down to a power of two for masked indexing.
   [[nodiscard]] inline std::size_t tt_slots_for(std::size_t mib, std::size_t entry_bytes) noexcept {
     const std::size_t bytes = (mib ? mib : 1) << 20;
     const std::size_t n     = bytes / entry_bytes;

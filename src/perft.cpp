@@ -1,7 +1,3 @@
-/**
- * @file perft.cpp
- * @brief perft() / perft_cached() and the symmetry-aware perft transposition table.
- */
 #include "perft.hpp"
 
 #include "common.hpp"
@@ -10,8 +6,6 @@
 namespace islay {
   namespace {
 
-    // Leaf count for a depth-1 node that has NO legal move. Mirrors the depth-1
-    // semantics of perft_impl<R> exactly -- the ONLY place the two rules differ.
     template<Rule R>
     [[nodiscard]] ISLAY_FORCEINLINE std::uint64_t stuck_leaf_count(const Board &b) noexcept {
       if constexpr (R == Rule::Othello)
@@ -20,13 +14,6 @@ namespace islay {
         return 0u; // Reversi: no move ends the game
     }
 
-    /**
-     * depth-2 node, batched: its children are all depth-1 leaves, so their
-     * get_moves calls are independent and can run lane-parallel. Rule handling
-     * stays per-lane and scalar (a stuck child is rare), via stuck_leaf_count<R>,
-     * so Othello/Reversi still diverge at exactly the same positions.
-     * Compiled away entirely when movegen_batch_width() == 1.
-     */
     template<Rule R>
     [[nodiscard]] std::uint64_t perft2_batched(const Board &b, Bitboard moves) noexcept {
       constexpr int W = movegen_batch_width();
@@ -54,14 +41,11 @@ namespace islay {
       return total;
     }
 
-    // Rule is a compile-time template parameter so the per-node game-over test
-    // (`if constexpr`) folds away -- the hot recursion carries no rule branch.
     template<Rule R>
     ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_impl(const Board &b, int depth) noexcept {
       const Bitboard moves = b.moves();
 
       if (depth == 1) [[likely]] {
-        // Bulk-counting: the number of legal moves *is* the leaf count.
         if (moves) [[likely]] {
           return static_cast<std::uint64_t>(popcount(moves));
         }
@@ -90,13 +74,6 @@ namespace islay {
       return n;
     }
 
-    /**
-     * Same tree walk as perft_impl, but with the depth as a template parameter.
-     * That removes the per-node depth compare and lets the compiler specialise
-     * (and flatten) each ply -- measured +12% on bench 11 (755M -> 846M nps,
-     * interleaved A/B). Only the shallow depths are instantiated; deeper runs
-     * fall back to the runtime-depth walk, whose overhead is amortised by then.
-     */
     template<Rule R, int D>
     ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_td(const Board &b) noexcept {
       const Bitboard moves = b.moves();
@@ -165,10 +142,6 @@ namespace islay {
     return rule == Rule::Othello ? perft_dispatch<Rule::Othello>(b, depth) : perft_dispatch<Rule::Reversi>(b, depth);
   }
 
-  // ---------------------------------------------------------------------------
-  //  Transposition table
-  // ---------------------------------------------------------------------------
-
   void PerftTT::resize(std::size_t mib) {
     const std::size_t pow2 = tt_slots_for(mib, sizeof(Entry));
     table_.assign(pow2, Entry{});
@@ -218,16 +191,12 @@ namespace islay {
         }
       }
 
-      // depth 2 is below the TT gate (use_tt is depth >= 3), so batching here
-      // cannot interact with the cache.
       if constexpr (movegen_batch_width() > 1) {
         if (depth == 2)
           return perft2_batched<R>(b, moves);
       }
 
-      // Caching tiny subtrees costs more than it saves; gate on depth (matches
-      // Edax, which only hashes perft nodes above depth 2). Key on the canonical
-      // form so all 8 rotations/mirrors of a position share one entry.
+      // Cache canonical positions only above depth two.
       const bool use_tt = depth >= 3;
       Board      key{};
       if (use_tt) {
@@ -248,8 +217,6 @@ namespace islay {
       return n;
     }
 
-    /** Compile-time-depth twin of perft_cached_impl (see perft_td). The TT gate
-     *  (depth >= 3) folds away too, so shallow plies carry no cache branch. */
     template<Rule R, int D>
     ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_cached_td(const Board &b, PerftTT &tt) noexcept {
       const Bitboard moves = b.moves();
@@ -271,9 +238,6 @@ namespace islay {
         if constexpr (D == 2 && movegen_batch_width() > 1)
           return perft2_batched<R>(b, moves);
 
-        // Caching tiny subtrees costs more than it saves; gate on depth (matches
-        // Edax). Key on the canonical form so all 8 rotations/mirrors share one
-        // entry. Measured: gate 3 beats 4/5/6 (3529/3738/4494/4695 ms at perft 13).
         if constexpr (D >= 3) {
           const Board   key = b.canonical();
           std::uint64_t cached;

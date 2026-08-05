@@ -1,21 +1,4 @@
-/**
- * @file movegen.cpp
- * @brief Move-generation back-ends (AVX2 / NEON / scalar) and their dispatch.
- *
- * Adapted from Edax-reversi (GPLv3):
- *   - get_moves        : Kogge-Stone style directional fill (board.c).
- *   - flip / mm_flip   : "parallel-prefix fill" outflank (flip_*_ppfill.c).
- *
- * The per-square directional masks that drive the vector flip (Edax's
- * MASK_LR[]) are regenerated here from board geometry at compile time, so no
- * hand-transcribed constant table is needed. The single flat layout
- * MASKS.m[sq][0..7] feeds every kernel. In the arm64 hybrid build its upper
- * four rays are stored reversed at compile time for the hot carry-based flip.
- *
- * Direction index -> (drank, dfile) and equivalent bit shift:
- *   0:E(+1)  1:N(+8)  2:NE(+9)  3:NW(+7)   <- toward higher indices (LS1B)
- *   4:W(-1)  5:S(-8)  6:SW(-9)  7:SE(-7)   <- toward lower  indices (MS1B)
- */
+// Adapted from Edax-reversi move generation and ppfill flip kernels (GPLv3).
 #include "movegen.hpp"
 
 #include <array>
@@ -23,17 +6,7 @@
 
 #include "common.hpp"
 
-// --- back-end selection -----------------------------------------------------
-// AVX2 is the fastest path on x86-64: one 256-bit vector covers all 4 directions.
-//
-// On arm64 NEON is only 2 lanes wide, so an all-NEON get_moves is actually
-// *slower* than scalar on wide out-of-order cores (measured on Apple M3:
-// all-NEON -13% vs scalar). But the integer ALUs and the NEON units are separate
-// issue ports, so running *both* concurrently beats either alone: the HYBRID
-// path puts 2 directions on the integer ALUs and 2 on NEON (measured +48%
-// get_moves throughput vs scalar on M3). That is the arm64 default.
-//   -DISLAY_USE_NEON forces the all-NEON kernels (narrow / in-order arm cores,
-//   where the integer pipe is not wide enough to co-issue).
+// M3: integer+NEON hybrid won; full NEON regressed.
 #if defined(__AVX2__)
 #define ISLAY_MOVEGEN_AVX2 1
 #elif defined(__ARM_NEON) && defined(ISLAY_USE_NEON)
@@ -48,8 +21,7 @@
 #include <arm_neon.h>
 #endif
 
-// Batched (SIMD-across-boards) kernels need the x86 intrinsics even when the
-// per-board back-end above is something else.
+// Batched perft uses x86 intrinsics independently of the per-board backend.
 #if defined(ISLAY_BATCH_PERFT) && (defined(__AVX2__) || defined(__AVX512F__))
 #include <immintrin.h>
 #endif
@@ -57,30 +29,29 @@
 namespace islay {
   namespace {
 
-    // Board-edge mask: files b..g. Stops horizontal/diagonal fills wrapping rows.
+    // Files b..g block row wrapping.
     constexpr Bitboard kInner = 0x7E7E7E7E7E7E7E7EULL;
 
-    // Per-direction (drank, dfile) for the 8 half-directions, LS1B group first.
+    // Directions 0..3 increase bit index; 4..7 decrease it.
     constexpr std::array<int, 8> kDr{0, 1, 1, 1, 0, -1, -1, -1};
     constexpr std::array<int, 8> kDf{1, 0, 1, -1, -1, 0, -1, 1};
 
-    // --- MASK_LR: for each square, the ray of squares in each half-direction -----
-    // --- (excluding the square, stopping at the board edge). ---------------------
+    // Per-square rays, excluding the source square.
     struct alignas(64) MaskTable {
       std::array<std::array<Bitboard, 8>, 66> m; // 64 squares + PASS + NOMOVE (zero)
     };
 
     constexpr Bitboard reverse_bits_constexpr(Bitboard b) noexcept {
-      constexpr Bitboard k1 = 0x5555555555555555ULL;
-      constexpr Bitboard k2 = 0x3333333333333333ULL;
-      constexpr Bitboard k4 = 0x0F0F0F0F0F0F0F0FULL;
-      constexpr Bitboard k8 = 0x00FF00FF00FF00FFULL;
+      constexpr Bitboard k1  = 0x5555555555555555ULL;
+      constexpr Bitboard k2  = 0x3333333333333333ULL;
+      constexpr Bitboard k4  = 0x0F0F0F0F0F0F0F0FULL;
+      constexpr Bitboard k8  = 0x00FF00FF00FF00FFULL;
       constexpr Bitboard k16 = 0x0000FFFF0000FFFFULL;
-      b                       = ((b >> 1) & k1) | ((b & k1) << 1);
-      b                       = ((b >> 2) & k2) | ((b & k2) << 2);
-      b                       = ((b >> 4) & k4) | ((b & k4) << 4);
-      b                       = ((b >> 8) & k8) | ((b & k8) << 8);
-      b                       = ((b >> 16) & k16) | ((b & k16) << 16);
+      b                      = ((b >> 1) & k1) | ((b & k1) << 1);
+      b                      = ((b >> 2) & k2) | ((b & k2) << 2);
+      b                      = ((b >> 4) & k4) | ((b & k4) << 4);
+      b                      = ((b >> 8) & k8) | ((b & k8) << 8);
+      b                      = ((b >> 16) & k16) | ((b & k16) << 16);
       return (b >> 32) | (b << 32);
     }
 
@@ -110,9 +81,7 @@ namespace islay {
 
     constexpr MaskTable MASKS = make_masks();
 
-    // ============================================================================
-    //  Portable reference implementations (ground truth for the self-test).
-    // ============================================================================
+    // Selftest oracle.
 
     [[nodiscard]] Bitboard flip_reference(Square sq, Bitboard p, Bitboard o) noexcept {
       Bitboard  flipped = 0;
@@ -125,14 +94,14 @@ namespace islay {
         bool     bounded = false;
         while (r >= 0 && r < 8 && f >= 0 && f < 8) {
           const Bitboard bb = square_bb(r * 8 + f);
-          if (o & bb) { // opponent disc: part of a candidate run
+          if (o & bb) {
             run |= bb;
             r += kDr[d];
             f += kDf[d];
-          } else if (p & bb) { // our disc: the run (if any) is flipped
+          } else if (p & bb) {
             bounded = true;
             break;
-          } else { // empty: dead end
+          } else {
             break;
           }
         }
@@ -153,12 +122,7 @@ namespace islay {
       return moves;
     }
 
-    // ============================================================================
-    //  Scalar fast path (portable fallback; also cross-checked by the self-test).
-    // ============================================================================
-
-    // One directional component of the move generator (Edax's 1-stage parallel
-    // prefix): contiguous opponent runs bounded by a player disc, both directions.
+    // Edax one-stage parallel prefix in both directions.
     [[nodiscard]] ISLAY_FORCEINLINE Bitboard some_moves_scalar(Bitboard p, Bitboard mask, int dir) noexcept {
       const int d2 = dir + dir;
       Bitboard  fl = mask & (p << dir);
@@ -166,10 +130,7 @@ namespace islay {
       fl |= mask & (fl << dir);
       fr |= mask & (fr >> dir);
       const Bitboard ml = mask & (mask << dir);
-      // mr := ml >> dir saves an AND versus mask & (mask >> dir). The two differ
-      // only in the top `dir` bits, and bit i of (fr >> d2) is sourced from fr
-      // bit i+d2 >= 64 for exactly those bits -- always zero -- so the difference
-      // can never survive `mr & (fr >> d2)`. (Edax's AVX2 path does the same.)
+      // Shifted ml saves one AND; discarded bits cannot reach fr >> d2.
       const Bitboard mr = ml >> dir;
       fl |= ml & (fl << d2);
       fr |= mr & (fr >> d2);
@@ -188,15 +149,10 @@ namespace islay {
              & empties;
     }
 
-    // Branchless "carry" outflank (Okuhara). On wide out-of-order cores (e.g.
-    // Apple Silicon) this scalar kernel beats the 2-lane NEON vector flip: the
-    // four LS1B directions resolve their bounding disc via a single add whose
-    // carry sweeps the contiguous opponent run; the four MS1B directions use a
-    // count-leading-zeros to find the same boundary from the top.
+    // Okuhara carry outflank.
     [[nodiscard]] Bitboard flip_scalar(Square sq, Bitboard p, Bitboard o) noexcept {
       Bitboard flipped = 0;
-      // Directions 0..3 (toward higher bit indices). (o | ~mask) + 1 carries up
-      // through the on-ray opponent run and lands on the first non-opponent.
+      // Increasing-index rays use carry propagation.
       for (int d = 0; d < 4; ++d) {
         const Bitboard mask     = MASKS.m[sq][d];
         Bitboard       outflank = (o | ~mask) + 1;
@@ -204,12 +160,10 @@ namespace islay {
         const Bitboard nz = -static_cast<Bitboard>(outflank != 0); // guards overflow
         flipped |= (outflank - 1) & mask & nz;
       }
-      // Directions 4..7 (toward lower bit indices): the boundary is the
-      // most-significant non-opponent square on the ray.
+      // Decreasing-index rays use the top non-opponent bit.
       for (int d = 4; d < 8; ++d) {
 #if defined(ISLAY_MOVEGEN_HYBRID)
-        // The production hybrid table stores this half reversed for its hot
-        // carry kernel; restore the geometric ray for this scalar cross-check.
+        // Restore the geometric ray for the scalar cross-check.
         const Bitboard mask = reverse_bits_constexpr(MASKS.m[sq][d]);
 #else
         const Bitboard mask = MASKS.m[sq][d];
@@ -228,10 +182,7 @@ namespace islay {
       return vreinterpretq_u64_u8(vrev64q_u8(vrbitq_u8(bytes)));
     }
 
-    // Apple Silicon has only two 64-bit NEON lanes, so a full vector flip loses
-    // to the scalar carry kernel. The MS1B half is different: scalar needs four
-    // serial clz/variable-shift chains. Reverse two rays per vector, apply the
-    // cheap LS1B carry to both lanes, then reverse the captured runs back.
+    // Reverse the MS1B half so two NEON lanes can use carry propagation.
     [[nodiscard]] Bitboard flip_hybrid(Square sq, Bitboard p, Bitboard o) noexcept {
       const uint64x2_t one = vdupq_n_u64(1);
       const uint64x2_t pp  = vdupq_n_u64(p);
@@ -246,8 +197,8 @@ namespace islay {
       const uint64x2_t f = vorrq_u64(vandq_u64(m0, vqsubq_u64(out0, one)),
                                      vandq_u64(m1, vqsubq_u64(out1, one)));
 
-      const uint64x2_t rp  = reverse_bits_u64(pp);
-      const uint64x2_t ro  = reverse_bits_u64(oo);
+      const uint64x2_t rp = reverse_bits_u64(pp);
+      const uint64x2_t ro = reverse_bits_u64(oo);
       const uint64x2_t rm0 = vld1q_u64(&MASKS.m[sq][4]);
       const uint64x2_t rm1 = vld1q_u64(&MASKS.m[sq][6]);
 
@@ -263,9 +214,6 @@ namespace islay {
 
 #endif // ISLAY_MOVEGEN_HYBRID
 
-// ============================================================================
-//  NEON kernels -- used by both the all-NEON path and the hybrid path.
-// ============================================================================
 #if defined(ISLAY_MOVEGEN_NEON) || defined(ISLAY_MOVEGEN_HYBRID)
 
     [[nodiscard]] ISLAY_FORCEINLINE uint64x2_t some_moves_neon(uint64x2_t pp, uint64x2_t mm, int dir) noexcept {
@@ -282,24 +230,17 @@ namespace islay {
 
 #endif // ISLAY_MOVEGEN_NEON || ISLAY_MOVEGEN_HYBRID
 
-// ============================================================================
-//  Hybrid path (arm64 default): 2 directions on the integer ALUs, 2 on NEON.
-//  The two pipelines are independent issue ports, so the halves overlap; this
-//  beats both all-scalar (+48% on M3) and all-NEON (which is itself -13% vs
-//  scalar because 2 lanes cannot amortise the vector-unit round trip).
-// ============================================================================
+// Hybrid arm64 path: two integer directions and two NEON directions.
 #if defined(ISLAY_MOVEGEN_HYBRID)
 
     [[nodiscard]] Bitboard get_moves_hybrid(Bitboard p, Bitboard o) noexcept {
-      const Bitboard mask    = o & kInner;
-      const Bitboard empties = ~(p | o);
-      // NEON half: the two diagonals.
-      const uint64x2_t pp = vdupq_n_u64(p);
-      const uint64x2_t mm = vdupq_n_u64(mask);
-      uint64x2_t       v  = some_moves_neon(pp, mm, 7);
-      v                   = vorrq_u64(v, some_moves_neon(pp, mm, 9));
-      // Integer half: horizontal + vertical.
-      const Bitboard s = some_moves_scalar(p, mask, 1) | some_moves_scalar(p, o, 8);
+      const Bitboard   mask    = o & kInner;
+      const Bitboard   empties = ~(p | o);
+      const uint64x2_t pp      = vdupq_n_u64(p);
+      const uint64x2_t mm      = vdupq_n_u64(mask);
+      uint64x2_t       v       = some_moves_neon(pp, mm, 7);
+      v                        = vorrq_u64(v, some_moves_neon(pp, mm, 9));
+      const Bitboard s         = some_moves_scalar(p, mask, 1) | some_moves_scalar(p, o, 8);
       return (s | vgetq_lane_u64(v, 0) | vgetq_lane_u64(v, 1)) & empties;
     }
 
@@ -329,7 +270,7 @@ namespace islay {
       const uint64x2_t pp       = vdupq_n_u64(p);
       const uint64x2_t oo       = vdupq_n_u64(o);
 
-      // --- MS1B half (directions W,S / SW,SE): parallel-prefix "eraser" fill. ---
+      // MS1B half: parallel-prefix eraser fill.
       uint64x2_t mask0   = vld1q_u64(&MASKS.m[pos][4]); // {W, S}
       uint64x2_t mask1   = vld1q_u64(&MASKS.m[pos][6]); // {SW, SE}
       uint64x2_t eraser0 = vbicq_u64(mask0, oo); // mask & ~o : non-opponent squares
@@ -349,7 +290,7 @@ namespace islay {
       uint64x2_t flip    = vbicq_u64(mask0, vsubq_u64(oflank0, one));
       flip               = vorrq_u64(flip, vbicq_u64(mask1, vsubq_u64(oflank1, one)));
 
-      // --- LS1B half (directions E,N / NE,NW): carry-propagation outflank. ------
+      // LS1B half: carry-propagation outflank.
       mask0   = vld1q_u64(&MASKS.m[pos][0]); // {E, N}
       mask1   = vld1q_u64(&MASKS.m[pos][2]); // {NE, NW}
       oflank0 = vaddq_u64(vornq_u64(oo, mask0), one); // (o | ~mask) + 1
@@ -366,9 +307,6 @@ namespace islay {
 
 #endif // ISLAY_MOVEGEN_NEON
 
-// ============================================================================
-//  AVX2 path (x86-64).
-// ============================================================================
 #if defined(ISLAY_MOVEGEN_AVX2)
 
     [[nodiscard]] Bitboard get_moves_avx2(Bitboard p, Bitboard o) noexcept {
@@ -403,7 +341,7 @@ namespace islay {
       const __m256i shift1 = _mm256_set_epi64x(7, 9, 8, 1);
       const __m256i shift2 = _mm256_set_epi64x(14, 18, 16, 2);
 
-      // --- MS1B half (MASKS.m[pos][4..7] = {W,S,SW,SE}). ---
+      // MS1B half.
       __m256i mask     = _mm256_load_si256(reinterpret_cast<const __m256i *>(&MASKS.m[pos][4]));
       __m256i eraser   = _mm256_andnot_si256(oo, mask);
       __m256i outflank = _mm256_sllv_epi64(_mm256_and_si256(pp, mask), shift1);
@@ -414,7 +352,7 @@ namespace islay {
       outflank         = _mm256_andnot_si256(_mm256_srlv_epi64(eraser, shift2), outflank);
       __m256i flip     = _mm256_and_si256(mask, _mm256_sub_epi64(_mm256_setzero_si256(), outflank));
 
-      // --- LS1B half (MASKS.m[pos][0..3] = {E,N,NE,NW}). ---
+      // LS1B half.
       mask     = _mm256_load_si256(reinterpret_cast<const __m256i *>(&MASKS.m[pos][0]));
       outflank = _mm256_andnot_si256(oo, mask);
       outflank = _mm256_and_si256(outflank, _mm256_sub_epi64(_mm256_setzero_si256(), outflank));
@@ -429,15 +367,7 @@ namespace islay {
 
 #endif // ISLAY_MOVEGEN_AVX2
 
-// ============================================================================
-//  Batched path: SIMD across independent BOARDS (one board per lane).
-//
-//  Because every lane runs the same direction, the fills use *immediate* shifts
-//  -- the cheapest form -- and one instruction advances all N boards at once.
-//  The kernel is a lane-parallel transcription of some_moves_scalar (same
-//  algorithm, same `mr = ml >> dir` shortcut), so results are bit-identical to
-//  the scalar path; movegen_selftest() checks that lane-for-lane.
-// ============================================================================
+// Batched SIMD uses one independent board per lane.
 #if defined(ISLAY_BATCH_PERFT) && defined(__AVX512F__)
 
     template<int dir>
@@ -518,10 +448,6 @@ namespace islay {
       moves[i] = get_moves(p[i], o[i]);
   }
 
-  // ============================================================================
-  //  Public dispatch: pick the widest ISA the build was compiled for.
-  // ============================================================================
-
   ISLAY_HOT Bitboard get_moves(Bitboard p, Bitboard o) noexcept {
 #if defined(ISLAY_MOVEGEN_AVX2)
     return get_moves_avx2(p, o);
@@ -583,8 +509,6 @@ namespace islay {
       if (get_moves_scalar(p, o) != ref_moves)
         return false;
 
-      // Batched kernel: fill a full vector, then check every lane against the
-      // reference. (No-op when batching is disabled: W == 1.)
       if constexpr (W > 1) {
         bp[filled]   = p;
         bo[filled]   = o;

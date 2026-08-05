@@ -1,7 +1,3 @@
-/**
- * @file book.cpp
- * @brief Opening book: probe, file IO, and the negamax builder (book.hpp).
- */
 #include "book.hpp"
 
 #include <algorithm>
@@ -18,10 +14,7 @@ namespace islay {
   namespace {
     constexpr char kMagic[8] = {'I', 'S', 'L', 'A', 'Y', 'B', 'K', '1'};
 
-    // The symmetry s with b.symmetry(s) == b.canonical(), and -1 if none matches
-    // (cannot happen: canonical() is one of the eight images). The move stored for a
-    // position lives in the canonical frame, and this is how a probe gets back to the
-    // caller's frame without inverse-transform arithmetic.
+    // Symmetry that maps b into its canonical frame.
     [[nodiscard]] int canon_symmetry(const Board &b) noexcept {
       const Board c = b.canonical();
       for (int s = 0; s < 8; ++s)
@@ -45,9 +38,7 @@ namespace islay {
     if (it == entries_.end() || it->key != key)
       return NOMOVE;
 
-    // The move is a square in the canonical frame; return the legal move of `b` that
-    // maps onto it under the symmetry that canonicalises `b`. Matching against `b`'s
-    // real moves also rejects a hash collision (the bit would not line up with a move).
+    // Match the canonical square against legal moves; this also rejects hash collisions.
     const int s = canon_symmetry(b);
     if (s < 0)
       return NOMOVE;
@@ -110,7 +101,7 @@ namespace islay {
       log << "info error: short read from " << path << '\n';
       return false;
     }
-    // The file is written sorted, but a hand-made book might not be; guarantee it.
+    // Accept hand-made unsorted books.
     if (!std::is_sorted(entries_.begin(), entries_.end(), [](const Entry &a, const Entry &b) { return a.key < b.key; }))
       std::sort(entries_.begin(), entries_.end(), [](const Entry &a, const Entry &b) { return a.key < b.key; });
     log << "info string book: loaded " << entries_.size() << " positions from " << path << '\n';
@@ -118,11 +109,7 @@ namespace islay {
   }
 
   namespace {
-    // The builder walks the opening tree to `plies` full width, searches each frontier
-    // leaf at `depth`, and backs the values up by negamax so every internal node stores
-    // the move that leads to the best deeply-searched line -- not just the best shallow
-    // move at that node. A memo keyed by the canonical hash searches each distinct
-    // position once, which matters because opening move orders transpose heavily.
+    // Full-width prefix with searched frontier values backed up by negamax.
     struct Builder {
       const BookBuildConfig &cfg;
       Searcher              &searcher;
@@ -130,9 +117,6 @@ namespace islay {
       std::unordered_map<std::uint64_t, Book::Entry> memo;
       std::uint64_t          searches = 0;
 
-      // Returns the mover-relative value of `b`. Stores an entry for every internal
-      // node (a node with a chosen move); frontier leaves contribute a value but no
-      // stored move, so the book only ever answers where it has a real recommendation.
       int visit(const Board &b, Color stm, int ply) {
         const Board         cb  = b.canonical();
         const std::uint64_t key = hash_board(cb.player, cb.opponent);
@@ -141,7 +125,7 @@ namespace islay {
 
         const Bitboard moves = b.moves();
         if (moves == 0) {
-          // A pass costs no ply and does not branch the book; a double pass is terminal.
+          // Passes do not consume book plies.
           const Board p = b.passed();
           if (cfg.rule == Rule::Othello && p.has_moves())
             return -visit(p, ~stm, ply);
@@ -152,8 +136,7 @@ namespace islay {
         }
 
         if (ply >= cfg.plies) {
-          // Frontier: one search, its score is the leaf value. No entry stored -- the
-          // book ends here and the engine searches from this position onward.
+          // Frontier leaves provide values, not book entries.
           std::ostringstream  sink;
           const SearchLimits  lim{cfg.depth, 0, 0.0};
           const SearchResult  r = searcher.search(b, lim, cfg.rule, stm, sink);
@@ -177,7 +160,6 @@ namespace islay {
           }
         }
 
-        // Store the best move in the canonical frame.
         const int s = canon_symmetry(b);
         Book::Entry e;
         e.key   = key;
@@ -234,11 +216,7 @@ namespace islay {
     if (!res.ok || book.size() == 0)
       return false;
 
-    // For every opening line and every D4 image of its position, the book must either
-    // recommend nothing on both, or recommend moves that lead to the SAME canonical
-    // successor. (A stronger "move is the exact symmetry-image" check is wrong at
-    // positions with a non-trivial stabiliser, where several equivalent moves exist and
-    // the probe may return a different representative; the successor is the invariant.)
+    // Compare canonical successors; symmetric positions may have equivalent moves.
     const char *lines[] = {"", "f5", "f5 f6", "d3 c3", "f5 d6 c3"};
     for (const char *ln : lines) {
       Board b   = Board::start();

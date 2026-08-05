@@ -1,39 +1,5 @@
-/**
- * @file stability.hpp
- * @brief Provably-unflippable discs, computed by a fixpoint. Self-designed from the
- *        rules of Othello (NOT ported from Edax), header-only.
- *
- * WHY: the endgame solver's biggest missing pruner. If the opponent holds S discs
- * that can never be flipped, then whatever happens the opponent finishes with at
- * least S, so the mover's final margin is at most 64 - 2S (the empties cancel out of
- * the bound however they break). A solving node whose ceiling 100*(64 - 2S) cannot
- * reach alpha is dead. The earlier corner-anchored-edge version undercounted so badly
- * (it needed S >= ~31 to bite) that the cut never fired; this computes the real set.
- *
- * THE ALGORITHM. A disc can only be flipped by a move that brackets it along one of
- * the four axes (horizontal, vertical, and the two diagonals). So a disc of colour p
- * is unflippable iff it is safe along ALL FOUR axes, and it is safe along an axis if
- * ANY of these holds -- each is genuinely sufficient, so the result never OVER-counts:
- *
- *   1. the whole line through it on that axis is full (no empty square remains on the
- *      line, so no move can ever be played on it -> nothing to flip with);
- *   2. it sits on the board edge for that axis (one bracket end would be off the
- *      board, so it can never be bracketed along that axis);
- *   3. one of its two neighbours along that axis is a same-colour disc that is itself
- *      already known stable (that side is sealed by a permanent wall of p, so no
- *      opponent bracket can form on that side, and a bracket needs BOTH sides).
- *
- * Rule 3 is recursive, so the set is grown to a fixpoint: start from what rules 1-2
- * give (edges and full lines), then keep adding discs that rule 3 now admits until
- * nothing new appears. Monotone, so it converges in a handful of passes.
- *
- * SOUNDNESS is the one thing that matters (an over-count makes the cutoff prune a real
- * line and corrupts an exact solve). Every rule above is a sufficient condition for
- * true unflippability, so the count is a lower bound on the real stable set -- exactly
- * what a sound upper-bound cut needs. `search_selftest` is the backstop: it compares
- * exact solves against the plain oracle, so any over-count would surface as a score
- * mismatch there.
- */
+// Sound lower bound on stable discs. Full lines, edges, and stable neighbours
+// grow a four-axis fixpoint; overcounting would corrupt the endgame cutoff.
 #ifndef ISLAY_STABILITY_HPP
 #define ISLAY_STABILITY_HPP
 
@@ -44,8 +10,7 @@
 namespace islay {
   namespace stability_detail {
 
-    // 8-neighbour shifts, no wrap across a file edge. `sE(bb)` has a bit at x iff bb
-    // had one at x's WEST neighbour -- i.e. "x has a stable west neighbour".
+    // Neighbour shifts with file wrapping masked out.
     [[nodiscard]] ISLAY_FORCEINLINE Bitboard sE(Bitboard b) noexcept { return (b << 1) & ~kFileA; }
     [[nodiscard]] ISLAY_FORCEINLINE Bitboard sW(Bitboard b) noexcept { return (b >> 1) & ~kFileH; }
     [[nodiscard]] ISLAY_FORCEINLINE Bitboard sN(Bitboard b) noexcept { return b >> 8; }
@@ -55,12 +20,15 @@ namespace islay {
     [[nodiscard]] ISLAY_FORCEINLINE Bitboard sNW(Bitboard b) noexcept { return (b >> 9) & ~kFileH; }
     [[nodiscard]] ISLAY_FORCEINLINE Bitboard sSE(Bitboard b) noexcept { return (b << 9) & ~kFileA; }
 
-    // The 15 diagonals of each direction, generated from geometry (repo convention:
-    // masks come from the board's shape, not a transcribed table).
-    struct DiagMasks {
-      std::array<Bitboard, 15> d1{}; // a1-h8 direction: constant (rank - file)
-      std::array<Bitboard, 15> d2{}; // a8-h1 direction: constant (rank + file)
+    struct StableBases {
+      Bitboard h, v, d1, d2;
     };
+
+    struct DiagMasks {
+      std::array<Bitboard, 15> d1{};
+      std::array<Bitboard, 15> d2{};
+    };
+
     [[nodiscard]] constexpr DiagMasks make_diags() noexcept {
       DiagMasks m{};
       for (int r = 0; r < 8; ++r)
@@ -72,10 +40,6 @@ namespace islay {
       return m;
     }
     inline constexpr DiagMasks kDiags = make_diags();
-
-    struct StableBases {
-      Bitboard h, v, d1, d2;
-    };
 
     [[nodiscard]] inline StableBases stable_bases(Bitboard occ) noexcept {
       Bitboard fh = 0, fv = 0, fd1 = 0, fd2 = 0;
@@ -147,8 +111,8 @@ namespace islay {
 
     [[nodiscard]] ISLAY_FORCEINLINE StableBases stable_bases_spread(Bitboard occ) noexcept {
       const Bitboard empty = ~occ;
-      return {~spread_h(empty) | kFileA | kFileH, ~spread_v(empty) | kRank1 | kRank8,
-              ~spread_d1(empty) | kEdges, ~spread_d2(empty) | kEdges};
+      return {~spread_h(empty) | kFileA | kFileH, ~spread_v(empty) | kRank1 | kRank8, ~spread_d1(empty) | kEdges,
+              ~spread_d2(empty) | kEdges};
     }
 
     [[nodiscard]] ISLAY_FORCEINLINE Bitboard stable_bits(Bitboard p, const StableBases &base) noexcept {
@@ -171,17 +135,13 @@ namespace islay {
     int opponent;
   };
 
-  /**
-   * Count `p`'s provably-unflippable discs, given the opponent `o`. A sound LOWER
-   * bound on the true stable set (never over-counts) -- see the header.
-   */
   [[nodiscard]] inline int stable_count(Bitboard p, Bitboard o) noexcept {
     using namespace stability_detail;
     const StableBases base = stable_bases(p | o);
     return popcount(stable_bits(p, base));
   }
 
-  /** Count both colours while sharing their occupancy-dependent full-line scan. */
+  // Share the occupancy-dependent line scan.
   [[nodiscard]] inline StableCounts stable_counts(Bitboard p, Bitboard o) noexcept {
     using namespace stability_detail;
     const StableBases base = stable_bases_spread(p | o);

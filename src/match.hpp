@@ -1,29 +1,4 @@
-/**
- * @file match.hpp
- * @brief Engine-vs-engine match: the only honest way to answer "is this stronger?".
- *
- * Every eval or search change in this repo is a guess until a match measures it.
- * Node counts and nps say how FAST the engine is, never how WELL it plays -- an
- * eval change usually costs nodes and is still worth it, or is free and still
- * loses. So this harness exists to settle those questions.
- *
- * Three things it does that a naive loop gets wrong, and without which the
- * numbers are worthless:
- *
- *  1. **Opening diversity.** Both engines are deterministic, so from the start
- *     position every game would be a replay of the same one. Each pairing starts
- *     from a short random opening instead.
- *  2. **Colour balance.** Black has an edge, so every opening is played TWICE
- *     with the engines swapped. A result is only counted as a pair.
- *  3. **Error bars, over PAIRS.** "A won 52%" over 100 games is noise. The report
- *     carries the standard error, a z-score against "no difference", and an Elo
- *     estimate with a confidence interval. The observation unit is the PAIR, not the
- *     game: the two games of a pair share an opening and swap colours, so they are
- *     not independent draws, and pooling them as if they were measures the wrong
- *     variance. The pairing that removes colour bias from the estimate has to be
- *     respected in the error bar too. The measured within-pair correlation is
- *     reported so this stays a fact and not an assumption.
- */
+// Paired colour-reversed matches with pair-level error bars.
 #ifndef ISLAY_MATCH_HPP
 #define ISLAY_MATCH_HPP
 
@@ -83,20 +58,15 @@ namespace islay {
     double score = 0.0;                     // (wins + draws/2) / games
     double stderr_ = 0.0; // SE of the mean, computed over PAIRS -- see match.cpp
     double z     = 0.0; // (score - 0.5) / stderr; |z| > 1.96 is ~95% confidence
-    // Diagnostics for the pairing itself. `pair_rho` is the measured correlation
-    // between the two games of a pair; `stderr_naive` is what pooling all games as
-    // independent would have given. They differ by exactly sqrt(1 + rho), and
-    // reporting both is what keeps the pairing honest rather than assumed.
+    // Pair correlation and the naive independent-game SE.
     double pair_rho     = 0.0;
     double stderr_naive = 0.0;
     double elo    = 0.0;
-    double elo_lo = 0.0; // ~95% interval. NOT symmetric: the Elo transform is
-    double elo_hi = 0.0; // non-linear, so a "+/-" would misstate it (and could
-                         // even straddle 0 while the z-test says significant).
+    double elo_lo = 0.0;
+    double elo_hi = 0.0;
     [[nodiscard]] bool significant() const noexcept { return z > 1.96 || z < -1.96; }
   };
 
-  /** Play the match, streaming progress to `log`. */
   MatchResult run_match(const MatchConfig &cfg, std::ostream &log);
 
 } // namespace islay

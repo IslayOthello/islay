@@ -1,7 +1,3 @@
-/**
- * @file train.cpp
- * @brief Self-play weight fitting (contract and rationale: train.hpp).
- */
 #include "train.hpp"
 
 #include <algorithm>
@@ -31,11 +27,6 @@ namespace islay {
       }
     };
 
-    /**
-     * One finished game: the moves, and what it came to. 68 bytes, which is what
-     * lets a whole run's worth of games sit in memory and be replayed per epoch.
-     * PASS is stored as 64 so a byte still covers every case.
-     */
     constexpr std::uint8_t kPassByte = 64;
     struct Game {
       std::uint8_t moves[64];
@@ -49,7 +40,6 @@ namespace islay {
       std::int16_t teacher[64]; // deep-search score before moves[i], BLACK's point of view
     };
 
-    /** Random legal opening, then the engine plays it out. Returns false if it died. */
     [[nodiscard]] bool play_one(Game &g, Searcher &s, Rng &rng, const TrainConfig &cfg,
                                 std::int16_t *teacher = nullptr) {
       Board              b   = Board::start();
@@ -59,8 +49,7 @@ namespace islay {
       if (teacher)
         std::fill(teacher, teacher + 64, kNoTeacherScore);
 
-      // Random opening: both engines are deterministic, so without this every game
-      // would be the same game and the whole run would fit one line.
+      // Diversify deterministic self-play.
       for (int i = 0; i < cfg.opening_plies; ++i) {
         Bitboard m = b.moves();
         if (m == 0) {
@@ -93,11 +82,7 @@ namespace islay {
           g.moves[g.n++] = kPassByte;
           continue;
         }
-        // Near the end, ask for depth >= empties: a pass costs no depth, so that
-        // makes every leaf terminal and the answer the TRUE game value rather than a
-        // guess (search.hpp). This is what makes the label ground truth instead of a
-        // record of two weak players fumbling the endgame -- and the solves get
-        // geometrically cheaper as the board fills.
+        // depth >= empties gives exact endgame labels because passes cost no depth.
         const int          empties = 64 - b.count();
         const int          d       = empties <= cfg.solve_empties ? empties : cfg.depth;
         const SearchLimits lim{d, 0, 0.0};
@@ -117,9 +102,6 @@ namespace islay {
         g.moves[g.n++] = static_cast<std::uint8_t>(r.best);
       }
 
-      // terminal_score already settles the empties-to-the-winner rule; it is
-      // mover-relative, so one negation puts it in Black's view -- the same view the
-      // weights are written in.
       const int stm_score = terminal_score(b);
       const int black     = (stm == Color::Black) ? stm_score : -stm_score;
       g.result            = static_cast<std::int16_t>(std::clamp(black, -kScoreMax, kScoreMax));
@@ -138,11 +120,8 @@ namespace islay {
         << ", " << total << " weights -> " << cfg.out << '\n';
     log.flush();
 
-    // With interp, the teacher self-plays with it too (it is +58 Elo, so the games --
-    // and thus the labels -- are stronger), and the fit below blends two stages.
     pattern_set_stage_interp(cfg.interp);
 
-    // --- phase 1: generate ----------------------------------------------------
     Rng               rng{cfg.seed ? cfg.seed : 0x9E3779B97F4A7C15ULL};
     Searcher          s(32);
     std::vector<Game> games;
@@ -163,20 +142,11 @@ namespace islay {
     }
     res.games = games.size();
 
-    // --- phase 2: fit ---------------------------------------------------------
-    // float, not int16: int16 cannot hold a gradient step. Quantisation happens once,
-    // at the end, when the weights are written.
     std::vector<float> w(total, 0.0f);
     const float        lr = static_cast<float>(cfg.lr);
     const float        l2 = static_cast<float>(cfg.l2);
 
-    // Hold out a validation set, SPLIT BY GAME. Splitting by position would leak:
-    // every position in a game carries that game's single label, so a held-out
-    // position whose siblings are in the training set is not held out at all -- the
-    // model would be scored on a label it had already been fitted to.
-    //
-    // Shuffle once, fix the split, and only ever shuffle the training part after
-    // that, so the validation games stay untouched for the whole run.
+    // Split by game to avoid leaking a game's shared label.
     for (std::size_t i = games.size(); i > 1; --i) {
       const std::size_t j = static_cast<std::size_t>(rng.next() % i);
       std::swap(games[i - 1], games[j]);
@@ -188,7 +158,6 @@ namespace islay {
       return res;
     }
 
-    /** One pass over [begin,end). `update` off = pure measurement, weights untouched. */
     const auto pass = [&](std::size_t begin, std::size_t end, bool update, std::uint64_t *out_count) {
       std::uint32_t idx[kPatternInstances + 8];
       std::uint32_t idxhi[kPatternInstances + 8];
@@ -202,17 +171,11 @@ namespace islay {
         st.set(b, stm);
 
         for (int m = 0; m < g.n; ++m) {
-          // Score THIS position, then advance. Pattern features come from the
-          // incremental state; mobility cannot be incremental, so it is computed from
-          // the reconstructed board here -- the same two movegen calls the leaf pays.
           const MobCounts mc    = mob_counts(b, stm);
           const int       discs = b.count();
           const int       stage = pattern_stage(discs);
           const int       n     = pattern_indices(st, stage, mc, idx);
-          // Emitted layout: [38 patterns | 8 Corner2x5 | bias | bmob | wmob]. Gating a
-          // group skips its updates, leaving those weights 0 -- provably-off for an
-          // isolated A/B (eval sums them all; a 0 weight adds nothing). Ranges from the
-          // instance layout, not from `n`, so appended patterns never shift the mob gate.
+          // Feature gates rely on the fixed prefix layout.
           const int kType    = kPatternInstances - kC2x5Instances;                          // 38
           const int c2x5_lo  = kType, c2x5_hi = kPatternInstances;                          // [38,46)
           const int nfront   = n - 2;                                                        // last 2
@@ -228,10 +191,7 @@ namespace islay {
             return false;
           };
 
-          // STAGE INTERPOLATION training: the eval blends this stage with the next by
-          // r/4, so fit BOTH -- the prediction is clo*sum(stage) + chi*sum(stage+1), and
-          // the gradient splits by the same coefficients so each stage learns its share.
-          // With interp off (or r==0 / final stage) chi is 0 and this is the plain fit.
+          // Split prediction and gradient across adjacent stages.
           float         clo = 1.0f, chi = 0.0f;
           int           nhi = 0;
           if (cfg.interp) {
@@ -283,18 +243,11 @@ namespace islay {
       return count ? std::sqrt(sse / static_cast<double>(count)) : 0.0;
     };
 
-    // Keep the weights from the epoch with the best held-out fit, not the last one.
-    // val_rmse is U-shaped -- it bottoms out and then climbs as the fit starts
-    // memorising -- so the final epoch is usually PAST the best point. This is early
-    // stopping without committing to a stopping rule: train the full budget, ship the
-    // trough. (It is not monotone, so "stop on first rise" would quit on noise.)
     std::vector<float> w_best;
     double             best_val = 1e30;
     int                best_ep  = 0;
 
     for (int ep = 0; ep < cfg.epochs; ++ep) {
-      // Shuffle the TRAINING games only: consecutive positions share a label, so a
-      // fixed order lets each game's tail drag the weights.
       for (std::size_t i = games.size(); i > nval + 1; --i) {
         const std::size_t j = nval + static_cast<std::size_t>(rng.next() % (i - nval));
         std::swap(games[i - 1], games[j]);
@@ -316,8 +269,6 @@ namespace islay {
           << (improved ? " cd *" : " cd") << "\n";
       log.flush();
     }
-    // Restore the trough for writing. With no validation set there is nothing to
-    // choose, so w is left as the last epoch.
     if (nval && !w_best.empty()) {
       w = w_best;
       res.val_rmse = best_val;
@@ -325,7 +276,6 @@ namespace islay {
           << " cd)\n";
     }
 
-    // --- phase 3: write -------------------------------------------------------
     PatternWeights out;
     out.reset_zero();
     if (out.size() != total) {
@@ -365,10 +315,7 @@ namespace islay {
         << " generation workers -> " << cfg.out << '\n';
     log.flush();
 
-    // --- phase 1: generate (the teacher is the loaded EvalFile) ------------------
-    // Games are independent, so generation fans out across threads: each worker has
-    // its own Searcher, TT and Rng, and the shared eval weights are read-only during
-    // a search. The fit that follows stays single-threaded (it is not the bottleneck).
+    // Each generator owns its Searcher and TT.
     TrainConfig gen; // reuse play_one's contract for the game loop
     gen.depth         = cfg.depth;
     gen.opening_plies = cfg.opening_plies;
@@ -423,9 +370,7 @@ namespace islay {
     }
     res.games = games.size();
 
-    // --- phase 2: init ----------------------------------------------------------
-    // Train in DISCS (labels /100): cd-scale activations would give ~1e5 head
-    // gradients and no single lr would fit both layers.
+    // Train in disc units to keep layer gradients comparable.
     NnueNet &net = nnue_net();
     if (nnue_teacher)
       net.prepare_training();
@@ -442,8 +387,7 @@ namespace islay {
       const auto frand = [&](float a) { // uniform in [-a, a]
         return (static_cast<float>(rng.next() >> 40) / 16777216.0f * 2.0f - 1.0f) * a;
       };
-      // Linear warm start: emb dim 0 = the teacher weight, W2a dim 0 = 1,
-      // everything else small noise. r rows start at 0 (the .pat has no such term).
+      // Embed the linear teacher in dimension zero.
       const std::int16_t *linear = pattern_weights().data();
       for (int st = 0; st < kStageCount; ++st)
         for (std::size_t f = 0; f < fper; ++f) {
@@ -459,7 +403,6 @@ namespace islay {
       }
     }
 
-    // --- phase 3: fit -----------------------------------------------------------
     for (std::size_t i = games.size(); i > 1; --i) {
       const std::size_t j = static_cast<std::size_t>(rng.next() % i);
       std::swap(games[i - 1], games[j]);
@@ -472,8 +415,6 @@ namespace islay {
     }
     const float lre = static_cast<float>(cfg.lr_emb), lro = static_cast<float>(cfg.lr_out);
 
-    /** One pass over [begin,end); backprop when `update`. Same replay skeleton as
-     *  the linear pass above, different model. RMSE is reported in centi-discs. */
     const auto pass = [&](std::size_t begin, std::size_t end, bool update, std::uint64_t *out_count) {
       std::uint32_t idx[kPatternInstances + 9]; // + the appended r index
       double        sse   = 0.0;
@@ -592,10 +533,7 @@ namespace islay {
       return count ? std::sqrt(sse / static_cast<double>(count)) * 100.0 : 0.0; // cd
     };
 
-    // Early stop by snapshot (like the linear trainer): train the full budget, keep
-    // the best-held-out epoch. For an NNUE bootstrap, epoch 0 is the teacher and
-    // must remain eligible: a bad continuation round should reproduce the teacher,
-    // not force-promote its least-bad trained epoch.
+    // Keep epoch zero eligible when bootstrapping an NNUE teacher.
     std::vector<float> best_emb, best_a, best_h, best_group, best_inter, best_b;
     const std::size_t  esz = static_cast<std::size_t>(kStageCount) * fper * H;
     const double       warm_val = nval ? pass(0, nval, false, nullptr) : 0.0;
