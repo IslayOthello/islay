@@ -20,6 +20,7 @@
 #include <cstdint>
 
 #include "movegen.hpp"
+#include "stability.hpp"
 
 namespace islay {
   namespace {
@@ -208,6 +209,9 @@ namespace islay {
         return false; // claimed a square p does not own
       if ((p & kCorners) != (st & kCorners))
         return false; // an owned corner can never be flipped
+      const StableCounts counts = stable_counts(p, o);
+      if (counts.player != stable_count(p, o) || counts.opponent != stable_count(o, p))
+        return false;
     }
 
     // terminal_score: hand-built cases.

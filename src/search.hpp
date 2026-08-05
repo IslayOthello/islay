@@ -389,6 +389,7 @@ namespace islay {
     int                                 depth_offset_ = 0;
 
     std::vector<PatternState> ps_;
+    Bitboard                  move_stack_[kMaxPly]{};
     bool                      pat_on_ = false; // cached per search; see new_search()
     bool                      nnue_on_ = false; // ditto: NNUE leaf instead of the linear sum
 

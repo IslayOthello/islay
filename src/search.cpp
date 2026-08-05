@@ -582,9 +582,10 @@ namespace islay {
     }
 
     struct ScoredMove {
-      Square sq;
-      Board  child; // cached: ordering already paid for play(), the loop reuses it
-      int    score;
+      Board    child; // cached: ordering already paid for play(), the loop reuses it
+      Bitboard child_moves;
+      int      score;
+      Square   sq;
     };
 
   } // namespace
@@ -990,7 +991,7 @@ namespace islay {
     if ((nodes_ & 1023) == 0)
       check_stop();
 
-    const Bitboard moves = b.moves();
+    const Bitboard moves = move_stack_[ply];
 
     // Last-empty fast path. Fires exactly when the normal code would SOLVE this node
     // (depth >= 1 at one empty == `solving` there), never where it would eval, so the
@@ -1008,12 +1009,14 @@ namespace islay {
     // an exact solve).
     if (moves == 0) [[unlikely]] {
       if constexpr (R == Rule::Othello) {
-        const Board passed = b.passed();
-        if (passed.has_moves()) {
+        const Board    passed       = b.passed();
+        const Bitboard passed_moves = passed.moves();
+        if (passed_moves != 0) {
           // A pass changes the mover but no square, so the features are unchanged.
           if constexpr (Pat)
             if (ply + 1 < kMaxPly)
             ps_[ply + 1] = ps_[ply];
+          move_stack_[ply + 1] = passed_moves;
           return -pvs<R, Pat>(passed, depth, -beta, -alpha, ply + 1, ~stm, prev_move, prev2_move);
         }
       }
@@ -1188,12 +1191,14 @@ namespace islay {
         depth >= kNmpMinDepth && 64 - b.count() > kNmpMinEmpties) {
       const int stand_pat = leaf_eval<Pat>(b, moves, ply, stm);
       if (stand_pat >= beta) {
-        const int   red    = kNmpBaseR + depth / kNmpDepthDiv;
-        const int   nd     = depth - red - 1 < 1 ? 1 : depth - red - 1;
-        const Board passed = b.passed(); // the heuristic pass: mover changes, no square does
+        const int      red          = kNmpBaseR + depth / kNmpDepthDiv;
+        const int      nd           = depth - red - 1 < 1 ? 1 : depth - red - 1;
+        const Board    passed       = b.passed(); // the heuristic pass: mover changes, no square does
+        const Bitboard passed_moves = passed.moves();
         if constexpr (Pat)
           if (ply + 1 < kMaxPly)
             ps_[ply + 1] = ps_[ply]; // a pass leaves every feature unchanged
+        move_stack_[ply + 1] = passed_moves;
         const int score =
                 -pvs<R, Pat>(passed, nd, -beta, -beta + 1, ply + 1, ~stm, prev_move, prev2_move, /*can_null=*/false);
         if (stopped_)
@@ -1254,53 +1259,49 @@ namespace islay {
     }
 
     // --- build + score the move list -----------------------------------------
+    const int  move_count = popcount(moves);
     ScoredMove list[36];
     int        n = 0;
-    {
-      Bitboard m = moves;
-      while (m) {
-        const Square sq = pop_lsb(m);
-        ScoredMove  &sm = list[n++];
+    if (tt_move != NOMOVE) {
+      int      tt_index = 0;
+      Bitboard staged   = moves;
+      while (staged) {
+        const Square sq = pop_lsb(staged);
+        ScoredMove  &sm = list[n];
         sm.sq           = sq;
-        sm.child        = b.play(sq);
-        // The child's TT slot is a random DRAM touch (~80-100ns) and the cached
-        // perft work showed this table is memory-bound. Start the load now, while
-        // ordering still has work to do, so the probe after we recurse is warm.
-        if (kUsePrefetch && kUseTT && tt_enabled_)
-          tt_->prefetch(hash_board(sm.child.player, sm.child.opponent));
-        if constexpr (kUseOrdering) {
-          if (sq == tt_move) {
-            sm.score = 1 << 24;
-          } else {
-            const bool learned = tt_move == NOMOVE && depth >= kOrderMobilityMinDepth;
-            const int  replies = depth >= kOrderMobilityMinDepth ? popcount(sm.child.moves()) : 0;
-            int s = learned ? learned_order_score(b, sm.child, sq, replies, prev_move, prev2_move)
-                            : kSquareValue[sq] * params_.sqv_mult;
-            if constexpr (kUseKillers) {
-              if (sq == killers_[ply][0])
-                s += params_.killer0;
-              else if (sq == killers_[ply][1])
-                s += params_.killer1;
-            }
-            // Fewer replies for the opponent is the strongest cheap signal, but
-            // it costs a get_moves per move -- only worth it deeper up the tree.
-            if (!learned && depth >= kOrderMobilityMinDepth)
-              s -= params_.mob_w * replies;
-            s += history_[sq] / params_.hist_div;
-            // The previous placement carries local board context that the global
-            // destination-square history cannot distinguish. A pass preserves it.
-            if (prev_move < 64)
-              s += continuation_history_[prev_move][sq] / params_.hist_div;
-            if (prev2_move < 64)
-              s += continuation_history_2_[prev2_move][sq] / params_.hist_div;
-            if (odd_regions & square_bb(sq))
-              s += params_.parity_bonus; // sq's connected region has odd empties
-            sm.score = s;
+        sm.child        = {};
+        sm.child_moves  = 0;
+        if (sq == tt_move) {
+          tt_index = n;
+          sm.child = b.play(sq);
+          sm.score = 1 << 24;
+          // The child's TT slot is a random DRAM touch (~80-100ns). Start the
+          // load now so the probe after recursion is warm.
+          if (kUsePrefetch && kUseTT && tt_enabled_)
+            tt_->prefetch(hash_board(sm.child.player, sm.child.opponent));
+        } else if constexpr (kUseOrdering) {
+          int s = kSquareValue[sq] * params_.sqv_mult;
+          if constexpr (kUseKillers) {
+            if (sq == killers_[ply][0])
+              s += params_.killer0;
+            else if (sq == killers_[ply][1])
+              s += params_.killer1;
           }
+          s += history_[sq] / params_.hist_div;
+          if (prev_move < 64)
+            s += continuation_history_[prev_move][sq] / params_.hist_div;
+          if (prev2_move < 64)
+            s += continuation_history_2_[prev2_move][sq] / params_.hist_div;
+          if (odd_regions & square_bb(sq))
+            s += params_.parity_bonus;
+          sm.score = s;
         } else {
           sm.score = 0;
         }
+        ++n;
       }
+      if (tt_index != 0)
+        std::swap(list[0], list[tt_index]);
     }
 
     if constexpr (kStats) {
@@ -1331,11 +1332,15 @@ namespace islay {
       const ScoredMove &sm = list[idx];
       if constexpr (kStats) ++sacc.moves_searched;
 
+      const Bitboard child_moves =
+              (depth >= kOrderMobilityMinDepth && sm.sq != tt_move) ? sm.child_moves : sm.child.moves();
+      move_stack_[ply + 1] = child_moves;
+
       // Extension: a forced reply branches nowhere, so spending a ply on it buys
       // nothing -- follow the forced sequence to its end instead. Only ever adds
       // depth, so it cannot corrupt an exact solve.
       int ext = 0;
-      if (kUseExtensions && selective_enabled_ && n == 1)
+      if (kUseExtensions && selective_enabled_ && move_count == 1)
         ext = 1;
 
       // Late move reduction: with decent ordering, a move this far down the list
@@ -1428,50 +1433,106 @@ namespace islay {
       return 0;
     };
 
-    // ABDADA applies only where deferral can matter: several threads, a subtree deep
-    // enough to be worth not duplicating, and more than one move to choose from.
-    const bool abdada_here = abdada_ && depth > kAbdadaMinDepth && n > 1;
-    if (!abdada_here) {
-      for (int i = 0; i < n; ++i) {
-        // Lazy selection: a cutoff on the first move must not have paid to sort all.
-        if constexpr (kUseOrdering) {
-          int pick = i;
-          for (int j = i + 1; j < n; ++j)
-            if (list[j].score > list[pick].score)
-              pick = j;
-          if (pick != i)
-            std::swap(list[i], list[pick]);
+    int ended = 0;
+    if (tt_move != NOMOVE)
+      ended = search_move(0, 0);
+
+    const int first_unsearched = tt_move != NOMOVE ? 1 : 0;
+    if (!ended) {
+      if (tt_move != NOMOVE) {
+        for (int i = 1; i < n; ++i) {
+          ScoredMove &sm = list[i];
+          sm.child       = b.play(sm.sq);
+          if (kUsePrefetch && kUseTT && tt_enabled_)
+            tt_->prefetch(hash_board(sm.child.player, sm.child.opponent));
+          if constexpr (kUseOrdering) {
+            if (depth >= kOrderMobilityMinDepth) {
+              sm.child_moves = sm.child.moves();
+              sm.score -= params_.mob_w * popcount(sm.child_moves);
+            }
+          }
         }
-        if (search_move(i, i))
-          break;
-      }
-    } else {
-      // Full sort up front: the two-pass order below revisits the list, so lazy
-      // selection no longer pays for itself here.
-      for (int i = 1; i < n; ++i) {
-        ScoredMove key_ = list[i];
-        int        j    = i - 1;
-        for (; j >= 0 && list[j].score < key_.score; --j)
-          list[j + 1] = list[j];
-        list[j + 1] = key_;
-      }
-      bool deferred[36] = {};
-      int  ord = 0, ended = 0;
-      // Pass 1: search moves whose subtree nobody else is inside. The first move is
-      // never deferred -- the node needs a real score to raise alpha with.
-      for (int i = 0; i < n && !ended; ++i) {
-        if (i > 0 && tt_->busy(hash_board(list[i].child.player, list[i].child.opponent))) {
-          deferred[i] = true;
-          continue;
+      } else {
+        Bitboard m = moves;
+        while (m) {
+          const Square sq = pop_lsb(m);
+          ScoredMove  &sm = list[n++];
+          sm.sq           = sq;
+          sm.child        = b.play(sq);
+          sm.child_moves  = 0;
+          if (kUsePrefetch && kUseTT && tt_enabled_)
+            tt_->prefetch(hash_board(sm.child.player, sm.child.opponent));
+          if constexpr (kUseOrdering) {
+            const bool learned = depth >= kOrderMobilityMinDepth;
+            if (depth >= kOrderMobilityMinDepth)
+              sm.child_moves = sm.child.moves();
+            const int replies = depth >= kOrderMobilityMinDepth ? popcount(sm.child_moves) : 0;
+            int       s       = learned ? learned_order_score(b, sm.child, sq, replies, prev_move, prev2_move)
+                                        : kSquareValue[sq] * params_.sqv_mult;
+            if constexpr (kUseKillers) {
+              if (sq == killers_[ply][0])
+                s += params_.killer0;
+              else if (sq == killers_[ply][1])
+                s += params_.killer1;
+            }
+            s += history_[sq] / params_.hist_div;
+            if (prev_move < 64)
+              s += continuation_history_[prev_move][sq] / params_.hist_div;
+            if (prev2_move < 64)
+              s += continuation_history_2_[prev2_move][sq] / params_.hist_div;
+            if (odd_regions & square_bb(sq))
+              s += params_.parity_bonus;
+            sm.score = s;
+          } else {
+            sm.score = 0;
+          }
         }
-        ended = search_move(i, ord++);
       }
-      // Pass 2: whatever was deferred. By now the other thread has either finished
-      // (its result is in the shared table) or is deep inside (we duplicate, as plain
-      // lazy SMP always did) -- either way no move is ever skipped.
-      for (int i = 0; i < n && !ended; ++i)
-        if (deferred[i])
+    }
+
+    if (!ended) {
+      // ABDADA applies only where deferral can matter: several threads, a subtree deep
+      // enough to be worth not duplicating, and more than one move to choose from.
+      const bool abdada_here = abdada_ && depth > kAbdadaMinDepth && n > 1;
+      if (!abdada_here) {
+        for (int i = first_unsearched; i < n; ++i) {
+          // Lazy selection: a cutoff on the first move must not have paid to sort all.
+          if constexpr (kUseOrdering) {
+            int pick = i;
+            for (int j = i + 1; j < n; ++j)
+              if (list[j].score > list[pick].score)
+                pick = j;
+            if (pick != i)
+              std::swap(list[i], list[pick]);
+          }
+          if (search_move(i, i))
+            break;
+        }
+      } else {
+        // Full sort up front: the two-pass order below revisits the list, so lazy
+        // selection no longer pays for itself here.
+        for (int i = first_unsearched + 1; i < n; ++i) {
+          ScoredMove key_ = list[i];
+          int        j    = i - 1;
+          for (; j >= first_unsearched && list[j].score < key_.score; --j)
+            list[j + 1] = list[j];
+          list[j + 1] = key_;
+        }
+        bool deferred[36] = {};
+        int  ord          = first_unsearched;
+        // Pass 1: search moves whose subtree nobody else is inside.
+        for (int i = first_unsearched; i < n && !ended; ++i) {
+          if (i > 0 && tt_->busy(hash_board(list[i].child.player, list[i].child.opponent))) {
+            deferred[i] = true;
+            continue;
+          }
           ended = search_move(i, ord++);
+        }
+        // Pass 2: search the deferred moves after giving their shared TT work time to land.
+        for (int i = first_unsearched; i < n && !ended; ++i)
+          if (deferred[i])
+            ended = search_move(i, ord++);
+      }
     }
     if (aborted)
       return 0;
@@ -1516,13 +1577,15 @@ namespace islay {
     int        n = 0;
     Bitboard   m = moves;
     while (m) {
-      const Square sq = pop_lsb(m);
-      list[n]         = {sq, root.play(sq), 0};
+      const Square sq     = pop_lsb(m);
+      list[n].sq          = sq;
+      list[n].child       = root.play(sq);
+      list[n].child_moves = list[n].child.moves();
       // Previous iteration's best first -- the whole point of iterative deepening.
       if (sq == res.best)
         list[n].score = 1 << 24;
       else
-        list[n].score = kSquareValue[sq] * params_.sqv_mult - params_.mob_w * popcount(list[n].child.moves());
+        list[n].score = kSquareValue[sq] * params_.sqv_mult - params_.mob_w * popcount(list[n].child_moves);
       ++n;
     }
 
@@ -1536,6 +1599,7 @@ namespace islay {
       if (pick != i)
         std::swap(list[i], list[pick]);
       const ScoredMove &sm = list[i];
+      move_stack_[1]       = sm.child_moves;
 
       if constexpr (Pat) {
         const Bitboard flipped = root.player ^ sm.child.opponent ^ square_bb(sm.sq);
@@ -1709,12 +1773,15 @@ namespace islay {
     SearchResult res;
 
     const Bitboard moves = root.moves();
+    move_stack_[0]       = moves;
     if (moves == 0) {
-      const Board passed = root.passed();
-      if (rule == Rule::Othello && passed.has_moves()) {
+      const Board    passed       = root.passed();
+      const Bitboard passed_moves = passed.moves();
+      if (rule == Rule::Othello && passed_moves != 0) {
         res.best  = PASS; // forced: no choice to search for
         if (pat_on_)
           ps_[1] = ps_[0]; // a pass changes the mover, not the squares
+        move_stack_[1] = passed_moves;
         const int sc = rule == Rule::Othello
                                ? (pat_on_ ? pvs<Rule::Othello, true>(passed, 4, -kInf, kInf, 1, ~stm)
                                           : pvs<Rule::Othello, false>(passed, 4, -kInf, kInf, 1, ~stm))

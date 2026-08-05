@@ -99,6 +99,58 @@ namespace islay {
       return {fh | kFileA | kFileH, fv | kRank1 | kRank8, fd1 | kEdges, fd2 | kEdges};
     }
 
+    [[nodiscard]] ISLAY_FORCEINLINE Bitboard spread_h(Bitboard b) noexcept {
+      constexpr Bitboard kNoA  = 0xFEFEFEFEFEFEFEFEULL;
+      constexpr Bitboard kNoAB = 0xFCFCFCFCFCFCFCFCULL;
+      constexpr Bitboard kNoAD = 0xF0F0F0F0F0F0F0F0ULL;
+      constexpr Bitboard kNoH  = 0x7F7F7F7F7F7F7F7FULL;
+      constexpr Bitboard kNoGH = 0x3F3F3F3F3F3F3F3FULL;
+      constexpr Bitboard kNoEH = 0x0F0F0F0F0F0F0F0FULL;
+      b |= ((b << 1) & kNoA) | ((b >> 1) & kNoH);
+      b |= ((b << 2) & kNoAB) | ((b >> 2) & kNoGH);
+      b |= ((b << 4) & kNoAD) | ((b >> 4) & kNoEH);
+      return b;
+    }
+
+    [[nodiscard]] ISLAY_FORCEINLINE Bitboard spread_v(Bitboard b) noexcept {
+      b |= (b << 8) | (b >> 8);
+      b |= (b << 16) | (b >> 16);
+      b |= (b << 32) | (b >> 32);
+      return b;
+    }
+
+    [[nodiscard]] ISLAY_FORCEINLINE Bitboard spread_d1(Bitboard b) noexcept {
+      constexpr Bitboard kNoA  = 0xFEFEFEFEFEFEFEFEULL;
+      constexpr Bitboard kNoAB = 0xFCFCFCFCFCFCFCFCULL;
+      constexpr Bitboard kNoAD = 0xF0F0F0F0F0F0F0F0ULL;
+      constexpr Bitboard kNoH  = 0x7F7F7F7F7F7F7F7FULL;
+      constexpr Bitboard kNoGH = 0x3F3F3F3F3F3F3F3FULL;
+      constexpr Bitboard kNoEH = 0x0F0F0F0F0F0F0F0FULL;
+      b |= ((b << 9) & kNoA) | ((b >> 9) & kNoH);
+      b |= ((b << 18) & kNoAB) | ((b >> 18) & kNoGH);
+      b |= ((b << 36) & kNoAD) | ((b >> 36) & kNoEH);
+      return b;
+    }
+
+    [[nodiscard]] ISLAY_FORCEINLINE Bitboard spread_d2(Bitboard b) noexcept {
+      constexpr Bitboard kNoA  = 0xFEFEFEFEFEFEFEFEULL;
+      constexpr Bitboard kNoAB = 0xFCFCFCFCFCFCFCFCULL;
+      constexpr Bitboard kNoAD = 0xF0F0F0F0F0F0F0F0ULL;
+      constexpr Bitboard kNoH  = 0x7F7F7F7F7F7F7F7FULL;
+      constexpr Bitboard kNoGH = 0x3F3F3F3F3F3F3F3FULL;
+      constexpr Bitboard kNoEH = 0x0F0F0F0F0F0F0F0FULL;
+      b |= ((b << 7) & kNoH) | ((b >> 7) & kNoA);
+      b |= ((b << 14) & kNoGH) | ((b >> 14) & kNoAB);
+      b |= ((b << 28) & kNoEH) | ((b >> 28) & kNoAD);
+      return b;
+    }
+
+    [[nodiscard]] ISLAY_FORCEINLINE StableBases stable_bases_spread(Bitboard occ) noexcept {
+      const Bitboard empty = ~occ;
+      return {~spread_h(empty) | kFileA | kFileH, ~spread_v(empty) | kRank1 | kRank8,
+              ~spread_d1(empty) | kEdges, ~spread_d2(empty) | kEdges};
+    }
+
     [[nodiscard]] ISLAY_FORCEINLINE Bitboard stable_bits(Bitboard p, const StableBases &base) noexcept {
       Bitboard st = 0, prev;
       do {
@@ -132,7 +184,7 @@ namespace islay {
   /** Count both colours while sharing their occupancy-dependent full-line scan. */
   [[nodiscard]] inline StableCounts stable_counts(Bitboard p, Bitboard o) noexcept {
     using namespace stability_detail;
-    const StableBases base = stable_bases(p | o);
+    const StableBases base = stable_bases_spread(p | o);
     return {popcount(stable_bits(p, base)), popcount(stable_bits(o, base))};
   }
 
