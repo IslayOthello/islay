@@ -245,18 +245,19 @@ namespace islay {
     // against, and it matters: on v12 the shallow->deep correlation is r=0.99 and a
     // 1.5-sigma margin eats only 17-26% of a score SD, versus 29-47% on the earlier
     // v5 and 36-45% on the hand-written eval. Re-fit here if the shipped eval changes.
+    // Fitted on weights/v22.nnue with `pcdata 1600 12`.
     constexpr ProbCutFit kProbCutFit[kProbCutMaxFitDepth + 1] = {
             {1, 0, 999}, {1, 0, 999}, {1, 0, 999},               // 0..2: unused, never consulted
-            {1.010f, -114.1f, 397.8f},                           // d=3
-            {0.997f, 46.5f, 332.8f},                             // d=4
-            {1.000f, -17.1f, 314.9f},                            // d=5
-            {0.996f, 28.7f, 250.7f},                             // d=6
-            {0.992f, 6.0f, 235.9f},                              // d=7
-            {1.007f, 9.9f, 234.0f},                              // d=8
-            {1.001f, 1.2f, 242.0f},                              // d=9
-            {1.002f, -3.0f, 213.9f},                             // d=10
-            {1.004f, 15.3f, 207.9f},                             // d=11
-            {1.004f, 18.6f, 209.7f},                             // d=12
+            {1.010f, -114.1f, 397.8f},                           // d=3, unused
+            {1.001f, 103.7f, 317.4f},                            // d=4, unused
+            {1.010f, -50.9f, 273.4f},                            // d=5
+            {1.008f, 45.3f, 242.4f},                             // d=6
+            {1.005f, -34.1f, 225.8f},                            // d=7
+            {1.005f, 21.1f, 226.1f},                             // d=8
+            {1.006f, -2.5f, 204.9f},                             // d=9
+            {1.004f, 4.2f, 189.6f},                              // d=10
+            {1.007f, -10.4f, 179.8f},                            // d=11
+            {1.016f, 6.9f, 176.1f},                              // d=12
     };
     constexpr int   kProbCutMinDepth = 5; // needs room for a d-2 search worth the saving
     // ABDADA: mark subtrees from this remaining depth up; shallower ones finish too
@@ -297,12 +298,12 @@ namespace islay {
     constexpr ProbCutFit kProbCutFit4[kProbCutMaxFitDepth + 1] = {
             {1, 0, 999}, {1, 0, 999}, {1, 0, 999}, {1, 0, 999},  // 0..3: unused
             {1, 0, 999}, {1, 0, 999}, {1, 0, 999},               // 4..6: gap 2 is used there
-            {0.992f, -11.3f, 386.0f},                            // d=7
-            {1.004f, 38.1f, 332.8f},                             // d=8
-            {0.995f, 6.1f, 316.5f},                              // d=9
-            {1.010f, 5.8f, 295.5f},                              // d=10
-            {1.007f, 15.6f, 301.3f},                             // d=11
-            {1.008f, 12.8f, 271.9f},                             // d=12
+            {1.017f, -86.9f, 328.4f},                            // d=7
+            {1.017f, 65.2f, 294.8f},                             // d=8
+            {1.013f, -38.2f, 277.0f},                            // d=9
+            {1.011f, 24.4f, 268.3f},                             // d=10
+            {1.014f, -13.8f, 252.1f},                            // d=11
+            {1.021f, 10.4f, 228.0f},                             // d=12
     };
 
     /**
@@ -341,11 +342,11 @@ namespace islay {
      */
     constexpr float kProbCutGateT = 0.5f; // gate confidence in sigmas; larger = skip fewer
     constexpr ProbCutFit kProbCutGateFit[kProbCutMaxFitDepth + 1] = {
-            {0.983f, 279.5f, 549.4f}, {0.983f, 279.5f, 549.4f}, {0.992f, 126.5f, 612.5f},
-            {0.986f, 171.4f, 716.4f}, {0.980f, 176.6f, 736.9f}, {0.981f, 155.8f, 798.1f},
-            {0.969f, 207.6f, 804.8f}, {0.970f, 162.2f, 840.6f}, {0.974f, 219.7f, 849.5f},
-            {0.970f, 164.0f, 879.4f}, {0.975f, 217.4f, 880.4f}, {0.977f, 178.8f, 897.7f},
-            {0.973f, 228.2f, 910.9f},
+            {0.983f, 279.5f, 549.4f}, {0.980f, 501.4f, 532.4f}, {0.986f, 148.2f, 562.1f},
+            {0.980f, 438.3f, 635.9f}, {0.988f, 251.9f, 642.8f}, {0.994f, 390.6f, 674.0f},
+            {0.996f, 299.4f, 692.9f}, {1.001f, 358.2f, 707.5f}, {1.004f, 321.7f, 723.4f},
+            {1.008f, 357.4f, 733.0f}, {1.009f, 326.9f, 743.8f}, {1.015f, 349.3f, 759.7f},
+            {1.026f, 332.8f, 772.8f},
     };
 
     // Late move PRUNING (drop the tail of the move list unsearched in a scout node).
