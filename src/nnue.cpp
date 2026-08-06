@@ -108,10 +108,12 @@ namespace islay {
   int NnueNet::score(const std::uint32_t *idx, int n, int stage) const noexcept {
     if (grouped_)
       return score_grouped(idx, n, stage);
-    // Prefetch scattered embedding rows before accumulation.
     const std::int16_t *base = emb16_.data() + static_cast<std::size_t>(stage) * feat_ * kNnueHidden;
+    // M3: bulk PRFM regresses both NN3 and NN4 by about 10%.
+#if !defined(__ARM_NEON)
     for (int i = 0; i < n; ++i)
       __builtin_prefetch(base + static_cast<std::size_t>(idx[i]) * kNnueHidden, 0, 0);
+#endif
     const float    *a = w2a_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
     const float    *h = w2h_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
     float           s;
@@ -179,8 +181,10 @@ namespace islay {
 
   int NnueNet::score_grouped(const std::uint32_t *idx, int n, int stage) const noexcept {
     const std::int16_t *base = emb16_.data() + static_cast<std::size_t>(stage) * feat_ * kNnueHidden;
+#if !defined(__ARM_NEON)
     for (int i = 0; i < n; ++i)
       __builtin_prefetch(base + static_cast<std::size_t>(idx[i]) * kNnueHidden, 0, 0);
+#endif
     const float    *a  = w2a_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
     const float    *h  = w2h_.data() + static_cast<std::size_t>(stage) * kNnueHidden;
     const float    *wg = wgroup_.data() + static_cast<std::size_t>(stage) * kNnueGroups * kNnueHidden;
