@@ -268,6 +268,14 @@ namespace islay {
     [[nodiscard]] constexpr int mob_clamp(int m) noexcept {
       return m < 0 ? 0 : (m >= kMobBuckets ? kMobBuckets - 1 : m);
     }
+
+    [[nodiscard]] ISLAY_FORCEINLINE int parity_bucket(Bitboard empties) noexcept {
+      Bitboard folded = empties ^ (empties >> 8) ^ (empties >> 16) ^ (empties >> 24);
+      folded ^= folded >> 2;
+      folded ^= folded >> 1;
+      const int odd_quadrants = popcount(folded & 0x0000001100000011ULL);
+      return (odd_quadrants & 1) + 2 * odd_quadrants;
+    }
   } // namespace
 
   std::size_t pattern_weights_per_stage() noexcept { return kPerStage; }
@@ -281,16 +289,12 @@ namespace islay {
     const int          my_st     = stability.player;
     const int          opp_st    = stability.opponent;
     MobCounts          m;
-    m.black_mob            = (stm == Color::Black) ? my_mob : opp_mob;
-    m.white_mob            = (stm == Color::Black) ? opp_mob : my_mob;
-    m.black_stab           = (stm == Color::Black) ? my_st : opp_st;
-    m.white_stab           = (stm == Color::Black) ? opp_st : my_st;
-    const Bitboard empties = ~(b.player | b.opponent);
-    int            oddq    = 0;
-    for (int q = 0; q < 4; ++q)
-      oddq += (popcount(empties & kQuadrant[q]) & 1);
-    const int bucket          = (popcount(empties) & 1) + 2 * oddq;
-    m.parity                  = (stm == Color::Black ? 0 : kParityBuckets) + bucket;
+    m.black_mob               = (stm == Color::Black) ? my_mob : opp_mob;
+    m.white_mob               = (stm == Color::Black) ? opp_mob : my_mob;
+    m.black_stab              = (stm == Color::Black) ? my_st : opp_st;
+    m.white_stab              = (stm == Color::Black) ? opp_st : my_st;
+    const Bitboard empties    = ~(b.player | b.opponent);
+    m.parity                  = (stm == Color::Black ? 0 : kParityBuckets) + parity_bucket(empties);
     const Bitboard near_empty = dilate8(empties);
     const int      my_front   = popcount(b.player & near_empty);
     const int      opp_front  = popcount(b.opponent & near_empty);
@@ -492,6 +496,15 @@ namespace islay {
       s ^= s << 17;
       return s;
     };
+
+    for (int it = 0; it < 5000; ++it) {
+      const Bitboard empties = rnd();
+      int            odd     = 0;
+      for (Bitboard quadrant: kQuadrant)
+        odd += popcount(empties & quadrant) & 1;
+      if (parity_bucket(empties) != (popcount(empties) & 1) + 2 * odd)
+        return false;
+    }
 
     for (int game = 0; game < 200; ++game) {
       Board        b   = Board::start();

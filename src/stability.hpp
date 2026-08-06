@@ -5,6 +5,10 @@
 
 #include <array>
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 #include "bitboard.hpp"
 
 namespace islay {
@@ -63,26 +67,6 @@ namespace islay {
       return {fh | kFileA | kFileH, fv | kRank1 | kRank8, fd1 | kEdges, fd2 | kEdges};
     }
 
-    [[nodiscard]] ISLAY_FORCEINLINE Bitboard spread_h(Bitboard b) noexcept {
-      constexpr Bitboard kNoA  = 0xFEFEFEFEFEFEFEFEULL;
-      constexpr Bitboard kNoAB = 0xFCFCFCFCFCFCFCFCULL;
-      constexpr Bitboard kNoAD = 0xF0F0F0F0F0F0F0F0ULL;
-      constexpr Bitboard kNoH  = 0x7F7F7F7F7F7F7F7FULL;
-      constexpr Bitboard kNoGH = 0x3F3F3F3F3F3F3F3FULL;
-      constexpr Bitboard kNoEH = 0x0F0F0F0F0F0F0F0FULL;
-      b |= ((b << 1) & kNoA) | ((b >> 1) & kNoH);
-      b |= ((b << 2) & kNoAB) | ((b >> 2) & kNoGH);
-      b |= ((b << 4) & kNoAD) | ((b >> 4) & kNoEH);
-      return b;
-    }
-
-    [[nodiscard]] ISLAY_FORCEINLINE Bitboard spread_v(Bitboard b) noexcept {
-      b |= (b << 8) | (b >> 8);
-      b |= (b << 16) | (b >> 16);
-      b |= (b << 32) | (b >> 32);
-      return b;
-    }
-
     [[nodiscard]] ISLAY_FORCEINLINE Bitboard spread_d1(Bitboard b) noexcept {
       constexpr Bitboard kNoA  = 0xFEFEFEFEFEFEFEFEULL;
       constexpr Bitboard kNoAB = 0xFCFCFCFCFCFCFCFCULL;
@@ -109,10 +93,53 @@ namespace islay {
       return b;
     }
 
+    // Mark empty bytes, then expand each high-bit marker to a full rank.
+    [[nodiscard]] ISLAY_FORCEINLINE Bitboard zero_byte_mask(Bitboard b) noexcept {
+      constexpr Bitboard kLow7 = 0x7F7F7F7F7F7F7F7FULL;
+      constexpr Bitboard kHigh = 0x8080808080808080ULL;
+      const Bitboard     high  = ~(((b & kLow7) + kLow7) | b | kLow7) & kHigh;
+      return (high >> 7) * 0xFFULL;
+    }
+
+#if defined(__ARM_NEON)
+    // Lanes carry the shift-9 and shift-7 diagonal families together.
+    [[nodiscard]] ISLAY_FORCEINLINE uint64x2_t spread_diags(Bitboard b) noexcept {
+      constexpr Bitboard kNoA   = 0xFEFEFEFEFEFEFEFEULL;
+      constexpr Bitboard kNoAB  = 0xFCFCFCFCFCFCFCFCULL;
+      constexpr Bitboard kNoAD  = 0xF0F0F0F0F0F0F0F0ULL;
+      constexpr Bitboard kNoH   = 0x7F7F7F7F7F7F7F7FULL;
+      constexpr Bitboard kNoGH  = 0x3F3F3F3F3F3F3F3FULL;
+      constexpr Bitboard kNoEH  = 0x0F0F0F0F0F0F0F0FULL;
+      uint64x2_t         d      = vdupq_n_u64(b);
+      const auto         spread = [&d](int64x2_t shifts, uint64x2_t left_mask, uint64x2_t right_mask) noexcept {
+        const uint64x2_t left  = vandq_u64(vshlq_u64(d, shifts), left_mask);
+        const uint64x2_t right = vandq_u64(vshlq_u64(d, vnegq_s64(shifts)), right_mask);
+        d                      = vorrq_u64(d, vorrq_u64(left, right));
+      };
+      spread(vcombine_s64(vcreate_s64(9), vcreate_s64(7)), vcombine_u64(vcreate_u64(kNoA), vcreate_u64(kNoH)),
+             vcombine_u64(vcreate_u64(kNoH), vcreate_u64(kNoA)));
+      spread(vcombine_s64(vcreate_s64(18), vcreate_s64(14)), vcombine_u64(vcreate_u64(kNoAB), vcreate_u64(kNoGH)),
+             vcombine_u64(vcreate_u64(kNoGH), vcreate_u64(kNoAB)));
+      spread(vcombine_s64(vcreate_s64(36), vcreate_s64(28)), vcombine_u64(vcreate_u64(kNoAD), vcreate_u64(kNoEH)),
+             vcombine_u64(vcreate_u64(kNoEH), vcreate_u64(kNoAD)));
+      return d;
+    }
+#endif
+
     [[nodiscard]] ISLAY_FORCEINLINE StableBases stable_bases_spread(Bitboard occ) noexcept {
-      const Bitboard empty = ~occ;
-      return {~spread_h(empty) | kFileA | kFileH, ~spread_v(empty) | kRank1 | kRank8, ~spread_d1(empty) | kEdges,
-              ~spread_d2(empty) | kEdges};
+      constexpr Bitboard kBytes = 0x0101010101010101ULL;
+      const Bitboard     empty  = ~occ;
+      Bitboard           cols   = empty | (empty >> 8);
+      cols |= cols >> 16;
+      cols |= cols >> 32;
+      const Bitboard h = zero_byte_mask(empty) | kFileA | kFileH;
+      const Bitboard v = ~((cols & 0xFFULL) * kBytes) | kRank1 | kRank8;
+#if defined(__ARM_NEON)
+      const uint64x2_t d = spread_diags(empty);
+      return {h, v, ~vgetq_lane_u64(d, 0) | kEdges, ~vgetq_lane_u64(d, 1) | kEdges};
+#else
+      return {h, v, ~spread_d1(empty) | kEdges, ~spread_d2(empty) | kEdges};
+#endif
     }
 
     [[nodiscard]] ISLAY_FORCEINLINE Bitboard stable_bits(Bitboard p, const StableBases &base) noexcept {
