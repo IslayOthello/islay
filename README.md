@@ -6,7 +6,9 @@
 UCI-style text interface. It counts legal move sequences and supports setting
 positions, displaying boards, benchmarking perft, and running built-in tests.
 Experimental Othello PUCT search supports `go nodes`, `go movetime`, `go infinite`
-and `stop`. It uses a uniform policy/zero-value scaffold, not a trained neural network.
+and `stop`. Optional ONNX inference connects a shared 8x64 residual policy/value network
+to PUCT. The default remains uniform policy/zero value; no trained weights are included.
+See [NEURAL.md](NEURAL.md) for architecture B, export, inference and measured throughput.
 
 ## Features
 
@@ -43,9 +45,10 @@ go perft 8 nocache
 ```
 
 Options are `Rule` (`Othello` or `Reversi`), `PerftHash` (cache MiB, default 256)
-and `MctsHash` (PUCT arena MiB, default 64). Perft runs synchronously and single-threaded;
+and `MctsHash` (PUCT arena MiB, default 64), plus `EvalFile` (ONNX path, empty by default).
+Perft runs synchronously and single-threaded;
 search runs on one interruptible worker and only supports Othello. `go depth`, full clock
-controls and evaluator/book options are not supported yet. Wait for `bestmove` before `quit`.
+controls and book options are not supported yet. Wait for `bestmove` before `quit`.
 
 See [UCI.md](UCI.md) for commands, position syntax, perft semantics, and errors.
 

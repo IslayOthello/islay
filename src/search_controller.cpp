@@ -52,54 +52,56 @@ namespace islay {
     stop();
   }
 
-  void SearchController::start(Board board, Rule rule, MctsLimits limits, bool infinite) {
+  void SearchController::start(Board board, Rule rule, MctsLimits limits, bool infinite,
+                               std::shared_ptr<Evaluator> evaluator) {
     cancel();
     if (rule != Rule::Othello)
       throw std::invalid_argument("MCTS supports Rule=Othello only");
     publish_           = true;
     const auto started = MctsClock::now();
-    worker_            = std::jthread([this, board, rule, limits, infinite, started](std::stop_token stop) {
-      MctsResult  result;
-      std::string error;
-      try {
-        UniformEvaluator evaluator;
-        result = mcts_search(board, rule, evaluator, limits, stop);
-      } catch (const std::exception &failure) {
-        error = failure.what();
-      } catch (...) {
-        error = "unknown search failure";
-      }
-      if (!error.empty()) {
-        std::replace(error.begin(), error.end(), '\n', ' ');
-        std::replace(error.begin(), error.end(), '\r', ' ');
-        const auto status = game_status(board);
-        result.best_move  = status.moves ? lsb(status.moves) : status.forced_pass ? PASS : NOMOVE;
-      }
-      // An infinite search may hit the arena cap or terminal before stop arrives.
-      // Park without spinning and retain the result until stop (or cancellation).
-      if (infinite) {
-        std::unique_lock lock(wait_mutex_);
-        stopped_.wait(lock, stop, [] { return false; });
-      }
-      const double       elapsed_us = std::chrono::duration<double, std::micro>(MctsClock::now() - started).count();
-      std::ostringstream message;
-      if (!error.empty())
-        message << "info string search error: " << error << '\n';
-      message << "info nodes " << result.simulations << " nps " << std::fixed << std::setprecision(0)
-              << (elapsed_us > 0 ? result.simulations * 1e6 / elapsed_us : 0) << " time "
-              << static_cast<std::uint64_t>(elapsed_us / 1000);
-      if (result.pv_length) {
-        message << " pv";
-        for (int i = 0; i < result.pv_length; ++i)
-          message << ' ' << square_to_string(result.pv[i]);
-      }
-      message << "\ninfo string search " << (error.empty() ? stop_name(result.reason) : "error") << " value "
-              << std::setprecision(6) << result.value << " evaluations " << result.evaluations << "\nbestmove "
-              << (result.best_move == NOMOVE ? "0000" : square_to_string(result.best_move)) << '\n';
-      const std::lock_guard lock(output_mutex_);
-      if (publish_)
-        output_ << message.str() << std::flush;
-    });
+    worker_            = std::jthread(
+            [this, board, rule, limits, infinite, started, evaluator = std::move(evaluator)](std::stop_token stop) {
+              MctsResult  result;
+              std::string error;
+              try {
+                UniformEvaluator uniform;
+                result = mcts_search(board, rule, evaluator ? *evaluator : uniform, limits, stop);
+              } catch (const std::exception &failure) {
+                error = failure.what();
+              } catch (...) {
+                error = "unknown search failure";
+              }
+              if (!error.empty()) {
+                std::replace(error.begin(), error.end(), '\n', ' ');
+                std::replace(error.begin(), error.end(), '\r', ' ');
+                const auto status = game_status(board);
+                result.best_move  = status.moves ? lsb(status.moves) : status.forced_pass ? PASS : NOMOVE;
+              }
+              // An infinite search may hit the arena cap or terminal before stop arrives.
+              // Park without spinning and retain the result until stop (or cancellation).
+              if (infinite) {
+                std::unique_lock lock(wait_mutex_);
+                stopped_.wait(lock, stop, [] { return false; });
+              }
+              const double elapsed_us = std::chrono::duration<double, std::micro>(MctsClock::now() - started).count();
+              std::ostringstream message;
+              if (!error.empty())
+                message << "info string search error: " << error << '\n';
+              message << "info nodes " << result.simulations << " nps " << std::fixed << std::setprecision(0)
+                      << (elapsed_us > 0 ? result.simulations * 1e6 / elapsed_us : 0) << " time "
+                      << static_cast<std::uint64_t>(elapsed_us / 1000);
+              if (result.pv_length) {
+                message << " pv";
+                for (int i = 0; i < result.pv_length; ++i)
+                  message << ' ' << square_to_string(result.pv[i]);
+              }
+              message << "\ninfo string search " << (error.empty() ? stop_name(result.reason) : "error") << " value "
+                      << std::setprecision(6) << result.value << " evaluations " << result.evaluations << "\nbestmove "
+                      << (result.best_move == NOMOVE ? "0000" : square_to_string(result.best_move)) << '\n';
+              const std::lock_guard lock(output_mutex_);
+              if (publish_)
+                output_ << message.str() << std::flush;
+            });
   }
 
   bool search_controller_selftest() {

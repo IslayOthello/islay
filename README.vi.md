@@ -6,7 +6,9 @@
 với giao diện văn bản kiểu UCI. Dự án hỗ trợ thiết lập thế cờ, hiển thị bàn cờ,
 đếm chuỗi nước đi hợp lệ, benchmark perft và self-test.
 Đã có PUCT Othello thử nghiệm qua `go nodes`, `go movetime`, `go infinite` và `stop`.
-Search hiện dùng policy đều/value 0 để kiểm thử, chưa có mạng neural đã train.
+Đã có inference ONNX cho mạng residual **8x64**, dùng chung trunk với hai head policy/value.
+Mặc định vẫn dùng policy đều/value 0; chưa cung cấp trọng số đã train.
+Xem [NEURAL.md](NEURAL.md) để export/nạp cấu hình B và xem kết quả đo throughput.
 
 ## Chức năng
 
@@ -43,9 +45,10 @@ go perft 8 nocache
 ```
 
 Các option: `Rule` (`Othello` hoặc `Reversi`), `PerftHash` (cache MiB, mặc định 256),
-`MctsHash` (bộ nhớ cây PUCT MiB, mặc định 64). Perft vẫn đồng bộ, đơn luồng.
+`MctsHash` (bộ nhớ cây PUCT MiB, mặc định 64), `EvalFile` (đường dẫn ONNX, mặc định rỗng).
+Perft vẫn đồng bộ, đơn luồng.
 Search chạy một worker có thể dừng, chỉ hỗ trợ luật Othello. Chưa hỗ trợ `go depth`,
-clock/increment đầy đủ và option evaluator/book. Đợi `bestmove` rồi mới gửi `quit`.
+clock/increment đầy đủ và option book. Đợi `bestmove` rồi mới gửi `quit`.
 
 Xem [UCI.md](UCI.md) để biết cú pháp lệnh, định dạng thế cờ và hành vi perft.
 

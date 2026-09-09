@@ -115,7 +115,8 @@ Portable configuration was run on the same arm64 Mac, not on x86 or Linux.
 Startpos perft(8) remains 390,216; human Time/Speed formatting is unchanged.
 
 No arena matches, Elo, CI or LOS are reported: this milestone has no playable learned evaluator.
-The P1 follow-up was interruptible UCI search; real policy/value inference remains pending.
+The P1 follow-up was interruptible UCI search. P3 now supplies optional policy/value
+inference; see [NEURAL.md](NEURAL.md) for its separate parity and inference measurements.
 
 ## P2 controller validation
 

@@ -2,6 +2,7 @@
 #define ISLAY_SEARCH_CONTROLLER_HPP
 
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <ostream>
 #include <thread>
@@ -16,7 +17,7 @@ namespace islay {
   public:
     SearchController(std::ostream &output, std::mutex &output_mutex) : output_(output), output_mutex_(output_mutex) {}
     ~SearchController();
-    void start(Board board, Rule rule, MctsLimits limits, bool infinite);
+    void start(Board board, Rule rule, MctsLimits limits, bool infinite, std::shared_ptr<Evaluator> evaluator = {});
     void stop(); // join, publishing exactly one result unless already published
     void cancel(); // join, suppressing any result not yet published
 

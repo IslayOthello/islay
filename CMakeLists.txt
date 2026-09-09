@@ -34,6 +34,8 @@ endif()
 # ---- User-facing knobs ----------------------------------------------------
 option(ISLAY_NATIVE   "Tune the build for the CPU that compiles it (-march/-mcpu=native)"  ON)
 option(ISLAY_LTO      "Enable link-time optimization for Release builds"                   ON)
+option(ISLAY_ONNX     "Enable CPU ONNX policy/value inference"                            OFF)
+set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNX Runtime distribution with include/ and lib/")
 option(ISLAY_USE_NEON "On arm64, use the all-NEON movegen kernels. The default arm64
                        path is the hybrid (2 directions on the integer ALUs, 2 on
                        NEON), which measures ~48% faster than all-NEON on wide
@@ -58,6 +60,7 @@ add_executable(islay
         src/mcts.cpp
         src/mcts_selftest.cpp
         src/search_controller.cpp
+        src/neural.cpp
         src/options.cpp
         src/perft.cpp
         src/uci.cpp)
@@ -141,3 +144,24 @@ endif()
 
 message(STATUS "islay: build type   = ${CMAKE_BUILD_TYPE}")
 message(STATUS "islay: native tuning = ${ISLAY_NATIVE}")
+
+if(ISLAY_ONNX)
+    find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
+              HINTS ${ONNXRUNTIME_ROOT} PATH_SUFFIXES include include/onnxruntime/core/session)
+    find_library(ONNXRUNTIME_LIBRARY onnxruntime HINTS ${ONNXRUNTIME_ROOT} PATH_SUFFIXES lib)
+    if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
+        message(FATAL_ERROR "ISLAY_ONNX needs ONNXRUNTIME_ROOT with C++ headers and library")
+    endif()
+    target_compile_definitions(islay PRIVATE ISLAY_ONNX_ENABLED)
+    target_include_directories(islay SYSTEM PRIVATE ${ONNXRUNTIME_INCLUDE_DIR})
+    target_link_libraries(islay PRIVATE ${ONNXRUNTIME_LIBRARY})
+    add_executable(islay_nn_probe tools/neural_probe.cpp src/neural.cpp src/board.cpp src/movegen.cpp src/game.cpp)
+    target_include_directories(islay_nn_probe PRIVATE src)
+    target_include_directories(islay_nn_probe SYSTEM PRIVATE ${ONNXRUNTIME_INCLUDE_DIR})
+    target_compile_definitions(islay_nn_probe PRIVATE $<TARGET_PROPERTY:islay,COMPILE_DEFINITIONS>)
+    target_compile_options(islay_nn_probe PRIVATE $<TARGET_PROPERTY:islay,COMPILE_OPTIONS>)
+    target_link_libraries(islay_nn_probe PRIVATE ${ONNXRUNTIME_LIBRARY} Threads::Threads)
+    if(ISLAY_LTO AND ISLAY_IPO_OK)
+        set_property(TARGET islay_nn_probe PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    endif()
+endif()

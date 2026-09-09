@@ -80,11 +80,11 @@ class Engine:
             self.process.wait()
 
 
-def search(engine, board, command, expected_nodes=None, expected_move=None):
+def search(engine, board, command, expected_nodes=None, expected_move=None, evaluator="no trained network"):
     engine.send(f"position fen {fen(*board)} X\n{command}")
     lines = engine.until("bestmove ")
     assert sum(line.startswith("bestmove ") for line in lines) == 1, lines
-    assert any("no trained network" in line for line in lines), lines
+    assert any(evaluator in line for line in lines), lines
     infos = [line for line in lines if line.startswith("info nodes ")]
     assert len(infos) == 1, lines
     info = re.fullmatch(r"info nodes (\d+) nps (\d+) time (\d+)(?: pv (.*))?", infos[0])
@@ -183,7 +183,7 @@ def main():
             assert not any(line.startswith("bestmove ") for line in lines), (command, lines)
         engine.send("position startpos\ngo infinite\nuci")
         lines = engine.barrier()
-        assert "uciok" in lines and sum(line.startswith("option name ") for line in lines) == 3, lines
+        assert "uciok" in lines and sum(line.startswith("option name ") for line in lines) == 4, lines
         engine.send("stop")
         assert sum(line.startswith("bestmove ") for line in engine.barrier()) == 1
         engine.send("position startpos\ngo infinite")

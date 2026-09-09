@@ -2,3 +2,4 @@
 /_build/
 /cmake-build-debug/
 /.idea/
+/training/__pycache__/

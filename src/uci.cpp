@@ -1,7 +1,9 @@
 // Public and debug-only commands are documented in UCI.md.
 #include "uci.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -16,6 +18,7 @@
 #include "game.hpp"
 #include "mcts.hpp"
 #include "movegen.hpp"
+#include "neural.hpp"
 #include "options.hpp"
 #include "perft.hpp"
 #include "search_controller.hpp"
@@ -88,15 +91,16 @@ namespace islay {
       }
 
     private:
-      Board              board_ = Board::start();
-      Color              stm_   = Color::Black;
-      Options            options_{};
-      int                perft_tt_mib_ = 256; // tracks Options::perft_hash_mib so setoption can resize
-      PerftTT            tt_{256};
-      bool               debug_ = false; // `debug on` unlocks the development commands
-      std::ostringstream out_;
-      std::mutex         output_mutex_;
-      SearchController   search_{std::cout, output_mutex_};
+      Board                            board_ = Board::start();
+      Color                            stm_   = Color::Black;
+      Options                          options_{};
+      int                              perft_tt_mib_ = 256; // tracks Options::perft_hash_mib so setoption can resize
+      PerftTT                          tt_{256};
+      bool                             debug_ = false; // `debug on` unlocks the development commands
+      std::ostringstream               out_;
+      std::mutex                       output_mutex_;
+      SearchController                 search_{std::cout, output_mutex_};
+      std::shared_ptr<NeuralEvaluator> neural_;
 
       void flush_output() {
         const std::lock_guard lock(output_mutex_);
@@ -159,6 +163,7 @@ namespace islay {
           cmd_test();
         } else if (cmd == "backend") {
           out_ << "movegen backend: " << movegen_backend() << '\n';
+          out_ << "neural backend: " << neural_backend() << '\n';
         }
       }
 
@@ -203,9 +208,28 @@ namespace islay {
           }
           return s;
         };
-        const std::string name  = join(name_toks);
-        const std::string value = join(value_toks);
-        if (apply_option(options_, name, value)) {
+        const std::string name      = join(name_toks);
+        const std::string value     = join(value_toks);
+        Options           candidate = options_;
+        if (apply_option(candidate, name, value)) {
+          std::string lower_name = name;
+          for (auto &c: lower_name)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          if (lower_name == "evalfile") {
+            try {
+              // Load/validate before replacing the previous session, even for the same path.
+              auto loaded = candidate.eval_file.empty() ? std::shared_ptr<NeuralEvaluator>{}
+                                                        : std::make_shared<NeuralEvaluator>(candidate.eval_file);
+              neural_     = std::move(loaded);
+            } catch (const std::exception &failure) {
+              std::string error = failure.what();
+              std::replace(error.begin(), error.end(), '\n', ' ');
+              std::replace(error.begin(), error.end(), '\r', ' ');
+              out_ << "info error: EvalFile rejected; previous evaluator retained: " << error << '\n';
+              return;
+            }
+          }
+          options_ = std::move(candidate);
           // Option changes invalidate rule-dependent caches.
           if (perft_tt_mib_ != options_.perft_hash_mib) {
             perft_tt_mib_ = options_.perft_hash_mib;
@@ -339,12 +363,13 @@ namespace islay {
           out_ << "info error: MCTS supports Rule=Othello only\n";
           return;
         }
-        out_ << "info string evaluator uniform (P2 scaffold; no trained network)\n";
+        out_ << "info string evaluator "
+             << (neural_ ? neural_->description() : "uniform (P2 scaffold; no trained network)") << '\n';
         flush_output();
         if (timed)
           limits.deadline = Clock::now() + std::chrono::milliseconds(milliseconds);
         try {
-          search_.start(board_, options_.rule, limits, infinite);
+          search_.start(board_, options_.rule, limits, infinite, neural_);
         } catch (const std::exception &error) {
           out_ << "info error: could not start search: " << error.what() << '\n';
         }
@@ -453,6 +478,12 @@ namespace islay {
         }
         out_ << "ok\n";
 
+        out_ << "neural encoding self-test ... ";
+        if (!neural_selftest()) {
+          out_ << "FAILED\n";
+          return;
+        }
+        out_ << "ok\n";
         out_ << "search controller self-test ... ";
         if (!search_controller_selftest()) {
           out_ << "FAILED\n";

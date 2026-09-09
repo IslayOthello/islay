@@ -2,9 +2,10 @@
 
 This document describes the UCI-style Othello/Reversi interface implemented by
 `islay 0.1.0`. The engine supports position setup, perft and experimental
-single-worker Othello PUCT search. Search currently uses an explicitly advertised
-uniform policy/zero-value evaluator, not a trained neural network.
-Full clock controls and learned inference are not implemented yet.
+single-worker Othello PUCT search. Search defaults to an explicitly advertised
+uniform policy/zero-value evaluator. Optional ONNX inference loads the shared
+8x64 policy/value network through `EvalFile`; no trained weights are supplied.
+Full clock controls are not implemented yet. See [NEURAL.md](NEURAL.md) for model setup.
 
 ## Transport
 
@@ -58,6 +59,7 @@ Returns engine identification and all supported options:
 id name islay 0.1.0
 id author islay
 option name Rule type combo default Othello var Othello var Reversi
+option name EvalFile type string default <empty>
 option name MctsHash type spin default 64 min 1 max 4096
 option name PerftHash type spin default 256 min 1 max 65536
 uciok
@@ -92,6 +94,7 @@ setoption name <name> value <value>
 | Name | Type | Default | Values |
 |---|---|---|---|
 | Rule | combo | Othello | Othello, Reversi |
+| EvalFile | string | `<empty>` | Compatible single-file ONNX model path; `<empty>` restores uniform evaluation |
 | MctsHash | spin | 64 | Tree arena MiB, 1 to 4096; independent of PerftHash |
 | PerftHash | spin | 256 | Integer MiB from 1 to 65536 |
 
@@ -109,9 +112,21 @@ Unknown options and invalid values produce:
 info error: unknown option or invalid value: '<name>' = '<value>'
 ```
 
-Search options (`Hash`, `Threads`, `CorrectionHistory`), evaluator options
-(`EvalFile`, `StageInterpolation`), and book options (`OwnBook`, `BookFile`)
-have been removed.
+`EvalFile` now means the versioned ONNX policy/value model, not the former NNUE/pattern
+weights. Loading is synchronous: it validates names, FP32 shapes, metadata and a warm-up
+inference before replacing the previous evaluator. Even setting the same path reloads it.
+Paths can contain spaces; do not quote them. An empty value also restores uniform evaluation.
+Use only trusted model files. Successful loads are retained across `position`/`ucinewgame`.
+Failed loads retain the previous evaluator and emit:
+
+```text
+info error: EvalFile rejected; previous evaluator retained: <reason>
+```
+
+An ONNX-disabled build rejects nonempty `EvalFile` with a rebuild diagnostic; it does not
+silently fall back to uniform. `isready` during loading is processed after loading completes.
+`Hash`, `Threads`, `CorrectionHistory`, `StageInterpolation`, `OwnBook` and `BookFile`
+remain unsupported.
 
 ## Positions
 
@@ -199,11 +214,21 @@ limit wins. Duplicates, unknown tokens, negative values and overflow are rejecte
 `infinite` cannot be combined with another limit. Bare `go`, `depth`, `wtime`, `btime`,
 increments, pondering and `searchmoves` are not supported.
 
-Search requires `Rule=Othello`. Each accepted request first emits:
+Search requires `Rule=Othello`. With an empty `EvalFile`, each accepted request first emits:
 
 ```text
 info string evaluator uniform (P2 scaffold; no trained network)
 ```
+
+With a loaded model it instead emits:
+
+```text
+info string evaluator onnx-cpu b8c64-v1 checkpoint <sha256> training_steps <steps>
+```
+
+Zero-step checkpoints append `(untrained initialization)`. The hash and step count are
+declared export metadata, not proof of model authenticity or playing strength.
+Each worker uses the loaded session snapshot; changing `EvalFile` cancels/joins it first.
 
 On completion, one block contains `info nodes <N> nps <NPS> time <MS> [pv <moves>]`,
 `info string search <reason> value <V> evaluations <E>`, and `bestmove <move>`.
@@ -216,7 +241,7 @@ why traversal ended, even if an infinite search subsequently waited for `stop`.
   elapsed time. `time` is integer milliseconds. Both include worker startup/cleanup and, for
   infinite searches, time waiting for `stop`. Machine-readable fields never contain commas.
 - `value` is mover-relative expected outcome in [-1,1], not centipawns or win probability.
-- Only final search info is emitted in P2, not periodic progress. There is no root noise.
+- Only final search info is emitted, not periodic progress. There is no root noise.
 - Finite searches return early if the arena fills. Infinite searches park without spinning when
   memory or terminal ends traversal, and publish only when stopped. They do not allocate past the cap.
 - Search failures emit an explicit diagnostic and a legal fallback (or `0000` if terminal).
@@ -224,8 +249,9 @@ why traversal ended, even if an infinite search subsequently waited for `stop`.
 - `position`, `ucinewgame`, `setoption`, any new `go`, and enabled debug `test`/`bench` commands
   cancel/join old search before processing, even if the new command is invalid. A result already
   published cannot be retracted; no pending old result is published after the new command is processed.
-- Deadline/stop latency includes the current evaluator call; future network backends must honor
-  cancellation. The current uniform evaluator is only a protocol/testing scaffold.
+- ONNX runs sequentially with one compute thread. `stop` requests cancellation of the active
+  inference; deadlines are checked between evaluations and can overrun by the current call.
+  The uniform evaluator remains a protocol/testing scaffold.
 
 Human perft `Time` stays in seconds and its `Nodes searched`/`Speed` remain comma-grouped.
 Search does not reuse PerftTT or change perft semantics.
@@ -238,9 +264,9 @@ Search does not reuse PerftTT or change perft semantics.
 | Command | Behavior |
 |---|---|
 | d / display / board | Print the current board, side to move, disc counts, and legal moves |
-| backend | Print the compiled move-generation backend |
+| backend | Print the compiled move-generation and neural backends (`onnx-cpu` or `disabled`) |
 | bench [depth] | Uncached start-position perft from depth 1 through depth (default 11), under the selected rule; fractional `time(s)` and integer NPS |
-| test / selftest | Run movegen, Othello game adapter, PUCT core/controller, known perft, cache, symmetry, and rule checks |
+| test / selftest | Run movegen, Othello game adapter, PUCT core/controller, neural encoding, known perft, cache, symmetry, and rule checks |
 
 The test suite ends with `ALL TESTS PASSED` on success.
 Run `python3 tools/uci_search_test.py build/islay` for black-box search lifecycle,

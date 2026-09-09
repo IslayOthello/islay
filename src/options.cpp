@@ -36,6 +36,16 @@ namespace islay {
                          }
                          return false;
                        }},
+            OptionSpec{"EvalFile",
+                       "string",
+                       "<empty>",
+                       {},
+                       0,
+                       0,
+                       [](Options &o, const std::string &v) {
+                         o.eval_file = v == "<empty>" ? "" : v;
+                         return true;
+                       }},
             OptionSpec{"MctsHash",
                        "spin",
                        "64",
