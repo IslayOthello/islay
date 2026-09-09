@@ -1,9 +1,10 @@
 # islay UCI Protocol
 
 This document describes the UCI-style Othello/Reversi interface implemented by
-`islay 0.1.0`. The engine supports position setup and perft only.
-It does not select moves, emit `bestmove`, or support playing games through
-a standard UCI match runner.
+`islay 0.1.0`. The engine supports position setup, perft and experimental
+single-worker Othello PUCT search. Search currently uses an explicitly advertised
+uniform policy/zero-value evaluator, not a trained neural network.
+Full clock controls and learned inference are not implemented yet.
 
 ## Transport
 
@@ -15,13 +16,14 @@ case-insensitive. `quit`, `exit`, and end-of-file end the session.
 The startup banner is:
 
 ```text
-islay 0.1.0 - Othello/Reversi perft engine (movegen backend: <backend>)
-type 'uci', 'position', 'go perft <N>', or 'quit'
+islay 0.1.0 - Othello MCTS / Reversi perft engine (movegen backend: <backend>)
+type 'uci', 'position', 'go nodes <N>', 'go perft <N>', or 'quit'
 ```
 
 Perft and debug commands execute synchronously. Commands received during perft,
 including `isready`, `stop`, and `quit`, are processed after it finishes.
-There is no background search thread.
+PUCT uses one background worker, so `isready` and `stop` remain responsive during search.
+Perft never runs concurrently with that worker. Protocol output is serialized in complete blocks.
 
 ## Quick Start
 
@@ -56,6 +58,7 @@ Returns engine identification and all supported options:
 id name islay 0.1.0
 id author islay
 option name Rule type combo default Othello var Othello var Reversi
+option name MctsHash type spin default 64 min 1 max 4096
 option name PerftHash type spin default 256 min 1 max 65536
 uciok
 ```
@@ -71,11 +74,14 @@ perft cache. Options are preserved. Produces no response on success.
 
 ### stop
 
-Accepted as a no-op. It cannot interrupt synchronous perft.
+Stops and joins a PUCT search, publishing its final result exactly once. Repeated `stop`
+does not publish another `bestmove`. It cannot interrupt synchronous perft.
 
 ### quit / exit
 
-Ends the session. End-of-file has the same effect.
+Cancels and joins search, suppressing any result not already published, then ends the session.
+End-of-file has the same effect. To obtain a result before exiting, send `stop` and wait for
+`bestmove`; piping `go ...` immediately followed by `quit` may discard that search.
 
 ## Options
 
@@ -86,6 +92,7 @@ setoption name <name> value <value>
 | Name | Type | Default | Values |
 |---|---|---|---|
 | Rule | combo | Othello | Othello, Reversi |
+| MctsHash | spin | 64 | Tree arena MiB, 1 to 4096; independent of PerftHash |
 | PerftHash | spin | 256 | Integer MiB from 1 to 65536 |
 
 Changing an option clears the cache. Changing `PerftHash` resizes it.
@@ -177,12 +184,51 @@ accept the `s` unit and fractional values instead of integer milliseconds.
 
 Depth zero emits only `Nodes searched: 1` and `Time: 0.000000000 s`.
 
-Bare `go` and search forms such as `go depth`, `go nodes`, `go movetime`,
-`go infinite`, and clock controls are rejected:
+## PUCT Search (experimental)
 
 ```text
-info error: only 'go perft <depth> [nocache]' is supported
+go nodes <N>
+go movetime <MS>
+go nodes <N> movetime <MS>
+go infinite
 ```
+
+`nodes` is a nonnegative uint64 simulation budget. `movetime` is an integer from 0 to
+86,400,000 milliseconds. Combined limits may appear in either order; the first reached
+limit wins. Duplicates, unknown tokens, negative values and overflow are rejected.
+`infinite` cannot be combined with another limit. Bare `go`, `depth`, `wtime`, `btime`,
+increments, pondering and `searchmoves` are not supported.
+
+Search requires `Rule=Othello`. Each accepted request first emits:
+
+```text
+info string evaluator uniform (P2 scaffold; no trained network)
+```
+
+On completion, one block contains `info nodes <N> nps <NPS> time <MS> [pv <moves>]`,
+`info string search <reason> value <V> evaluations <E>`, and `bestmove <move>`.
+Moves use coordinates or `pass`; a terminal root returns `bestmove 0000` with zero simulations.
+Reasons are `nodes`, `time`, `stop`, `memory`, `terminal`, or `error`. The reason describes
+why traversal ended, even if an infinite search subsequently waited for `stop`.
+
+- `nodes` counts completed simulations, not perft leaves; root evaluation is not a simulation.
+- `nps` is simulations/second, rounded to an integer from microsecond-resolution steady-clock
+  elapsed time. `time` is integer milliseconds. Both include worker startup/cleanup and, for
+  infinite searches, time waiting for `stop`. Machine-readable fields never contain commas.
+- `value` is mover-relative expected outcome in [-1,1], not centipawns or win probability.
+- Only final search info is emitted in P2, not periodic progress. There is no root noise.
+- Finite searches return early if the arena fills. Infinite searches park without spinning when
+  memory or terminal ends traversal, and publish only when stopped. They do not allocate past the cap.
+- Search failures emit an explicit diagnostic and a legal fallback (or `0000` if terminal).
+  Failure to create the worker emits an error without accepting a search.
+- `position`, `ucinewgame`, `setoption`, any new `go`, and enabled debug `test`/`bench` commands
+  cancel/join old search before processing, even if the new command is invalid. A result already
+  published cannot be retracted; no pending old result is published after the new command is processed.
+- Deadline/stop latency includes the current evaluator call; future network backends must honor
+  cancellation. The current uniform evaluator is only a protocol/testing scaffold.
+
+Human perft `Time` stays in seconds and its `Nodes searched`/`Speed` remain comma-grouped.
+Search does not reuse PerftTT or change perft semantics.
 
 ## Debug Commands
 
@@ -194,11 +240,11 @@ info error: only 'go perft <depth> [nocache]' is supported
 | d / display / board | Print the current board, side to move, disc counts, and legal moves |
 | backend | Print the compiled move-generation backend |
 | bench [depth] | Uncached start-position perft from depth 1 through depth (default 11), under the selected rule; fractional `time(s)` and integer NPS |
-| test / selftest | Run movegen, Othello game adapter, PUCT core, known perft, cache, symmetry, and rule checks |
+| test / selftest | Run movegen, Othello game adapter, PUCT core/controller, known perft, cache, symmetry, and rule checks |
 
 The test suite ends with `ALL TESTS PASSED` on success.
-The PUCT core is an internal foundation tested with fake evaluators; it has no
-trained network or public search command yet. `go` behavior remains perft-only.
+Run `python3 tools/uci_search_test.py build/islay` for black-box search lifecycle,
+parsing, PV legality and output tests, including measured stop round-trip latency.
 The former search, evaluation, training, tuning, book, and match debug commands
 have been removed. Unknown or disabled commands produce:
 

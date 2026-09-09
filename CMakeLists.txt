@@ -57,11 +57,14 @@ add_executable(islay
         src/game.cpp
         src/mcts.cpp
         src/mcts_selftest.cpp
+        src/search_controller.cpp
         src/options.cpp
         src/perft.cpp
         src/uci.cpp)
 
 target_include_directories(islay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+find_package(Threads REQUIRED)
+target_link_libraries(islay PRIVATE Threads::Threads)
 
 if(ISLAY_USE_NEON)
     target_compile_definitions(islay PRIVATE ISLAY_USE_NEON)

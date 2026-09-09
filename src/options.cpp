@@ -36,6 +36,24 @@ namespace islay {
                          }
                          return false;
                        }},
+            OptionSpec{"MctsHash",
+                       "spin",
+                       "64",
+                       {},
+                       1,
+                       4096,
+                       [](Options &o, const std::string &v) {
+                         try {
+                           std::size_t parsed = 0;
+                           const long  h      = std::stol(v, &parsed);
+                           if (parsed != v.size() || h < 1 || h > 4096)
+                             return false;
+                           o.mcts_hash_mib = static_cast<int>(h);
+                           return true;
+                         } catch (...) {
+                           return false;
+                         }
+                       }},
             OptionSpec{"PerftHash",
                        "spin",
                        "256",

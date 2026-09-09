@@ -5,7 +5,8 @@
 `islay` là engine sinh nước đi và perft cho Othello/Reversi, viết bằng C++20
 với giao diện văn bản kiểu UCI. Dự án hỗ trợ thiết lập thế cờ, hiển thị bàn cờ,
 đếm chuỗi nước đi hợp lệ, benchmark perft và self-test.
-Engine hiện không tìm nước đi tốt nhất hay tự chơi ván đấu.
+Đã có PUCT Othello thử nghiệm qua `go nodes`, `go movetime`, `go infinite` và `stop`.
+Search hiện dùng policy đều/value 0 để kiểm thử, chưa có mạng neural đã train.
 
 ## Chức năng
 
@@ -41,9 +42,10 @@ Thêm `nocache` để đếm không dùng bảng cache:
 go perft 8 nocache
 ```
 
-Chỉ còn hai option: `Rule` (`Othello` hoặc `Reversi`) và `PerftHash`
-(kích thước cache theo MiB, mặc định 256). Perft chạy đồng bộ.
-Các lệnh search như `go depth` và option evaluator/book đã được loại bỏ.
+Các option: `Rule` (`Othello` hoặc `Reversi`), `PerftHash` (cache MiB, mặc định 256),
+`MctsHash` (bộ nhớ cây PUCT MiB, mặc định 64). Perft vẫn đồng bộ, đơn luồng.
+Search chạy một worker có thể dừng, chỉ hỗ trợ luật Othello. Chưa hỗ trợ `go depth`,
+clock/increment đầy đủ và option evaluator/book. Đợi `bestmove` rồi mới gửi `quit`.
 
 Xem [UCI.md](UCI.md) để biết cú pháp lệnh, định dạng thế cờ và hành vi perft.
 
@@ -52,6 +54,7 @@ Xem [UCI.md](UCI.md) để biết cú pháp lệnh, định dạng thế cờ v�
 ```sh
 printf 'debug on\ntest\nquit\n' | ./build/islay
 printf 'debug on\nbench 8\nquit\n' | ./build/islay
+python3 tools/uci_search_test.py build/islay
 ```
 
 Self-test phải kết thúc bằng `ALL TESTS PASSED`.

@@ -16,6 +16,7 @@ namespace islay {
   struct Options {
     Rule rule           = Rule::Othello;
     int  perft_hash_mib = 256; // perft transposition table size, in MiB
+    int  mcts_hash_mib  = 64; // single-worker tree arena, independent of PerftTT
   };
 
   struct OptionSpec {

@@ -5,8 +5,9 @@
 
 ## Delivered scope
 
-The Othello game adapter and synchronous PUCT core are implemented. There is no
-trained network or public UCI search command yet; `go` remains perft-only.
+This section records the P1 milestone: the Othello game adapter and synchronous PUCT core,
+before public UCI search. The later P2 controller/protocol is documented in `UCI.md`;
+there is still no trained network.
 
 - `game.hpp`: legal placements/forced pass, terminal outcome, checked action application,
   policy indices 0–64 and D4 action mapping. NOMOVE is not a policy action.
@@ -114,4 +115,31 @@ Portable configuration was run on the same arm64 Mac, not on x86 or Linux.
 Startpos perft(8) remains 390,216; human Time/Speed formatting is unchanged.
 
 No arena matches, Elo, CI or LOS are reported: this milestone has no playable learned evaluator.
-The next milestone is interruptible UCI search, followed by real policy/value inference.
+The P1 follow-up was interruptible UCI search; real policy/value inference remains pending.
+
+## P2 controller validation
+
+The controller now connects the unchanged compact PUCT core to `go nodes`, `go movetime`,
+`go infinite`, `stop` and `bestmove`. Perft remains single-threaded and never overlaps search.
+Command output is buffered into complete blocks sharing a mutex with worker output; stdin's
+automatic stdout flush is disabled so it cannot bypass that mutex. Infinite jobs park on a
+stop-aware condition variable if traversal ends early, rather than polling or expanding past the cap.
+
+On the same M3 Pro, aggregate self-tests and `tools/uci_search_test.py` passed for:
+
+- Native Release + LTO.
+- Release `ISLAY_NATIVE=OFF` + LTO, on arm64 (not an x86/Linux validation).
+- Debug + ASan/UBSan, native tuning and LTO disabled.
+- Debug + ThreadSanitizer, native tuning and LTO disabled; no race diagnostics in these tests.
+
+Protocol coverage includes 18-position PV legality against the scalar oracle, pass/terminal roots,
+zero/combined/malformed limits, arena exhaustion, immediate/repeated stop, new go/position/options,
+readiness/handshake during search, quit and EOF. The built-in controller self-test checks terminal
+and forced-pass results, repeated stop, cancellation and unsupported Reversi. Existing perft
+regressions and startpos depth 8 = 390,216 remain unchanged.
+
+In the final isolated native protocol run, 20 stop samples measured median **0.036458 ms** and
+p95 **0.038125 ms**. This is host-observed `stop; stop; isready` round-trip time after `go infinite`
+and a readiness barrier, alternating startpos and terminal roots, with the uniform evaluator.
+It includes pipe/scheduling overhead; it is not a latency guarantee for a future network backend.
+No MCTS throughput increase or playing-strength gain is claimed for this protocol milestone.

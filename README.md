@@ -5,7 +5,8 @@
 `islay` is a C++20 Othello/Reversi move-generation and perft engine with a
 UCI-style text interface. It counts legal move sequences and supports setting
 positions, displaying boards, benchmarking perft, and running built-in tests.
-It does not search for a best move or play games.
+Experimental Othello PUCT search supports `go nodes`, `go movetime`, `go infinite`
+and `stop`. It uses a uniform policy/zero-value scaffold, not a trained neural network.
 
 ## Features
 
@@ -41,9 +42,10 @@ count without the transposition table:
 go perft 8 nocache
 ```
 
-The only options are `Rule` (`Othello` or `Reversi`) and `PerftHash`
-(cache size in MiB, default 256). Perft runs synchronously. Search commands such
-as `go depth` and evaluator/book options are no longer supported.
+Options are `Rule` (`Othello` or `Reversi`), `PerftHash` (cache MiB, default 256)
+and `MctsHash` (PUCT arena MiB, default 64). Perft runs synchronously and single-threaded;
+search runs on one interruptible worker and only supports Othello. `go depth`, full clock
+controls and evaluator/book options are not supported yet. Wait for `bestmove` before `quit`.
 
 See [UCI.md](UCI.md) for commands, position syntax, perft semantics, and errors.
 
@@ -52,6 +54,7 @@ See [UCI.md](UCI.md) for commands, position syntax, perft semantics, and errors.
 ```sh
 printf 'debug on\ntest\nquit\n' | ./build/islay
 printf 'debug on\nbench 8\nquit\n' | ./build/islay
+python3 tools/uci_search_test.py build/islay
 ```
 
 The aggregate test must end with `ALL TESTS PASSED`. The benchmark reports
