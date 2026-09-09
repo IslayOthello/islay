@@ -1,7 +1,7 @@
 #include "perft.hpp"
 
 #include "common.hpp"
-#include "hash.hpp" // hash_board, tt_slots_for (shared with the search TT)
+#include "hash.hpp"
 
 namespace islay {
   namespace {

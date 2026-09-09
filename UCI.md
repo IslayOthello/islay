@@ -1,465 +1,193 @@
 # islay UCI Protocol
 
-This document describes the released text protocol implemented by `islay 0.1.0`.
-islay provides a UCI-style interface for Othello and Reversi.
+This document describes the UCI-style Othello/Reversi interface implemented by
+`islay 0.1.0`. The engine supports position setup and perft only.
+It does not select moves, emit `bestmove`, or support playing games through
+a standard UCI match runner.
 
-Everything a client needs in order to play a game is specified here. Commands
-that are not listed in this document are not part of the released protocol and
-must not be relied upon.
+## Transport
 
-## 1. Protocol Overview
+Commands are read one line at a time from standard input; responses are written
+to standard output and flushed after each command. Blank lines are ignored.
+Command names are case-sensitive. Option names and rule values are
+case-insensitive. `quit`, `exit`, and end-of-file end the session.
 
-The protocol is line-oriented:
-
-- Commands are read from standard input (`stdin`), one command per line.
-- Responses are written to standard output (`stdout`).
-- Empty input lines are ignored.
-- Output is flushed after every command.
-- Commands are case-sensitive and must use the spelling documented below.
-- Option names and option values are generally matched case-insensitively.
-- The engine exits on `quit`, `exit`, or end-of-file.
-
-When the executable starts, it prints a banner before accepting commands:
+The startup banner is:
 
 ```text
-islay 0.1.0 - Othello/Reversi engine (movegen backend: <backend>)
-type 'uci', 'position', 'go depth <N>', 'go perft <N>', or 'quit'
+islay 0.1.0 - Othello/Reversi perft engine (movegen backend: <backend>)
+type 'uci', 'position', 'go perft <N>', or 'quit'
 ```
 
-The command loop is asynchronous with respect to searching: `go` starts a search
-on a separate thread and returns immediately, so `stop` and `isready` can be
-answered while the engine is thinking. Any other command received during a
-search ends that search before it is carried out.
+Perft and debug commands execute synchronously. Commands received during perft,
+including `isready`, `stop`, and `quit`, are processed after it finishes.
+There is no background search thread.
 
-`quit` and end-of-input let a search that has a limit finish before the engine
-exits, and stop an unlimited one. That keeps a piped
-`go depth N` followed by `quit` complete rather than silently truncated.
-
-## 2. Quick Start
+## Quick Start
 
 ```text
 uci
 isready
-ucinewgame
-position startpos moves d3 C3
-go depth 8
+position startpos
+go perft 8
 quit
 ```
 
-A typical search response contains one `info` line per completed iteration,
-followed by a final status line and `bestmove`:
+The perft response includes these deterministic counts:
 
 ```text
-info depth 1 seldepth 1 score cd -177 nodes 4 nps 5864 hashfull 0 time 0 pv d3
-info depth 2 seldepth 2 score cd -63 nodes 14 nps 6455 hashfull 0 time 2 pv d3 C3
-info string heuristic score, depth 2
-bestmove d3
+d3: 97554
+c4: 97554
+f5: 97554
+e6: 97554
+
+Nodes searched: 390216
 ```
 
-## 3. Commands
+Timing and speed lines follow; their values depend on the machine.
 
-### `uci`
+## Session Commands
 
-Requests the engine identification and the list of supported options.
+### uci
 
-#### Syntax
-
-```text
-uci
-```
-
-#### Response
+Returns engine identification and all supported options:
 
 ```text
 id name islay 0.1.0
 id author islay
 option name Rule type combo default Othello var Othello var Reversi
-option name EvalFile type string default
-option name OwnBook type check default false
-option name BookFile type string default
-option name StageInterpolation type check default true
-option name CorrectionHistory type spin default 200 min 0 max 200
 option name PerftHash type spin default 256 min 1 max 65536
-option name Threads type spin default 1 min 1 max 64
-option name Hash type spin default 256 min 1 max 65536
 uciok
 ```
 
-### `isready`
+### isready
 
-Checks whether the engine is ready to accept another command.
+Returns `readyok`.
 
-#### Syntax
+### ucinewgame
 
-```text
-isready
-```
+Resets the board to the standard opening with Black to move and clears the
+perft cache. Options are preserved. Produces no response on success.
 
-#### Response
+### stop
 
-```text
-readyok
-```
+Accepted as a no-op. It cannot interrupt synchronous perft.
 
-### `ucinewgame`
+### quit / exit
 
-Starts a new game. The board is reset to the standard opening position with
-Black to move, and all transposition tables and search state are cleared.
+Ends the session. End-of-file has the same effect.
 
-#### Syntax
+## Options
 
 ```text
-ucinewgame
+setoption name <name> value <value>
 ```
 
-There is no response on success.
+| Name | Type | Default | Values |
+|---|---|---|---|
+| Rule | combo | Othello | Othello, Reversi |
+| PerftHash | spin | 256 | Integer MiB from 1 to 65536 |
 
-### `position`
+Changing an option clears the cache. Changing `PerftHash` resizes it.
+Allocation is rounded down to a power-of-two number of entries.
 
-Sets the current board position and optionally applies a sequence of moves.
+```text
+setoption name Rule value Reversi
+info string option Rule = Reversi
+```
 
-#### Syntax
+Unknown options and invalid values produce:
+
+```text
+info error: unknown option or invalid value: '<name>' = '<value>'
+```
+
+Search options (`Hash`, `Threads`, `CorrectionHistory`), evaluator options
+(`EvalFile`, `StageInterpolation`), and book options (`OwnBook`, `BookFile`)
+have been removed.
+
+## Positions
 
 ```text
 position startpos [moves <move> ...]
 position fen <diagram> <side-to-move> [moves <move> ...]
 ```
 
-#### Standard opening
-
-`startpos` selects the standard Othello opening with Black to move:
-
-```text
-position startpos
-position startpos moves d3 C3
-```
-
-#### Custom position format
-
-The `fen` form does not use chess FEN. `<diagram>` is a 64-cell board
-description in the following order:
-
-```text
-a1, b1, ..., h1, a2, ..., h2, ..., a8, ..., h8
-```
-
-Whitespace in the diagram is ignored. The accepted cell glyphs are:
+`startpos` selects the standard opening with Black to move.
+The `fen` form uses a single 64-character board token, not chess FEN.
+Cells are ordered `a1, b1, ..., h1, a2, ..., h8`.
 
 | Glyphs | Meaning |
 |---|---|
-| `X`, `x`, `*` | Black disc |
-| `O`, `o`, `0` | White disc |
-| `-`, `.`, `_` | Empty square |
+| X, x, * | Black disc |
+| O, o, 0 | White disc |
+| -, ., _ | Empty square |
 
-The side-to-move token accepts:
-
-| Values | Side to move |
-|---|---|
-| `X`, `x`, `B`, `b` | Black |
-| `O`, `o`, `W`, `w` | White |
-
-Example:
+Side to move accepts `X/x/B/b` for Black and `O/o/W/w` for White.
 
 ```text
 position fen ---------------------------OX------XO--------------------------- X
+position startpos moves d3 c3
 ```
 
-#### Move notation
+Moves use coordinates `a1` through `h8`; file letters may be uppercase.
+Pass tokens are `pass`, `PASS`, `--`, and `@@`.
+A pass is legal only under Othello rules when the mover has no legal move and
+the opponent does. Reversi does not permit passes.
 
-Moves use square coordinates from `a1` through `h8`. File letters are
-accepted in either case. The engine emits normal moves in lowercase. A pass is
-accepted as any of the following tokens:
+Positions are applied only after all supplied moves validate. An illegal move,
+illegal pass, or invalid diagram leaves the previous position unchanged.
+Successful commands produce no output. Errors begin with `info error:`.
+
+## Perft
 
 ```text
-pass
-PASS
---
-@@
+go perft <depth> [nocache]
 ```
 
-When `moves` is present, all following tokens are applied from left to right.
-A successful `position` command produces no output.
+Depth must be a non-negative integer. The current board and `Rule` option
+determine the tree. Cache is enabled by default; `nocache` bypasses it.
 
-The command is transactional: if any token is malformed or any move is illegal,
-the entire command is rejected and the previous position is left unchanged.
+- Depth zero returns one node.
+- Positive depths count sequences reaching exactly the requested ply.
+- Othello passes consume one ply if the opponent can move.
+- Reversi ends a branch as soon as the mover has no legal move.
+- When neither player can move, the branch contributes zero at positive depth.
 
-#### Errors
+For positive depth, the response contains each legal root move and its count,
+or a `pass:` line, or `(game over)`. It ends with:
 
 ```text
-info error: 'position fen' needs <diagram> <stm>
-info error: invalid diagram/side-to-move
-info error: expected 'startpos' or 'fen'
-info error: illegal move '<move>'
+Nodes searched: <nodes>
+Time: <milliseconds> ms
+Speed: <nodes-per-second> N/s
 ```
 
-### `setoption`
+Depth zero emits only `Nodes searched: 1` and `Time: 0 ms`.
 
-Sets an engine option. The option name and value may contain spaces. The first
-`value` token separates the option name from its value.
-
-#### Syntax
+Bare `go` and search forms such as `go depth`, `go nodes`, `go movetime`,
+`go infinite`, and clock controls are rejected:
 
 ```text
-setoption name <name> value <value>
+info error: only 'go perft <depth> [nocache]' is supported
 ```
 
-#### Options
+## Debug Commands
 
-| Name | Type | Default | Accepted values / effect |
-|---|---|---|---|
-| `Rule` | `combo` | `Othello` | `Othello` or `Reversi` |
-| `EvalFile` | `string` | Empty | Path to an evaluation file; an empty value restores the built-in evaluation. A `.nnue` file loads the NNUE-lite network (strongest; `weights/v20.nnue`), any other path loads ISLAYPAT pattern weights (`weights/v18.pat`) |
-| `OwnBook` | `check` | `false` | Play instantly from the opening book when it contains the position |
-| `BookFile` | `string` | Empty | Path to an opening-book file; an empty value disables the book |
-| `StageInterpolation` | `check` | `true` | Linearly interpolates the pattern evaluation across game-stage boundaries |
-| `CorrectionHistory` | `spin` | `200` | Maximum online correction applied only to the ProbCut probe gate, in centi-discs; `0` disables it |
-| `Threads` | `spin` | `1` | Search threads (lazy SMP); range `1`–`64` |
-| `Hash` | `spin` | `256` | Search transposition-table size in MiB; range `1`–`65536` |
-| `PerftHash` | `spin` | `256` | Transposition-table size in MiB for `go perft`; range `1`–`65536` |
+`debug on` enables the commands below; `debug off` hides them again.
+`debug` reports the current state. The default is off.
 
-Examples:
-
-```text
-setoption name Rule value Reversi
-setoption name Hash value 512
-setoption name EvalFile value weights/v20.nnue
-setoption name StageInterpolation value false
-setoption name CorrectionHistory value 0
-```
-
-After a valid option change, the transposition tables are invalidated and the
-engine reports the change:
-
-```text
-info string option Rule = Reversi
-```
-
-When a non-empty `EvalFile` is set, the engine also reports whether the
-pattern weights were loaded. Setting it to an empty value unloads the weights
-and restores the built-in evaluation; a failed load also unloads rather than
-leaving stale weights in place:
-
-```text
-info string pattern weights loaded: weights/v18.pat (v<version>, <stages> stages x <weights> weights)
-info error: cannot open pattern weights 'weights/missing.pat'
-```
-
-Invalid input produces one of these errors:
-
-```text
-info error: expected 'setoption name <Name> value <Value>'
-info error: unknown option or invalid value: '<name>' = '<value>'
-```
-
-### `go`
-
-Starts a search from the current position.
-
-#### Syntax
-
-```text
-go
-go depth <N>
-go movetime <MS>
-go nodes <N>
-go infinite
-go wtime <MS> btime <MS> winc <MS> binc <MS>
-go depth <N> movetime <MS> nodes <N>
-```
-
-The limits may be combined. A value of `0` means that the corresponding limit
-is disabled. A bare `go` defaults to `depth 8`.
-
-The `wtime`/`btime`/`winc`/`binc` form is a real clock: the engine reads the
-side to move's remaining time and Fischer increment and allocates its own budget
-for the move, spending less in the opening and more where a deep search can
-solve the game exactly. `movestogo` is accepted and ignored -- the number of
-remaining moves in Othello is already determined by the empty squares. Black's
-clock is `btime`/`binc` (Black is `X` and moves first).
-
-With `Threads` above 1 the search runs in parallel (lazy SMP): every thread
-searches the same position and shares one transposition table, so the extra
-threads reach a given depth sooner rather than dividing the work. The reported
-`nodes` and `nps` count the main thread only. Results stay deterministic where
-they are provable: a search deep enough to solve the position returns the same
-exact score at any thread count.
-
-The search runs on its own thread, so the engine keeps reading commands while it
-is thinking. `stop` and `isready` are answered immediately; any other command
-ends the current search first.
-
-A malformed or out-of-range limit rejects the whole command rather than
-starting an unintended search:
-
-```text
-info error: depth must be positive
-info error: movetime must be non-negative
-info error: nodes must be non-negative
-```
-
-`go infinite` searches with no limit until `stop` arrives. It still ends by
-itself if the position is solved, because a search whose depth reaches the
-number of empty squares has the exact result and deepening further cannot change
-it.
-
-#### Iteration information
-
-The engine emits one line for each completed iterative-deepening iteration:
-
-```text
-info depth <depth> seldepth <seldepth> score cd <score> nodes <nodes> nps <nps> hashfull <permille> time <ms> pv <move> ...
-```
-
-| Field | Description |
+| Command | Behavior |
 |---|---|
-| `depth` | Nominal depth of the completed iteration |
-| `seldepth` | Maximum search ply reached during the iteration |
-| `score cd` | Score in centi-discs from the side-to-move perspective; `100 cd = 1 disc` |
-| `nodes` | Number of searched nodes |
-| `nps` | Nodes per second |
-| `hashfull` | Search-table occupancy in per mille |
-| `time` | Elapsed search time in milliseconds |
-| `pv` | Principal variation; Black moves are lowercase and White moves uppercase |
+| d / display / board | Print the current board, side to move, disc counts, and legal moves |
+| backend | Print the compiled move-generation backend |
+| bench [depth] | Uncached start-position perft from depth 1 through depth (default 11), under the selected rule |
+| test / selftest | Run movegen, known perft, cache, symmetry, and rule checks |
 
-#### Final response
-
-For a normal search, the final response is:
-
-```text
-info string heuristic score, depth <depth>
-bestmove <move>
-```
-
-If the search depth reaches the number of empty squares, the score is the exact
-game-theoretic result rather than an estimate:
-
-```text
-info string exact score, depth <depth>
-bestmove <move>
-```
-
-If the side to move must pass under Othello:
-
-```text
-bestmove pass
-```
-
-If the game is over:
-
-```text
-info string game over (final score <score-in-discs>)
-bestmove --
-```
-
-#### Node counting
-
-`perft` is an argument of `go` rather than a separate command. It counts the
-leaf nodes of the move tree to the given depth from the current position, which
-is the standard way to verify move generation.
-
-```text
-go perft <depth>
-go perft <depth> nocache
-```
-
-Results are transposition-cached by default; `nocache` disables the cache, which
-is slower but independent of it. The response lists the node count for each root
-move, then the totals:
-
-```text
-d3: 14
-c4: 14
-f5: 14
-e6: 14
-
-Nodes searched: 56
-Time: 0 ms
-Speed: 3873288 N/s
-```
-
-A missing depth is rejected:
-
-```text
-info error: 'go perft' needs a depth
-```
-
-The `Rule` option affects the counts, since Othello passes and Reversi does not.
-The size of the cache is set by `PerftHash`.
-
-### `stop`
-
-Ends the search in progress. The engine finishes the move it is committed to,
-then emits its `bestmove` as usual, so a stopped search still produces exactly
-one `bestmove` for its `go`.
-
-#### Syntax
-
-```text
-stop
-```
-
-`stop` with no search running is ignored. There is no separate response: the
-`bestmove` from the search being stopped is the response.
-
-### `debug`
-
-Turns the engine's development mode on or off. It is off when the engine
-starts.
-
-Development mode exposes additional internal tooling used to build and validate
-the engine. That tooling is intentionally undocumented, is not part of the
-released protocol, and may change or disappear between versions without notice.
-A client implementing the protocol described in this document never needs it.
-
-#### Syntax
-
-```text
-debug on
-debug off
-debug
-```
-
-A bare `debug` reports the current state without changing it.
-
-#### Response
-
-```text
-info string debug on
-```
-
-Invalid input produces:
-
-```text
-info error: expected 'debug on' or 'debug off'
-```
-
-### `quit` and `exit`
-
-Both commands terminate the protocol loop:
-
-```text
-quit
-exit
-```
-
-## 4. Othello and Reversi Rules
-
-The `Rule` option selects the rule set:
-
-- **Othello**: if the side to move has no legal move but the opponent can move,
-  the side passes. The game ends only when neither side can move.
-- **Reversi**: if the side to move has no legal move, the game ends immediately;
-  passes are not used.
-
-## 5. Error and Informational Output
-
-An unrecognized top-level command produces:
+The test suite ends with `ALL TESTS PASSED` on success.
+The former search, evaluation, training, tuning, book, and match debug commands
+have been removed. Unknown or disabled commands produce:
 
 ```text
 info error: unknown command '<command>'
 ```
-
-Output beginning with `info error:` indicates a protocol, parsing, or file
-processing error. Output beginning with `info string` is engine-specific
-informational output. A client that only needs the search result should wait
-for `bestmove` after a `go` command.

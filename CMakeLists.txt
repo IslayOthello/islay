@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-#  islay - a competitive Othello / Reversi engine
+#  islay - Othello / Reversi move generation and perft
 # ---------------------------------------------------------------------------
 #  Version range: the lower bound (3.16) is old enough to be preinstalled on
 #  virtually every still-supported distro / CI image (Ubuntu 20.04, Debian 11,
@@ -12,7 +12,7 @@ cmake_minimum_required(VERSION 3.16...3.31)
 
 project(islay
         VERSION 0.1.0
-        DESCRIPTION "Competitive Othello/Reversi engine"
+        DESCRIPTION "Othello/Reversi UCI and perft engine"
         LANGUAGES CXX)
 
 # ---- Language standard ----------------------------------------------------
@@ -24,7 +24,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ---- Default to an optimized build ----------------------------------------
-# A search engine is useless unoptimized, so pick Release unless the user (or a
+# Perft benefits from optimization, so pick Release unless the user (or a
 # multi-config generator like Visual Studio / Xcode) says otherwise.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -54,16 +54,8 @@ add_executable(islay
         main.cpp
         src/movegen.cpp
         src/board.cpp
-        src/book.cpp
-        src/eval.cpp
-        src/match.cpp
         src/options.cpp
-        src/nnue.cpp
-        src/pattern.cpp
         src/perft.cpp
-        src/search.cpp
-    src/endgame.cpp
-    src/train.cpp
         src/uci.cpp)
 
 target_include_directories(islay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

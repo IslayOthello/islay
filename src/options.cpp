@@ -36,43 +36,6 @@ namespace islay {
                          }
                          return false;
                        }},
-            OptionSpec{"EvalFile", "string", "", {}, 0, 0,
-                       [](Options &o, const std::string &v) {
-                         o.eval_file = v; // uci.cpp loads it; empty keeps the hand-written eval
-                         return true;
-                       }},
-            OptionSpec{"OwnBook", "check", "false", {}, 0, 0,
-                       [](Options &o, const std::string &v) {
-                         o.own_book = iequals(v, "true") || v == "1";
-                         return true;
-                       }},
-            OptionSpec{"BookFile", "string", "", {}, 0, 0,
-                       [](Options &o, const std::string &v) {
-                         o.book_file = v; // uci.cpp loads it; empty = no book
-                         return true;
-                       }},
-            OptionSpec{"StageInterpolation", "check", "true", {}, 0, 0,
-                       [](Options &o, const std::string &v) {
-                         o.stage_interp = iequals(v, "true") || v == "1";
-                         return true;
-                       }},
-            OptionSpec{"CorrectionHistory",
-                       "spin",
-                       "200",
-                       {},
-                       0,
-                       200,
-                       [](Options &o, const std::string &v) {
-                         try {
-                           const long cap = std::stol(v);
-                           if (cap < 0 || cap > 200)
-                             return false;
-                           o.correction_history = static_cast<int>(cap);
-                           return true;
-                         } catch (...) {
-                           return false;
-                         }
-                       }},
             OptionSpec{"PerftHash",
                        "spin",
                        "256",
@@ -81,44 +44,11 @@ namespace islay {
                        65536,
                        [](Options &o, const std::string &v) {
                          try {
-                           const long h = std::stol(v);
-                           if (h < 1 || h > 65536)
+                           std::size_t parsed = 0;
+                           const long  h      = std::stol(v, &parsed);
+                           if (parsed != v.size() || h < 1 || h > 65536)
                              return false;
                            o.perft_hash_mib = static_cast<int>(h);
-                           return true;
-                         } catch (...) {
-                           return false;
-                         }
-                       }},
-            OptionSpec{"Threads",
-                       "spin",
-                       "1",
-                       {},
-                       1,
-                       64,
-                       [](Options &o, const std::string &v) {
-                         try {
-                           const long t = std::stol(v);
-                           if (t < 1 || t > 64)
-                             return false;
-                           o.threads = static_cast<int>(t);
-                           return true;
-                         } catch (...) {
-                           return false;
-                         }
-                       }},
-            OptionSpec{"Hash",
-                       "spin",
-                       "256",
-                       {},
-                       1,
-                       65536,
-                       [](Options &o, const std::string &v) {
-                         try {
-                           const long h = std::stol(v);
-                           if (h < 1 || h > 65536)
-                             return false;
-                           o.hash_mib = static_cast<int>(h);
                            return true;
                          } catch (...) {
                            return false;

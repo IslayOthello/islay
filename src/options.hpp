@@ -14,15 +14,8 @@ namespace islay {
   [[nodiscard]] const char *rule_name(Rule r) noexcept;
 
   struct Options {
-    Rule        rule      = Rule::Othello;
-    std::string eval_file;            // ISLAYPAT pattern weights; empty = hand-written eval
-    int  threads        = 1;   // lazy-SMP search threads (1 = the old single-threaded search)
-    int  hash_mib       = 256; // SEARCH transposition table size, in MiB
-    int  perft_hash_mib = 256; // perft transposition table size, in MiB (separate table)
-    bool stage_interp   = true;  // linear stage interpolation of the pattern eval (+~58 Elo, see uci.cpp)
-    int  correction_history = 200; // ProbCut-gate residual cap in centi-discs; zero disables it
-    bool own_book       = false; // play from the opening book when it has the position
-    std::string book_file;       // ISLAYBK1 opening book; empty = none
+    Rule rule           = Rule::Othello;
+    int  perft_hash_mib = 256; // perft transposition table size, in MiB
   };
 
   struct OptionSpec {
