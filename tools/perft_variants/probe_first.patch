@@ -1,0 +1,39 @@
+diff --git a/perft.cpp b/perft.cpp
+index 2e6c7d3..b419bfd 100644
+--- a/perft.cpp
++++ b/perft.cpp
+@@ -175,0 +176,10 @@ namespace islay {
++      // Cache canonical positions only above depth two.
++      const bool use_tt = depth >= 3;
++      Board      key{};
++      if (use_tt) {
++        key = b.canonical();
++        std::uint64_t cached;
++        if (tt.probe(key, depth, cached))
++          return cached;
++      }
++
+@@ -199,10 +208,0 @@ namespace islay {
+-      // Cache canonical positions only above depth two.
+-      const bool use_tt = depth >= 3;
+-      Board      key{};
+-      if (use_tt) {
+-        key = b.canonical();
+-        std::uint64_t cached;
+-        if (tt.probe(key, depth, cached))
+-          return cached;
+-      }
+-
+@@ -221,0 +222,7 @@ namespace islay {
++      Board key{};
++      if constexpr (D >= 3) {
++        key = b.canonical();
++        std::uint64_t cached;
++        if (tt.probe(key, D, cached))
++          return cached;
++      }
+@@ -242,4 +248,0 @@ namespace islay {
+-          const Board   key = b.canonical();
+-          std::uint64_t cached;
+-          if (tt.probe(key, D, cached))
+-            return cached;

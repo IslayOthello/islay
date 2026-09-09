@@ -173,6 +173,16 @@ namespace islay {
 
     template<Rule R>
     ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_cached_impl(const Board &b, int depth, PerftTT &tt) noexcept {
+      // Probe before movegen; depth-three entries use raw keys to avoid symmetry overhead.
+      const bool use_tt = depth >= 3;
+      Board      key{};
+      if (use_tt) {
+        key = depth >= 4 ? b.canonical() : b;
+        std::uint64_t cached;
+        if (tt.probe(key, depth, cached))
+          return cached;
+      }
+
       const Bitboard moves = b.moves();
 
       if (depth == 1) [[likely]] {
@@ -196,16 +206,6 @@ namespace islay {
           return perft2_batched<R>(b, moves);
       }
 
-      // Cache canonical positions only above depth two.
-      const bool use_tt = depth >= 3;
-      Board      key{};
-      if (use_tt) {
-        key = b.canonical();
-        std::uint64_t cached;
-        if (tt.probe(key, depth, cached))
-          return cached;
-      }
-
       std::uint64_t n = 0;
       Bitboard      m = moves;
       while (m) {
@@ -219,6 +219,14 @@ namespace islay {
 
     template<Rule R, int D>
     ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_cached_td(const Board &b, PerftTT &tt) noexcept {
+      // Keep symmetry sharing above depth three, where larger subtrees repay its cost.
+      Board key{};
+      if constexpr (D >= 3) {
+        key = D >= 4 ? b.canonical() : b;
+        std::uint64_t cached;
+        if (tt.probe(key, D, cached))
+          return cached;
+      }
       const Bitboard moves = b.moves();
 
       if constexpr (D == 1) {
@@ -239,10 +247,6 @@ namespace islay {
           return perft2_batched<R>(b, moves);
 
         if constexpr (D >= 3) {
-          const Board   key = b.canonical();
-          std::uint64_t cached;
-          if (tt.probe(key, D, cached))
-            return cached;
           std::uint64_t n = 0;
           Bitboard      m = moves;
           while (m) {

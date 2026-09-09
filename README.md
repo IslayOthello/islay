@@ -57,6 +57,11 @@ printf 'debug on\nbench 8\nquit\n' | ./build/islay
 The aggregate test must end with `ALL TESTS PASSED`. The benchmark reports
 uncached start-position perft at depths 1 through the requested depth.
 
+The suite also checks nine fixed opening/middlegame/endgame/pass positions under
+both rules, all eight symmetries, and a 1 MiB cache.
+See [PERFT_BENCHMARK.md](PERFT_BENCHMARK.md) for multi-position, single-thread
+median NPS measurements and the reproducible A/B driver.
+
 ## Repository Layout
 
 ```text

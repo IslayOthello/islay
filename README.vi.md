@@ -57,6 +57,11 @@ printf 'debug on\nbench 8\nquit\n' | ./build/islay
 Self-test phải kết thúc bằng `ALL TESTS PASSED`.
 Benchmark đếm perft không cache từ depth 1 đến depth được chỉ định.
 
+Bộ test còn kiểm tra chín thế khai cuộc/trung cuộc/tàn cuộc/pass cố định với
+cả hai luật, tám phép đối xứng và cache 1 MiB.
+Xem [PERFT_BENCHMARK.md](PERFT_BENCHMARK.md) để biết median NPS trên nhiều vị trí
+và cách chạy phép đo A/B đơn luồng.
+
 ## Cấu trúc
 
 ```text

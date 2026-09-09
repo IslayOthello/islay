@@ -1,0 +1,10 @@
+diff --git a/perft.cpp b/perft.cpp
+index 2e6c7d3..84e3653 100644
+--- a/perft.cpp
++++ b/perft.cpp
+@@ -200 +200 @@ namespace islay {
+-      const bool use_tt = depth >= 3;
++      const bool use_tt = depth >= 4;
+@@ -241 +241 @@ namespace islay {
+-        if constexpr (D >= 3) {
++        if constexpr (D >= 4) {

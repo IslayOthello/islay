@@ -41,7 +41,7 @@ c4: 97554
 f5: 97554
 e6: 97554
 
-Nodes searched: 390216
+Nodes searched: 390,216
 ```
 
 Timing and speed lines follow; their values depend on the machine.
@@ -162,6 +162,10 @@ Nodes searched: <nodes>
 Time: <milliseconds> ms
 Speed: <nodes-per-second> N/s
 ```
+
+`Nodes searched` and `Speed` use commas as thousands separators, for example
+`390,216` and `12,345,678 N/s`. Clients parsing these fields must strip commas.
+Root-move counts and `Time` remain ungrouped.
 
 Depth zero emits only `Nodes searched: 1` and `Time: 0 ms`.
 

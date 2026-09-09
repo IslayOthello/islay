@@ -1,0 +1,7 @@
+diff --git a/perft.cpp b/perft.cpp
+index 2e6c7d3..24f8c4d 100644
+--- a/perft.cpp
++++ b/perft.cpp
+@@ -166,0 +167,2 @@ namespace islay {
++    if (e.depth > depth)
++      return;

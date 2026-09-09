@@ -26,6 +26,14 @@ namespace islay {
       return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
     }
 
+    [[nodiscard]] std::string grouped_count(std::string digits) {
+      for (std::size_t pos = digits.size(); pos > 3;) {
+        pos -= 3;
+        digits.insert(pos, 1, ',');
+      }
+      return digits;
+    }
+
     [[nodiscard]] std::string nps_string(std::uint64_t nodes, double ms) {
       if (ms <= 0.0)
         return "inf";
@@ -292,9 +300,9 @@ namespace islay {
 
         const double dt = ms_since(t0);
         std::cout << lines.str() << '\n'
-                  << "Nodes searched: " << total << '\n'
+                  << "Nodes searched: " << grouped_count(std::to_string(total)) << '\n'
                   << "Time: " << static_cast<std::uint64_t>(dt) << " ms\n"
-                  << "Speed: " << nps_string(total, dt) << " N/s\n";
+                  << "Speed: " << grouped_count(nps_string(total, dt)) << " N/s\n";
       }
 
       void cmd_bench(std::istringstream &is) {
@@ -319,6 +327,17 @@ namespace islay {
       }
 
       void cmd_test() {
+        std::cout << "output formatting self-test ... " << std::flush;
+        if (grouped_count("0") != "0" || grouped_count("1") != "1" || grouped_count("999") != "999" ||
+            grouped_count("1000") != "1,000" || grouped_count("999999") != "999,999" ||
+            grouped_count("1000000") != "1,000,000" ||
+            grouped_count("18446744073709551615") != "18,446,744,073,709,551,615" ||
+            grouped_count(nps_string(1, 0)) != "inf" || grouped_count(nps_string(1234567, 1000)) != "1,234,567") {
+          std::cout << "FAILED\n";
+          return;
+        }
+        std::cout << "ok\n";
+
         std::cout << "movegen self-test (" << movegen_backend() << ") ... " << std::flush;
         if (!movegen_selftest()) {
           std::cout << "FAILED\n";
@@ -351,6 +370,42 @@ namespace islay {
         all_ok                 = all_ok && sym_ok && symcache_ok;
         std::cout << "symmetry invariance perft(6): " << (sym_ok ? "ok" : "MISMATCH") << '\n'
                   << "symmetry cache perft(7): " << (symcache_ok ? "ok" : "MISMATCH") << '\n';
+
+        // Fixed legal playouts cover opening, middlegame, endgame and forced pass.
+        // Counts are frozen from the pre-optimization uncached implementation.
+        struct PerftCase {
+          Board         board;
+          std::uint64_t othello;
+          std::uint64_t reversi;
+        };
+        constexpr std::array<PerftCase, 9> positions{{
+                {{240652910592ULL, 370411524ULL}, 54185, 54185},
+                {{141013910561792ULL, 2314885659704166404ULL}, 431432, 431432},
+                {{8024582863072280ULL, 2314986746359087110ULL}, 142630, 142630},
+                {{643436922635553823ULL, 16289534172264902688ULL}, 13878, 13878},
+                {{4449989296128ULL, 69362253824ULL}, 75504, 75504},
+                {{71057083469824ULL, 9594459700723712ULL}, 526743, 526743},
+                {{76082365011218696ULL, 1166769015944912944ULL}, 346517, 346517},
+                {{80817503139037048ULL, 3486033126843646080ULL}, 9043, 9028},
+                {{2455651727219126272ULL, 576743339727456007ULL}, 1825, 0},
+        }};
+        PerftTT                            regression_tt(1);
+        bool                               positions_ok = true;
+        for (const auto &position: positions) {
+          for (const Rule rule: {Rule::Othello, Rule::Reversi}) {
+            regression_tt.clear();
+            const auto expected = rule == Rule::Othello ? position.othello : position.reversi;
+            for (int symmetry = 0; symmetry < 8; ++symmetry) {
+              const Board board  = position.board.symmetry(symmetry);
+              const auto  plain  = perft(board, 5, rule);
+              const auto  cached = perft_cached(board, 5, regression_tt, rule);
+              positions_ok       = (plain == expected && cached == expected) && positions_ok;
+            }
+          }
+        }
+        all_ok = all_ok && positions_ok;
+        std::cout << "multi-position perft(5), both rules, symmetry and 1 MiB cache: "
+                  << (positions_ok ? "ok" : "MISMATCH") << '\n';
 
         std::uint64_t s   = 0x9E3779B97F4A7C15ULL;
         const auto    rnd = [&s]() noexcept {

@@ -14,7 +14,7 @@ namespace islay {
 
   [[nodiscard]] std::uint64_t perft(const Board &b, int depth, Rule rule) noexcept;
 
-  // Full canonical board and depth are verified on every hit.
+  // Full board key (raw or canonical) and depth are verified on every hit.
   class PerftTT {
   public:
     explicit PerftTT(std::size_t mib = 256) { resize(mib); }

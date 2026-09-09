@@ -1,0 +1,29 @@
+diff --git a/perft.cpp b/perft.cpp
+index 2e6c7d3..af85799 100644
+--- a/perft.cpp
++++ b/perft.cpp
+@@ -157,4 +157,7 @@ namespace islay {
+-    const Entry &e = table_[hash_board(key.player, key.opponent) & mask_];
+-    if (e.depth == depth && e.board == key) [[unlikely]] {
+-      nodes = e.nodes;
+-      return true;
++    const std::size_t index = hash_board(key.player, key.opponent) & (mask_ & ~std::size_t{1});
++    for (std::size_t offset = 0; offset < 2; ++offset) {
++      const Entry &e = table_[index + offset];
++      if (e.depth == depth && e.board == key) {
++        nodes = e.nodes;
++        return true;
++      }
+@@ -166,4 +169,8 @@ namespace islay {
+-    Entry &e = table_[hash_board(key.player, key.opponent) & mask_];
+-    e.board  = key;
+-    e.nodes  = nodes;
+-    e.depth  = depth;
++    const std::size_t index = hash_board(key.player, key.opponent) & (mask_ & ~std::size_t{1});
++    Entry &a = table_[index];
++    Entry &b = table_[index + 1];
++    Entry &e = (a.depth == depth && a.board == key) ? a :
++               (b.depth == depth && b.board == key) ? b : (a.depth <= b.depth ? a : b);
++    e.board = key;
++    e.nodes = nodes;
++    e.depth = depth;

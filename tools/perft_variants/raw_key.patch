@@ -1,0 +1,10 @@
+diff --git a/perft.cpp b/perft.cpp
+index 2e6c7d3..9805a57 100644
+--- a/perft.cpp
++++ b/perft.cpp
+@@ -203 +203 @@ namespace islay {
+-        key = b.canonical();
++        key = b;
+@@ -242 +242 @@ namespace islay {
+-          const Board   key = b.canonical();
++          const Board   key = b;
