@@ -1,0 +1,26 @@
+diff --git a/mcts.cpp b/mcts.cpp
+index 6e5e597..1c7d286 100644
+--- a/mcts.cpp
++++ b/mcts.cpp
+@@ -24,0 +25 @@ namespace islay {
++      Board         board{}; // initialized lazily on the first traversal
+@@ -57,0 +59 @@ namespace islay {
++              nodes_[0].board  = board_;
+@@ -166 +167,0 @@ namespace islay {
+-        Board board                              = board_;
+@@ -171,4 +172,8 @@ namespace islay {
+-          index             = select(index);
+-          path[++depth]     = index;
+-          const auto action = nodes_[index].action;
+-          board             = action == PASS ? board.passed() : board.play(action);
++          const Index child = select(index);
++          if (nodes_[child].state == State::Fresh) {
++            const auto  action  = nodes_[child].action;
++            const auto &parent  = nodes_[index].board;
++            nodes_[child].board = action == PASS ? parent.passed() : parent.play(action);
++          }
++          index         = child;
++          path[++depth] = index;
+@@ -179 +184 @@ namespace islay {
+-        } else if (!expand(index, board, game_status(board), value)) {
++        } else if (!expand(index, nodes_[index].board, game_status(nodes_[index].board), value)) {

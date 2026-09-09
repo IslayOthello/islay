@@ -1,0 +1,12 @@
+diff --git a/mcts.cpp b/mcts.cpp
+index 6e5e597..f10bfe4 100644
+--- a/mcts.cpp
++++ b/mcts.cpp
+@@ -18,0 +19 @@ namespace islay {
++      double        mean_value{};
+@@ -152,2 +153 @@ namespace islay {
+-          const double q     = child.visits ? child.value_sum / static_cast<double>(child.visits) : 0;
+-          const double score = q + scale * child.prior / (1.0 + static_cast<double>(child.visits));
++          const double score = child.mean_value + scale * child.prior / (1.0 + static_cast<double>(child.visits));
+@@ -186,0 +187 @@ namespace islay {
++          node.mean_value = node.value_sum / static_cast<double>(node.visits);

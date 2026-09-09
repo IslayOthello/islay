@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "board.hpp"
+#include "game.hpp"
+#include "mcts.hpp"
 #include "movegen.hpp"
 #include "options.hpp"
 #include "perft.hpp"
@@ -358,6 +360,19 @@ namespace islay {
 
         std::cout << "movegen self-test (" << movegen_backend() << ") ... " << std::flush;
         if (!movegen_selftest()) {
+          std::cout << "FAILED\n";
+          return;
+        }
+        std::cout << "ok\n";
+
+        std::cout << "Othello game self-test ... " << std::flush;
+        if (!game_selftest()) {
+          std::cout << "FAILED\n";
+          return;
+        }
+        std::cout << "ok\n";
+        std::cout << "PUCT core self-test ... " << std::flush;
+        if (!mcts_selftest()) {
           std::cout << "FAILED\n";
           return;
         }

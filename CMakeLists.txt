@@ -54,6 +54,9 @@ add_executable(islay
         main.cpp
         src/movegen.cpp
         src/board.cpp
+        src/game.cpp
+        src/mcts.cpp
+        src/mcts_selftest.cpp
         src/options.cpp
         src/perft.cpp
         src/uci.cpp)

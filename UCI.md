@@ -194,9 +194,11 @@ info error: only 'go perft <depth> [nocache]' is supported
 | d / display / board | Print the current board, side to move, disc counts, and legal moves |
 | backend | Print the compiled move-generation backend |
 | bench [depth] | Uncached start-position perft from depth 1 through depth (default 11), under the selected rule; fractional `time(s)` and integer NPS |
-| test / selftest | Run movegen, known perft, cache, symmetry, and rule checks |
+| test / selftest | Run movegen, Othello game adapter, PUCT core, known perft, cache, symmetry, and rule checks |
 
 The test suite ends with `ALL TESTS PASSED` on success.
+The PUCT core is an internal foundation tested with fake evaluators; it has no
+trained network or public search command yet. `go` behavior remains perft-only.
 The former search, evaluation, training, tuning, book, and match debug commands
 have been removed. Unknown or disabled commands produce:
 

@@ -1,0 +1,11 @@
+diff --git a/mcts.cpp b/mcts.cpp
+index 6e5e597..087cfd7 100644
+--- a/mcts.cpp
++++ b/mcts.cpp
+@@ -131 +131,2 @@ namespace islay {
+-        const auto first = static_cast<Index>(nodes_.size());
++        const auto   first         = static_cast<Index>(nodes_.size());
++        const double inverse_total = 1.0 / total;
+@@ -135 +136 @@ namespace islay {
+-          child.prior  = static_cast<float>(probabilities[i] / total);
++          child.prior  = static_cast<float>(probabilities[i] * inverse_total);

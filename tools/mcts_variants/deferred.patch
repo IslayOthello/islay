@@ -1,0 +1,25 @@
+diff --git a/mcts.cpp b/mcts.cpp
+index 6e5e597..4fd3621 100644
+--- a/mcts.cpp
++++ b/mcts.cpp
+@@ -166 +165,0 @@ namespace islay {
+-        Board board                              = board_;
+@@ -171,4 +170,2 @@ namespace islay {
+-          index             = select(index);
+-          path[++depth]     = index;
+-          const auto action = nodes_[index].action;
+-          board             = action == PASS ? board.passed() : board.play(action);
++          index         = select(index);
++          path[++depth] = index;
+@@ -179,2 +176,9 @@ namespace islay {
+-        } else if (!expand(index, board, game_status(board), value)) {
+-          return false;
++        } else {
++          // Terminal revisits need no board reconstruction or move generation.
++          Board board = board_;
++          for (int i = 1; i <= depth; ++i) {
++            const auto action = nodes_[path[i]].action;
++            board             = action == PASS ? board.passed() : board.play(action);
++          }
++          if (!expand(index, board, game_status(board), value))
++            return false;
