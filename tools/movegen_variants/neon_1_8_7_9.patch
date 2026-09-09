@@ -1,0 +1,25 @@
+diff --git a/movegen.cpp b/movegen.cpp
+index f0dc484..ebdbd3d 100644
+--- a/movegen.cpp
++++ b/movegen.cpp
+@@ -237,8 +237,10 @@ namespace islay {
+-      const Bitboard   mask    = o & kInner;
+-      const Bitboard   empties = ~(p | o);
+-      const uint64x2_t pp      = vdupq_n_u64(p);
+-      const uint64x2_t mm      = vdupq_n_u64(mask);
+-      uint64x2_t       v       = some_moves_neon(pp, mm, 7);
+-      v                        = vorrq_u64(v, some_moves_neon(pp, mm, 9));
+-      const Bitboard s         = some_moves_scalar(p, mask, 1) | some_moves_scalar(p, o, 8);
+-      return (s | vgetq_lane_u64(v, 0) | vgetq_lane_u64(v, 1)) & empties;
++      const Bitboard mask = o & kInner;
++      const Bitboard empties = ~(p | o);
++      const uint64x2_t pp = vdupq_n_u64(p);
++      const uint64x2_t mm = vdupq_n_u64(mask);
++      const uint64x2_t oo = vdupq_n_u64(o);
++      uint64x2_t v = some_moves_neon(pp, mm, 1);
++      v = vorrq_u64(v, some_moves_neon(pp, oo, 8));
++      v = vorrq_u64(v, some_moves_neon(pp, mm, 7));
++      v = vorrq_u64(v, some_moves_neon(pp, mm, 9));
++      return (vgetq_lane_u64(v, 0) | vgetq_lane_u64(v, 1)) & empties;
+@@ -246 +247,0 @@ namespace islay {
+-

@@ -28,7 +28,7 @@ START = ((1 << 28) | (1 << 35), (1 << 27) | (1 << 36))
 DIRECTIONS = [(x, y) for x in (-1, 0, 1) for y in (-1, 0, 1) if x or y]
 
 
-def snapshot(directory, revision="4e7b75cda6b197117bf0382d0e357a9cb693b0d8", patches=None):
+def snapshot(directory, revision="4e7b75cda6b197117bf0382d0e357a9cb693b0d8", patches=None, variant_movegen=False):
     """Generate isolated experiment inputs; never edit production sources."""
     base = directory / "base"
     if base.exists():
@@ -44,6 +44,8 @@ def snapshot(directory, revision="4e7b75cda6b197117bf0382d0e357a9cb693b0d8", pat
         target = directory / variant
         target.mkdir()
         shutil.copyfile(base / "perft.cpp", target / "perft.cpp")
+        if variant_movegen:
+            shutil.copyfile(base / "movegen.cpp", target / "movegen.cpp")
         patch = patches / (variant + ".patch")
         if patch.exists():
             subprocess.run(["git", "apply", "--unidiff-zero", "--directory=" + str(target), str(patch)], check=True)
@@ -173,7 +175,6 @@ def binary(directory, variant):
 
 def build(directory, variants):
     common = ["clang++", "-std=c++20", "-O3", "-DNDEBUG", "-march=native", "-flto=thin"]
-    sources = ["tools/perft_bench.cpp", str(directory / "base/board.cpp"), str(directory / "base/movegen.cpp")]
     for variant in variants:
         if variant == "baseline_control":
             (directory / variant).mkdir(exist_ok=True)
@@ -188,6 +189,10 @@ def build(directory, variants):
         elif variant == "pgo":
             extra += ["-fprofile-instr-use=" + str(directory / "training.profdata")]
             source_variant = "baseline"
+        movegen = directory / source_variant / "movegen.cpp"
+        if not movegen.exists():
+            movegen = directory / "base/movegen.cpp"
+        sources = ["tools/perft_bench.cpp", str(directory / "base/board.cpp"), str(movegen)]
         cmd = common + extra + ["-I" + str(directory / "base")] + sources + [str(directory / source_variant / "perft.cpp"), "-o", str(binary(directory, variant))]
         print("BUILD", variant, flush=True)
         start = time.monotonic()
@@ -363,6 +368,7 @@ def main():
     parser.add_argument("--revision", default="4e7b75cda6b197117bf0382d0e357a9cb693b0d8",
                         help="baseline commit for snapshot")
     parser.add_argument("--patches", type=Path, help="variant patch directory for snapshot")
+    parser.add_argument("--variant-movegen", action="store_true", help="also snapshot movegen.cpp for variant patches")
     parser.add_argument("--generic-checks", action="store_true", help="add depth-14 checks when preparing the corpus")
     parser.add_argument("--rounds", type=int, default=7)
     parser.add_argument("--milliseconds", type=float, default=150)
@@ -375,7 +381,7 @@ def main():
     if args.action == "run" and (args.rounds < 1 or args.milliseconds <= 0):
         parser.error("rounds and milliseconds must be positive")
     if args.action == "snapshot":
-        snapshot(args.directory, args.revision, args.patches)
+        snapshot(args.directory, args.revision, args.patches, args.variant_movegen)
     elif args.action == "prepare":
         prepare(args.directory, args.generic_checks)
     elif args.action == "build":

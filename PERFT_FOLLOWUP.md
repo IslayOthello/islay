@@ -1,5 +1,8 @@
 # Perft inlining follow-up — 2026-09-09
 
+The subsequent [move-generation split study](MOVEGEN_SPLIT_BENCHMARK.md) tests
+all integer/NEON direction assignments and retains the existing default.
+
 ## Retained change
 
 Remove `ISLAY_FLATTEN` from the four cached/uncached, generic/depth-specialized

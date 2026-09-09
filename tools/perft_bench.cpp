@@ -31,6 +31,11 @@ std::uint64_t divide(const Board &board, int depth, Rule rule, PerftTT &tt, bool
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::string(argv[1]) == "--verify") {
+    if (!movegen_selftest()) {
+      std::cerr << "movegen self-test failed\n";
+      return 1;
+    }
+    std::cout << "movegen self-test passed\n";
     PerftTT       tt(1);
     std::uint64_t player, opponent, expected;
     int           depth;

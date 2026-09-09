@@ -1,0 +1,21 @@
+diff --git a/movegen.cpp b/movegen.cpp
+index f0dc484..c504a69 100644
+--- a/movegen.cpp
++++ b/movegen.cpp
+@@ -237,7 +237,7 @@ namespace islay {
+-      const Bitboard   mask    = o & kInner;
+-      const Bitboard   empties = ~(p | o);
+-      const uint64x2_t pp      = vdupq_n_u64(p);
+-      const uint64x2_t mm      = vdupq_n_u64(mask);
+-      uint64x2_t       v       = some_moves_neon(pp, mm, 7);
+-      v                        = vorrq_u64(v, some_moves_neon(pp, mm, 9));
+-      const Bitboard s         = some_moves_scalar(p, mask, 1) | some_moves_scalar(p, o, 8);
++      const Bitboard mask = o & kInner;
++      const Bitboard empties = ~(p | o);
++      const uint64x2_t pp = vdupq_n_u64(p);
++      const uint64x2_t mm = vdupq_n_u64(mask);
++      uint64x2_t v = some_moves_neon(pp, mm, 1);
++      v = vorrq_u64(v, some_moves_neon(pp, mm, 9));
++      const Bitboard s = some_moves_scalar(p, o, 8) | some_moves_scalar(p, mask, 7);
+@@ -246 +245,0 @@ namespace islay {
+-
