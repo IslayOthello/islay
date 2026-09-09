@@ -159,7 +159,7 @@ or a `pass:` line, or `(game over)`. It ends with:
 
 ```text
 Nodes searched: <nodes>
-Time: <milliseconds> ms
+Time: <seconds> s
 Speed: <nodes-per-second> N/s
 ```
 
@@ -167,7 +167,15 @@ Speed: <nodes-per-second> N/s
 `390,216` and `12,345,678 N/s`. Clients parsing these fields must strip commas.
 Root-move counts and `Time` remain ungrouped.
 
-Depth zero emits only `Nodes searched: 1` and `Time: 0 ms`.
+`Time` uses seconds with nine decimal places, for example `0.000589375 s`.
+Timing uses `steady_clock` and retains fractional microseconds internally.
+`Speed` remains nodes per second, rounded to an integer, and is computed from
+the unrounded elapsed time: `nodes / (elapsed_us / 1,000,000)`.
+The displayed precision does not guarantee the clock's effective resolution
+or eliminate timing noise in very short runs. Clients reading `Time` must
+accept the `s` unit and fractional values instead of integer milliseconds.
+
+Depth zero emits only `Nodes searched: 1` and `Time: 0.000000000 s`.
 
 Bare `go` and search forms such as `go depth`, `go nodes`, `go movetime`,
 `go infinite`, and clock controls are rejected:
@@ -185,7 +193,7 @@ info error: only 'go perft <depth> [nocache]' is supported
 |---|---|
 | d / display / board | Print the current board, side to move, disc counts, and legal moves |
 | backend | Print the compiled move-generation backend |
-| bench [depth] | Uncached start-position perft from depth 1 through depth (default 11), under the selected rule |
+| bench [depth] | Uncached start-position perft from depth 1 through depth (default 11), under the selected rule; fractional `time(s)` and integer NPS |
 | test / selftest | Run movegen, known perft, cache, symmetry, and rule checks |
 
 The test suite ends with `ALL TESTS PASSED` on success.

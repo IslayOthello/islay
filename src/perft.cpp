@@ -41,8 +41,9 @@ namespace islay {
       return total;
     }
 
+    // flatten bloats the depth-specialized kernels; let the compiler choose inlining.
     template<Rule R>
-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_impl(const Board &b, int depth) noexcept {
+    ISLAY_HOT std::uint64_t perft_impl(const Board &b, int depth) noexcept {
       const Bitboard moves = b.moves();
 
       if (depth == 1) [[likely]] {
@@ -75,7 +76,7 @@ namespace islay {
     }
 
     template<Rule R, int D>
-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_td(const Board &b) noexcept {
+    ISLAY_HOT std::uint64_t perft_td(const Board &b) noexcept {
       const Bitboard moves = b.moves();
 
       if constexpr (D == 1) {
@@ -172,7 +173,7 @@ namespace islay {
   namespace {
 
     template<Rule R>
-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_cached_impl(const Board &b, int depth, PerftTT &tt) noexcept {
+    ISLAY_HOT std::uint64_t perft_cached_impl(const Board &b, int depth, PerftTT &tt) noexcept {
       // Probe before movegen; depth-three entries use raw keys to avoid symmetry overhead.
       const bool use_tt = depth >= 3;
       Board      key{};
@@ -218,7 +219,7 @@ namespace islay {
     }
 
     template<Rule R, int D>
-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_cached_td(const Board &b, PerftTT &tt) noexcept {
+    ISLAY_HOT std::uint64_t perft_cached_td(const Board &b, PerftTT &tt) noexcept {
       // Keep symmetry sharing above depth three, where larger subtrees repay its cost.
       Board key{};
       if constexpr (D >= 3) {

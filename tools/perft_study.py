@@ -28,19 +28,18 @@ START = ((1 << 28) | (1 << 35), (1 << 27) | (1 << 36))
 DIRECTIONS = [(x, y) for x in (-1, 0, 1) for y in (-1, 0, 1) if x or y]
 
 
-def snapshot(directory):
+def snapshot(directory, revision="4e7b75cda6b197117bf0382d0e357a9cb693b0d8", patches=None):
     """Generate isolated experiment inputs; never edit production sources."""
     base = directory / "base"
     if base.exists():
         raise SystemExit(f"Refusing to overwrite {base}; choose a fresh --directory")
     base.mkdir(parents=True)
-    revision = "4e7b75cda6b197117bf0382d0e357a9cb693b0d8"
     names = ["perft.cpp", "perft.hpp", "board.cpp", "board.hpp", "movegen.cpp", "movegen.hpp",
              "common.hpp", "bitboard.hpp", "hash.hpp", "options.hpp"]
     for name in names:
         content = subprocess.check_output(["git", "show", f"{revision}:src/{name}"])
         (base / name).write_bytes(content)
-    patches = Path(__file__).resolve().parent / "perft_variants"
+    patches = patches if patches is not None else Path(__file__).resolve().parent / "perft_variants"
     for variant in ["baseline", "full_neon"] + [p.stem for p in sorted(patches.glob("*.patch"))]:
         target = directory / variant
         target.mkdir()
@@ -89,7 +88,7 @@ def oracle(p, o, depth, rule):
     return sum(oracle(*play(p, o, move), depth - 1, rule) for move in moves)
 
 
-def prepare(directory):
+def prepare(directory, generic_checks=False):
     rng = random.Random(20260909)
     positions = [{"id": "start", "p": START[0], "o": START[1], "depth": 11}]
     snapshots = {}
@@ -156,11 +155,11 @@ def prepare(directory):
     known = [1, 4, 12, 56, 244, 1396, 8200, 55092, 390216]
     for d, nodes in enumerate(known):
         checks.append([*START, d, "Othello", nodes])
-    # Generic dispatcher (>12), forced passes and termination with only four empties.
+    # Root divide consumes one ply; depth 14 reaches the generic (>12) dispatcher.
     for game in range(4):
         p, o = snapshots[game, 60]
         for rule in ("Othello", "Reversi"):
-            for depth in (4, 5, 13):
+            for depth in ((4, 5, 13, 14) if generic_checks else (4, 5, 13)):
                 checks.append([p, o, depth, rule, oracle(p, o, depth, rule)])
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "corpus.json").write_text(json.dumps(
@@ -361,6 +360,10 @@ def main():
     parser.add_argument("action", choices=["snapshot", "prepare", "build", "verify", "run", "report", "train-pgo"])
     parser.add_argument("variants", nargs="*")
     parser.add_argument("--directory", type=Path, default=Path("_build/perft-study"))
+    parser.add_argument("--revision", default="4e7b75cda6b197117bf0382d0e357a9cb693b0d8",
+                        help="baseline commit for snapshot")
+    parser.add_argument("--patches", type=Path, help="variant patch directory for snapshot")
+    parser.add_argument("--generic-checks", action="store_true", help="add depth-14 checks when preparing the corpus")
     parser.add_argument("--rounds", type=int, default=7)
     parser.add_argument("--milliseconds", type=float, default=150)
     parser.add_argument("--modes", nargs="+", default=["cold"])
@@ -372,9 +375,9 @@ def main():
     if args.action == "run" and (args.rounds < 1 or args.milliseconds <= 0):
         parser.error("rounds and milliseconds must be positive")
     if args.action == "snapshot":
-        snapshot(args.directory)
+        snapshot(args.directory, args.revision, args.patches)
     elif args.action == "prepare":
-        prepare(args.directory)
+        prepare(args.directory, args.generic_checks)
     elif args.action == "build":
         build(args.directory, args.variants)
     elif args.action == "verify":

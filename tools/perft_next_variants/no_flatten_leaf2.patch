@@ -1,0 +1,66 @@
+diff --git a/perft.cpp b/perft.cpp
+index 4667913..55ca45c 100644
+--- a/perft.cpp
++++ b/perft.cpp
+@@ -45 +45,17 @@ namespace islay {
+-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_impl(const Board &b, int depth) noexcept {
++#if defined(_MSC_VER)
++    __declspec(noinline)
++#elif defined(__GNUC__) || defined(__clang__)
++    __attribute__((noinline))
++#endif
++    [[nodiscard]] std::uint64_t perft2_scalar(const Board &b, Bitboard moves) noexcept {
++      std::uint64_t total = 0;
++      while (moves) {
++        const Board child = b.play(pop_lsb(moves));
++        const Bitboard replies = child.moves();
++        total += replies ? static_cast<std::uint64_t>(popcount(replies)) : stuck_leaf_count<R>(child);
++      }
++      return total;
++    }
++
++    template<Rule R>
++    ISLAY_HOT std::uint64_t perft_impl(const Board &b, int depth) noexcept {
+@@ -64,2 +80,2 @@ namespace islay {
+-      if constexpr (movegen_batch_width() > 1) {
+-        if (depth == 2)
++      if (depth == 2) {
++        if constexpr (movegen_batch_width() > 1)
+@@ -66,0 +83,2 @@ namespace islay {
++        else
++          return perft2_scalar<R>(b, moves);
+@@ -78 +96 @@ namespace islay {
+-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_td(const Board &b) noexcept {
++    ISLAY_HOT std::uint64_t perft_td(const Board &b) noexcept {
+@@ -95,2 +113,6 @@ namespace islay {
+-        if constexpr (D == 2 && movegen_batch_width() > 1)
+-          return perft2_batched<R>(b, moves);
++        if constexpr (D == 2) {
++          if constexpr (movegen_batch_width() > 1)
++            return perft2_batched<R>(b, moves);
++          else
++            return perft2_scalar<R>(b, moves);
++        }
+@@ -175 +197 @@ namespace islay {
+-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_cached_impl(const Board &b, int depth, PerftTT &tt) noexcept {
++    ISLAY_HOT std::uint64_t perft_cached_impl(const Board &b, int depth, PerftTT &tt) noexcept {
+@@ -204,2 +226,2 @@ namespace islay {
+-      if constexpr (movegen_batch_width() > 1) {
+-        if (depth == 2)
++      if (depth == 2) {
++        if constexpr (movegen_batch_width() > 1)
+@@ -206,0 +229,2 @@ namespace islay {
++        else
++          return perft2_scalar<R>(b, moves);
+@@ -221 +245 @@ namespace islay {
+-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_cached_td(const Board &b, PerftTT &tt) noexcept {
++    ISLAY_HOT std::uint64_t perft_cached_td(const Board &b, PerftTT &tt) noexcept {
+@@ -246,2 +270,6 @@ namespace islay {
+-        if constexpr (D == 2 && movegen_batch_width() > 1)
+-          return perft2_batched<R>(b, moves);
++        if constexpr (D == 2) {
++          if constexpr (movegen_batch_width() > 1)
++            return perft2_batched<R>(b, moves);
++          else
++            return perft2_scalar<R>(b, moves);
++        }

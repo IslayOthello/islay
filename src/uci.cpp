@@ -22,8 +22,16 @@ namespace islay {
 
     using Clock = std::chrono::steady_clock;
 
-    [[nodiscard]] double ms_since(Clock::time_point t0) {
-      return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    [[nodiscard]] double us_since(Clock::time_point t0) {
+      return std::chrono::duration<double, std::micro>(Clock::now() - t0).count();
+    }
+
+    [[nodiscard]] std::string time_string(double elapsed_us) {
+      std::ostringstream os;
+      os.setf(std::ios::fixed);
+      os.precision(9);
+      os << elapsed_us / 1'000'000.0;
+      return os.str();
     }
 
     [[nodiscard]] std::string grouped_count(std::string digits) {
@@ -34,13 +42,13 @@ namespace islay {
       return digits;
     }
 
-    [[nodiscard]] std::string nps_string(std::uint64_t nodes, double ms) {
-      if (ms <= 0.0)
+    [[nodiscard]] std::string nps_string(std::uint64_t nodes, double elapsed_us) {
+      if (elapsed_us <= 0.0)
         return "inf";
       std::ostringstream os;
       os.setf(std::ios::fixed);
       os.precision(0);
-      os << nodes / (ms / 1000.0);
+      os << nodes / (elapsed_us / 1'000'000.0);
       return os.str();
     }
 
@@ -267,7 +275,7 @@ namespace islay {
 
       void run_perft(int depth, bool use_cache) {
         if (depth < 1) {
-          std::cout << "Nodes searched: 1\nTime: 0 ms\n";
+          std::cout << "Nodes searched: 1\nTime: 0.000000000 s\n";
           return;
         }
 
@@ -298,31 +306,31 @@ namespace islay {
           lines << "(game over)\n";
         }
 
-        const double dt = ms_since(t0);
+        const double elapsed_us = us_since(t0);
         std::cout << lines.str() << '\n'
                   << "Nodes searched: " << grouped_count(std::to_string(total)) << '\n'
-                  << "Time: " << static_cast<std::uint64_t>(dt) << " ms\n"
-                  << "Speed: " << grouped_count(nps_string(total, dt)) << " N/s\n";
+                  << "Time: " << time_string(elapsed_us) << " s\n"
+                  << "Speed: " << grouped_count(nps_string(total, elapsed_us)) << " N/s\n";
       }
 
       void cmd_bench(std::istringstream &is) {
         int maxd = 11;
         is >> maxd;
         const Board start = Board::start();
-        std::cout << "depth            nodes       time(ms)             nps\n"
+        std::cout << "depth            nodes        time(s)             nps\n"
                   << "---------------------------------------------------------\n";
         for (int d = 1; d <= maxd; ++d) {
-          const auto          t0 = Clock::now();
-          const std::uint64_t n  = perft(start, d, options_.rule);
-          const double        dt = ms_since(t0);
+          const auto          t0         = Clock::now();
+          const std::uint64_t n          = perft(start, d, options_.rule);
+          const double        elapsed_us = us_since(t0);
           std::cout.width(5);
           std::cout << d << ' ';
           std::cout.width(16);
           std::cout << n << ' ';
           std::cout.width(14);
-          std::cout << static_cast<std::uint64_t>(dt) << ' ';
+          std::cout << time_string(elapsed_us) << ' ';
           std::cout.width(15);
-          std::cout << nps_string(n, dt) << '\n';
+          std::cout << nps_string(n, elapsed_us) << '\n';
         }
       }
 
@@ -332,7 +340,17 @@ namespace islay {
             grouped_count("1000") != "1,000" || grouped_count("999999") != "999,999" ||
             grouped_count("1000000") != "1,000,000" ||
             grouped_count("18446744073709551615") != "18,446,744,073,709,551,615" ||
-            grouped_count(nps_string(1, 0)) != "inf" || grouped_count(nps_string(1234567, 1000)) != "1,234,567") {
+            grouped_count(nps_string(1, 0)) != "inf" || grouped_count(nps_string(1234567, 1'000'000)) != "1,234,567") {
+          std::cout << "FAILED\n";
+          return;
+        }
+        std::cout << "ok\n";
+
+        std::cout << "microsecond timing self-test ... " << std::flush;
+        if (time_string(0) != "0.000000000" || time_string(0.125) != "0.000000125" ||
+            time_string(1234.5) != "0.001234500" || time_string(1'000'000) != "1.000000000" ||
+            nps_string(1, 0.5) != "2000000" || nps_string(1000, 250) != "4000000" || nps_string(1, 3) != "333333" ||
+            nps_string(0, 10) != "0" || nps_string(1, -1) != "inf") {
           std::cout << "FAILED\n";
           return;
         }

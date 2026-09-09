@@ -1,0 +1,16 @@
+diff --git a/perft.cpp b/perft.cpp
+index 4667913..bfad729 100644
+--- a/perft.cpp
++++ b/perft.cpp
+@@ -45 +45 @@ namespace islay {
+-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_impl(const Board &b, int depth) noexcept {
++    ISLAY_HOT std::uint64_t perft_impl(const Board &b, int depth) noexcept {
+@@ -78 +78 @@ namespace islay {
+-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_td(const Board &b) noexcept {
++    ISLAY_HOT std::uint64_t perft_td(const Board &b) noexcept {
+@@ -175 +175 @@ namespace islay {
+-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_cached_impl(const Board &b, int depth, PerftTT &tt) noexcept {
++    ISLAY_HOT std::uint64_t perft_cached_impl(const Board &b, int depth, PerftTT &tt) noexcept {
+@@ -221 +221 @@ namespace islay {
+-    ISLAY_HOT ISLAY_FLATTEN std::uint64_t perft_cached_td(const Board &b, PerftTT &tt) noexcept {
++    ISLAY_HOT std::uint64_t perft_cached_td(const Board &b, PerftTT &tt) noexcept {

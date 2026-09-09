@@ -1,0 +1,55 @@
+diff --git a/perft.cpp b/perft.cpp
+index 4667913..7e656cc 100644
+--- a/perft.cpp
++++ b/perft.cpp
+@@ -43,0 +44,16 @@ namespace islay {
++    template<Rule R>
++#if defined(_MSC_VER)
++    __declspec(noinline)
++#elif defined(__GNUC__) || defined(__clang__)
++    __attribute__((noinline))
++#endif
++    [[nodiscard]] std::uint64_t perft2_scalar(const Board &b, Bitboard moves) noexcept {
++      std::uint64_t total = 0;
++      while (moves) {
++        const Board child = b.play(pop_lsb(moves));
++        const Bitboard replies = child.moves();
++        total += replies ? static_cast<std::uint64_t>(popcount(replies)) : stuck_leaf_count<R>(child);
++      }
++      return total;
++    }
++
+@@ -64,2 +80,2 @@ namespace islay {
+-      if constexpr (movegen_batch_width() > 1) {
+-        if (depth == 2)
++      if (depth == 2) {
++        if constexpr (movegen_batch_width() > 1)
+@@ -66,0 +83,2 @@ namespace islay {
++        else
++          return perft2_scalar<R>(b, moves);
+@@ -95,2 +113,6 @@ namespace islay {
+-        if constexpr (D == 2 && movegen_batch_width() > 1)
+-          return perft2_batched<R>(b, moves);
++        if constexpr (D == 2) {
++          if constexpr (movegen_batch_width() > 1)
++            return perft2_batched<R>(b, moves);
++          else
++            return perft2_scalar<R>(b, moves);
++        }
+@@ -204,2 +226,2 @@ namespace islay {
+-      if constexpr (movegen_batch_width() > 1) {
+-        if (depth == 2)
++      if (depth == 2) {
++        if constexpr (movegen_batch_width() > 1)
+@@ -206,0 +229,2 @@ namespace islay {
++        else
++          return perft2_scalar<R>(b, moves);
+@@ -246,2 +270,6 @@ namespace islay {
+-        if constexpr (D == 2 && movegen_batch_width() > 1)
+-          return perft2_batched<R>(b, moves);
++        if constexpr (D == 2) {
++          if constexpr (movegen_batch_width() > 1)
++            return perft2_batched<R>(b, moves);
++          else
++            return perft2_scalar<R>(b, moves);
++        }

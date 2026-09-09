@@ -1,5 +1,8 @@
 # Single-thread perft experiments — 2026-09-09
 
+The subsequent [inlining follow-up](PERFT_FOLLOWUP.md) measures further changes
+against commit `c608210`, after the optimization described here.
+
 ## Retained change
 
 The retained implementation probes the transposition table before generating

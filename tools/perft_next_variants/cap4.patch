@@ -1,0 +1,38 @@
+diff --git a/perft.cpp b/perft.cpp
+index 4667913..1360f8f 100644
+--- a/perft.cpp
++++ b/perft.cpp
+@@ -118,16 +117,0 @@ namespace islay {
+-        case 5:
+-          return perft_td<R, 5>(b);
+-        case 6:
+-          return perft_td<R, 6>(b);
+-        case 7:
+-          return perft_td<R, 7>(b);
+-        case 8:
+-          return perft_td<R, 8>(b);
+-        case 9:
+-          return perft_td<R, 9>(b);
+-        case 10:
+-          return perft_td<R, 10>(b);
+-        case 11:
+-          return perft_td<R, 11>(b);
+-        case 12:
+-          return perft_td<R, 12>(b);
+@@ -279,16 +262,0 @@ namespace islay {
+-        case 5:
+-          return perft_cached_td<R, 5>(b, tt);
+-        case 6:
+-          return perft_cached_td<R, 6>(b, tt);
+-        case 7:
+-          return perft_cached_td<R, 7>(b, tt);
+-        case 8:
+-          return perft_cached_td<R, 8>(b, tt);
+-        case 9:
+-          return perft_cached_td<R, 9>(b, tt);
+-        case 10:
+-          return perft_cached_td<R, 10>(b, tt);
+-        case 11:
+-          return perft_cached_td<R, 11>(b, tt);
+-        case 12:
+-          return perft_cached_td<R, 12>(b, tt);
