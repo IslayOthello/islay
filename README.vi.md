@@ -9,6 +9,8 @@ với giao diện văn bản kiểu UCI. Dự án hỗ trợ thiết lập thế
 Đã có inference ONNX cho mạng residual **8x64**, dùng chung trunk với hai head policy/value.
 Mặc định vẫn dùng policy đều/value 0; chưa cung cấp trọng số đã train.
 Xem [NEURAL.md](NEURAL.md) để export/nạp cấu hình B và xem kết quả đo throughput.
+Đã có self-play/replay offline: root noise, cache neural có giới hạn, shard atomic/resume
+và đọc batch vectorized. Hướng dẫn và phép đo: [SELFPLAY.md](SELFPLAY.md).
 
 ## Chức năng
 

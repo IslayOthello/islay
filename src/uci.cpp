@@ -22,6 +22,7 @@
 #include "options.hpp"
 #include "perft.hpp"
 #include "search_controller.hpp"
+#include "selfplay.hpp"
 
 namespace islay {
   namespace {
@@ -480,6 +481,12 @@ namespace islay {
 
         out_ << "neural encoding self-test ... ";
         if (!neural_selftest()) {
+          out_ << "FAILED\n";
+          return;
+        }
+        out_ << "ok\n";
+        out_ << "self-play/replay self-test ... ";
+        if (!selfplay_selftest()) {
           out_ << "FAILED\n";
           return;
         }

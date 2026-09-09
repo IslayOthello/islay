@@ -133,6 +133,14 @@ namespace islay {
           Node child;
           child.action = static_cast<std::uint8_t>(actions[i]);
           child.prior  = static_cast<float>(probabilities[i] / total);
+          if (index == 0) {
+            result_.network_priors[actions[i]] = child.prior;
+            if (limits_.exploration) {
+              const auto &exploration = *limits_.exploration;
+              child.prior             = static_cast<float>((1 - exploration.fraction) * child.prior +
+                                                           exploration.fraction * exploration.noise[actions[i]]);
+            }
+          }
           nodes_.push_back(child);
         }
         nodes_[index].first_child = first;
@@ -230,6 +238,20 @@ namespace islay {
     if (rule != Rule::Othello || (board.player & board.opponent) || !std::isfinite(limits.c_puct) ||
         limits.c_puct < 0 || limits.c_puct > 1e6)
       throw std::invalid_argument("MCTS requires Othello, disjoint discs and c_puct in [0, 1000000]");
+    if (limits.exploration) {
+      const auto &e      = *limits.exploration;
+      const auto  status = game_status(board);
+      double      total  = 0;
+      if (!std::isfinite(e.fraction) || e.fraction < 0 || e.fraction > 1)
+        throw std::invalid_argument("root noise fraction must be in [0,1]");
+      for (int a = 0; a < kPolicySize; ++a) {
+        if (!std::isfinite(e.noise[a]) || e.noise[a] < 0 || (!status.legal(a) && e.noise[a] != 0))
+          throw std::invalid_argument("root noise must be finite and legal");
+        total += e.noise[a];
+      }
+      if (!status.terminal() && std::abs(total - 1) > 1e-5)
+        throw std::invalid_argument("root noise must sum to one");
+    }
     return Search(board, evaluator, limits, stop).run();
   }
 

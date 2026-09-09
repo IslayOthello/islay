@@ -241,7 +241,8 @@ why traversal ended, even if an infinite search subsequently waited for `stop`.
   elapsed time. `time` is integer milliseconds. Both include worker startup/cleanup and, for
   infinite searches, time waiting for `stop`. Machine-readable fields never contain commas.
 - `value` is mover-relative expected outcome in [-1,1], not centipawns or win probability.
-- Only final search info is emitted, not periodic progress. There is no root noise.
+- Only final search info is emitted, not periodic progress. UCI search has no root noise;
+  exploration is confined to the separate offline [self-play executable](SELFPLAY.md).
 - Finite searches return early if the arena fills. Infinite searches park without spinning when
   memory or terminal ends traversal, and publish only when stopped. They do not allocate past the cap.
 - Search failures emit an explicit diagnostic and a legal fallback (or `0000` if terminal).
@@ -266,7 +267,7 @@ Search does not reuse PerftTT or change perft semantics.
 | d / display / board | Print the current board, side to move, disc counts, and legal moves |
 | backend | Print the compiled move-generation and neural backends (`onnx-cpu` or `disabled`) |
 | bench [depth] | Uncached start-position perft from depth 1 through depth (default 11), under the selected rule; fractional `time(s)` and integer NPS |
-| test / selftest | Run movegen, Othello game adapter, PUCT core/controller, neural encoding, known perft, cache, symmetry, and rule checks |
+| test / selftest | Run movegen, Othello game adapter, PUCT core/controller, neural encoding, self-play/replay, known perft, cache, symmetry, and rule checks |
 
 The test suite ends with `ALL TESTS PASSED` on success.
 Run `python3 tools/uci_search_test.py build/islay` for black-box search lifecycle,

@@ -61,6 +61,7 @@ add_executable(islay
         src/mcts_selftest.cpp
         src/search_controller.cpp
         src/neural.cpp
+        src/selfplay.cpp
         src/options.cpp
         src/perft.cpp
         src/uci.cpp)
@@ -164,4 +165,19 @@ if(ISLAY_ONNX)
     if(ISLAY_LTO AND ISLAY_IPO_OK)
         set_property(TARGET islay_nn_probe PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
     endif()
+endif()
+
+# Self-play/verification share the production rules and PUCT; Python only manages data.
+add_executable(islay-selfplay src/selfplay_main.cpp src/selfplay.cpp src/mcts.cpp src/neural.cpp
+                             src/game.cpp src/board.cpp src/movegen.cpp)
+target_include_directories(islay-selfplay PRIVATE src)
+target_compile_definitions(islay-selfplay PRIVATE $<TARGET_PROPERTY:islay,COMPILE_DEFINITIONS>)
+target_compile_options(islay-selfplay PRIVATE $<TARGET_PROPERTY:islay,COMPILE_OPTIONS>)
+target_link_libraries(islay-selfplay PRIVATE Threads::Threads)
+if(ISLAY_ONNX)
+    target_include_directories(islay-selfplay SYSTEM PRIVATE ${ONNXRUNTIME_INCLUDE_DIR})
+    target_link_libraries(islay-selfplay PRIVATE ${ONNXRUNTIME_LIBRARY})
+endif()
+if(ISLAY_LTO AND ISLAY_IPO_OK)
+    set_property(TARGET islay-selfplay PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 endif()

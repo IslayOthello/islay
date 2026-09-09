@@ -12,6 +12,7 @@ namespace islay {
   void                      encode_neural_board(const Board &board, std::span<float, kNeuralInputSize> planes);
   [[nodiscard]] bool        neural_selftest();
   [[nodiscard]] const char *neural_backend() noexcept;
+  [[nodiscard]] const char *neural_runtime_version() noexcept;
 
   // CPU reference backend; one owner/call at a time, no internal worker pool.
   // Metadata declares a checkpoint identity, not an authenticity guarantee.

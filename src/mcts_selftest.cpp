@@ -128,6 +128,43 @@ namespace islay {
           return false;
       }
 
+      RootExploration exploration;
+      exploration.noise[19]    = 1;
+      exploration.fraction     = 1;
+      auto noisy_limits        = limits;
+      noisy_limits.simulations = 0;
+      noisy_limits.exploration = &exploration;
+      const auto noisy         = mcts_search(start, Rule::Othello, evaluator, noisy_limits);
+      for (int i = 0; i < noisy.action_count; ++i) {
+        const auto &a = noisy.actions[i];
+        if (noisy.network_priors[a.action] != 0.25f || a.prior != (a.action == 19 ? 1 : 0))
+          return false;
+      }
+      exploration.fraction     = 0;
+      noisy_limits.simulations = limits.simulations;
+      if (!same_tree(baseline, mcts_search(start, Rule::Othello, evaluator, noisy_limits)))
+        return false;
+      for (int test = 0; test < 4; ++test) {
+        exploration           = {};
+        exploration.noise[19] = 1;
+        if (test == 0)
+          exploration.fraction = -1;
+        if (test == 1)
+          exploration.noise[0] = 1;
+        if (test == 2)
+          exploration.noise[19] = 0.5f;
+        if (test == 3)
+          exploration.noise[19] = std::numeric_limits<float>::quiet_NaN();
+        bool rejected = false;
+        try {
+          (void) mcts_search(start, Rule::Othello, evaluator, noisy_limits);
+        } catch (const std::invalid_argument &) {
+          rejected = true;
+        }
+        if (!rejected)
+          return false;
+      }
+
       for (const Board board: {Board{~Bitboard{0}, 0}, Board{0, ~Bitboard{0}}, Board{1, 0}, Board{0, 1},
                                Board{0xffffffffULL, 0xffffffff00000000ULL}, Board{0, 0}}) {
         const auto calls = evaluator.calls;

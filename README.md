@@ -9,6 +9,8 @@ Experimental Othello PUCT search supports `go nodes`, `go movetime`, `go infinit
 and `stop`. Optional ONNX inference connects a shared 8x64 residual policy/value network
 to PUCT. The default remains uniform policy/zero value; no trained weights are included.
 See [NEURAL.md](NEURAL.md) for architecture B, export, inference and measured throughput.
+Offline self-play/replay now includes root exploration, a bounded neural cache, atomic
+resumable shards and vectorized training batches. See [SELFPLAY.md](SELFPLAY.md).
 
 ## Features
 

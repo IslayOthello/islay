@@ -96,6 +96,7 @@ namespace islay {
   };
 
   const char *neural_backend() noexcept { return "onnx-cpu"; }
+  const char *neural_runtime_version() noexcept { return OrtGetApiBase()->GetVersionString(); }
 
   NeuralEvaluator::NeuralEvaluator(const std::string &path, bool optimize) :
       impl_(std::make_unique<Impl>(path, optimize)) {
@@ -166,6 +167,7 @@ namespace islay {
 #else
   struct NeuralEvaluator::Impl {};
   const char *neural_backend() noexcept { return "disabled"; }
+  const char *neural_runtime_version() noexcept { return "none"; }
   NeuralEvaluator::NeuralEvaluator(const std::string &, bool) {
     throw std::runtime_error("neural inference unavailable; rebuild with ISLAY_ONNX=ON");
   }

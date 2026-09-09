@@ -13,11 +13,17 @@ namespace islay {
   using MctsClock                  = std::chrono::steady_clock;
   inline constexpr int kMctsMaxPly = 128;
 
+  struct RootExploration {
+    std::array<float, kPolicySize> noise{}; // normalized over legal actions only
+    double                         fraction = 0.25;
+  };
+
   struct MctsLimits {
-    std::uint64_t simulations      = 800;
-    std::size_t   tree_bytes       = 64 * 1024 * 1024; // arena only; excludes evaluator and fixed stack/result storage
-    MctsClock::time_point deadline = MctsClock::time_point::max();
-    double                c_puct   = 1.5;
+    std::uint64_t simulations       = 800;
+    std::size_t   tree_bytes        = 64 * 1024 * 1024; // arena only; excludes evaluator and fixed stack/result storage
+    MctsClock::time_point  deadline = MctsClock::time_point::max();
+    double                 c_puct   = 1.5;
+    const RootExploration *exploration = nullptr; // self-play only; valid for this synchronous call
   };
 
   enum class MctsStop { SimulationLimit, Deadline, Cancelled, MemoryLimit, Terminal };
@@ -39,6 +45,7 @@ namespace islay {
     double                              value{};
     double                              elapsed_us{};
     std::array<RootAction, kPolicySize> actions{};
+    std::array<float, kPolicySize>      network_priors{}; // legal softmax before root noise
     int                                 action_count{};
     std::array<Square, kMctsMaxPly>     pv{};
     int                                 pv_length{};

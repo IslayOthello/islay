@@ -57,6 +57,9 @@ namespace islay {
     cancel();
     if (rule != Rule::Othello)
       throw std::invalid_argument("MCTS supports Rule=Othello only");
+    // Offline exploration is borrowed by synchronous self-play, never by the worker.
+    if (limits.exploration)
+      throw std::invalid_argument("root exploration is only supported by offline self-play");
     publish_           = true;
     const auto started = MctsClock::now();
     worker_            = std::jthread(
@@ -130,6 +133,17 @@ namespace islay {
     controller.stop();
     if (output.str().find("bestmove pass\n") == std::string::npos)
       return false;
+    RootExploration exploration;
+    limits.exploration = &exploration;
+    bool rejected      = false;
+    try {
+      controller.start(Board::start(), Rule::Othello, limits, false);
+    } catch (const std::invalid_argument &) {
+      rejected = true;
+    }
+    if (!rejected)
+      return false;
+    limits.exploration = nullptr;
     try {
       controller.start(Board::start(), Rule::Reversi, limits, false);
     } catch (const std::invalid_argument &) {

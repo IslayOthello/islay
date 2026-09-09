@@ -1,8 +1,9 @@
 # Configuration B: shared policy/value network
 
 P3 implements the model, checkpoint export, optional C++ inference and UCI integration.
-It does **not** supply trained playing strength, self-play generation, a replay trainer or
-an arena/champion loop. The generated random checkpoint is a test/bootstrap artifact.
+P4 now supplies [self-play generation and replay loading](SELFPLAY.md). Neither step supplies
+trained playing strength, a replay trainer or an arena/champion loop. The generated random
+checkpoint is a test/bootstrap artifact.
 
 ## Fixed contract
 
