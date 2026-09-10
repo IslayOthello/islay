@@ -260,6 +260,8 @@ Search does not reuse PerftTT or change perft semantics.
 For offline candidate/champion matches, [ARENA.md](ARENA.md) documents a persistent UCI
 client with paired openings, fixed simulation or requested-movetime budgets, independent
 move/result validation and atomic whole-pair resume. It adds no engine protocol commands.
+The [P7 shared-model producer](BATCHED_SELFPLAY.md) uses a separate private worker executable;
+UCI `EvalFile` loading and single-worker search are unchanged.
 
 ## Debug Commands
 

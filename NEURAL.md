@@ -174,8 +174,9 @@ optimizations enabled (range -0.87% to +4.87%); this is a small/noisy pilot impr
 not a general speed guarantee. Enabled remains the reference default. A second full run
 measured 1,035 positions/s at C++ batch 1, versus 1,115 initially. Its 20 active-search stop
 round trips had median **208 µs**, p95 **598 µs**, including protocol/Python scheduling.
-No shared-tree parallelism, GPU C++ backend or search batching is implemented yet.
+No shared-tree parallelism or in-process GPU C++ backend is implemented. Offline
+[P7 self-play](BATCHED_SELFPLAY.md) can use a shared CPU/MPS model owner through private shm.
 Self-play/replay, training and [arena evaluation](ARENA.md) now have their own validation gates.
-Batching independent games remains a next step. Inference positions/s are **not search NPS, perft NPS or Elo**.
+Independent-game batching is opt-in; UCI search stays unchanged. Inference positions/s are **not search NPS, perft NPS or Elo**.
 These P3 speed measurements are not strength results; see [ARENA.md](ARENA.md) for the later
 low-budget bootstrap comparison of trained and initial weights.

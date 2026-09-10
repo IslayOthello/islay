@@ -167,7 +167,7 @@ if(ISLAY_ONNX)
     endif()
 endif()
 
-# Self-play/verification share the production rules and PUCT; Python only manages data.
+# Serial self-play/verification share the production rules and PUCT; Python manages data.
 add_executable(islay-selfplay src/selfplay_main.cpp src/selfplay.cpp src/mcts.cpp src/neural.cpp
                              src/game.cpp src/board.cpp src/movegen.cpp)
 target_include_directories(islay-selfplay PRIVATE src)
@@ -180,4 +180,17 @@ if(ISLAY_ONNX)
 endif()
 if(ISLAY_LTO AND ISLAY_IPO_OK)
     set_property(TARGET islay-selfplay PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+endif()
+
+# Private POSIX shm inference client: independent trees, no ONNX/model copy in workers.
+if(UNIX)
+    add_executable(islay-selfplay-worker src/selfplay_worker.cpp src/selfplay.cpp src/mcts.cpp
+                                        src/game.cpp src/board.cpp src/movegen.cpp)
+    target_include_directories(islay-selfplay-worker PRIVATE src)
+    target_compile_definitions(islay-selfplay-worker PRIVATE $<TARGET_PROPERTY:islay,COMPILE_DEFINITIONS>)
+    target_compile_options(islay-selfplay-worker PRIVATE $<TARGET_PROPERTY:islay,COMPILE_OPTIONS>)
+    target_link_libraries(islay-selfplay-worker PRIVATE Threads::Threads)
+    if(ISLAY_LTO AND ISLAY_IPO_OK)
+        set_property(TARGET islay-selfplay-worker PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    endif()
 endif()

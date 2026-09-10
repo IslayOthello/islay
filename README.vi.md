@@ -14,6 +14,8 @@ và đọc batch vectorized. Hướng dẫn và phép đo: [SELFPLAY.md](SELFPLA
 Trainer FP32 đã có CPU/MPS, replay window cố định và checkpoint/resume đầy đủ trạng thái.
 Xem [TRAINING.md](TRAINING.md) để chạy huấn luyện và [ARENA.md](ARENA.md) để đấu candidate/champion
 theo cặp opening, resume và chọn model có gate. Không tự triển khai model hay đổi trọng số mặc định.
+[Self-play theo batch](BATCHED_SELFPLAY.md) dùng một model CPU/MPS chung cho nhiều worker C++,
+truyền tensor qua shm và giữ cohort cố định để resume.
 
 ## Chức năng
 

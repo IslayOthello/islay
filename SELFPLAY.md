@@ -206,6 +206,7 @@ at open, and cold disk reads are excluded. The 100-game corpus occupies about 5.
 its ONNX snapshot and indexes; sample payload alone is 3,383,520 bytes.
 
 The [P5 trainer/checkpoint loop](TRAINING.md) consumes these replay shards, and the [P6 arena](ARENA.md)
-compares exported candidates against a frozen champion. Independent-game GPU batching remains future work.
+compares exported candidates against a frozen champion. The opt-in [P7 producer](BATCHED_SELFPLAY.md)
+adds shared-model CPU/MPS inference batches across independent games; this serial producer remains the reference.
 These low-budget bootstrap games and throughput measurements do not establish Elo or the
 quality/optimality of the chosen exploration settings.

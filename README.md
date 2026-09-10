@@ -15,6 +15,8 @@ The FP32 trainer adds CPU/MPS execution, frozen replay windows and full-state ch
 See [TRAINING.md](TRAINING.md) for the learning workflow and measured performance.
 The [paired arena](ARENA.md) adds fixed-sample candidate/champion evaluation and resumable
 selection artifacts; no model is automatically deployed or supplied as a proven strong default.
+Opt-in [batched self-play](BATCHED_SELFPLAY.md) shares one CPU/MPS model across native workers
+using private shm buffers and deterministic, resumable cohorts.
 
 ## Features
 

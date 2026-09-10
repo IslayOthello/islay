@@ -149,8 +149,8 @@ pin the loaded C++ dynamic libraries. Node-mode exact replay was tested on the s
 `final/report.json` records `selected_role` and the corresponding snapshot hash. It does not
 modify UCI defaults, replace any user's checkpoint, or update an external champion registry.
 After inspecting a successful trial, the selected snapshot can explicitly feed the next
-[self-play](SELFPLAY.md) generation. Automated training scheduling and GPU self-play batching
-remain separate work.
+[self-play](SELFPLAY.md) generation, optionally using [P7 shared-model batches](BATCHED_SELFPLAY.md).
+Automated training scheduling remains separate work; the arena itself still uses native ONNX CPU UCI search.
 
 ## Validation and throughput
 

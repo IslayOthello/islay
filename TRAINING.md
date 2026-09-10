@@ -18,6 +18,9 @@ _build/nn-venv/bin/python training/train.py \
   --device mps --steps 1000
 ```
 
+Replay from the opt-in [shared-model batch producer](BATCHED_SELFPLAY.md) uses the same record
+format and can be supplied through `--replay` without conversion.
+
 `--steps` is the target number of optimizer updates **in this run**, not an increment.
 The output directory must be fresh unless resuming. To continue the same run:
 
