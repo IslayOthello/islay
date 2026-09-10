@@ -1,9 +1,9 @@
 # Configuration B: shared policy/value network
 
 P3 implements the model, checkpoint export, optional C++ inference and UCI integration.
-P4 now supplies [self-play generation and replay loading](SELFPLAY.md). Neither step supplies
-trained playing strength, a replay trainer or an arena/champion loop. The generated random
-checkpoint is a test/bootstrap artifact.
+P4 supplies [self-play generation and replay loading](SELFPLAY.md); the
+[P5 trainer](TRAINING.md) adds full-state checkpoint/resume. No trained playing-strength
+result or arena/champion loop is supplied yet. The random checkpoint is a test/bootstrap artifact.
 
 ## Fixed contract
 
@@ -174,6 +174,6 @@ not a general speed guarantee. Enabled remains the reference default. A second f
 measured 1,035 positions/s at C++ batch 1, versus 1,115 initially. Its 20 active-search stop
 round trips had median **208 µs**, p95 **598 µs**, including protocol/Python scheduling.
 No shared-tree parallelism, GPU C++ backend or search batching is implemented yet.
-The useful next step is self-play/replay correctness, then batching independent games to
-exploit GPU throughput. Inference positions/s are **not search NPS, perft NPS or Elo**.
+Self-play/replay and the trainer now have their own validation gates. Arena evaluation and
+batching independent games remain next steps. Inference positions/s are **not search NPS, perft NPS or Elo**.
 No paired arena strength result exists for these untrained weights.

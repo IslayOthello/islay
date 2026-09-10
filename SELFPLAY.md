@@ -143,7 +143,7 @@ augmentation; every position/orientation from one game stays in one split. Small
 can have an empty split and sampling it fails explicitly. Index memory is O(samples),
 payload is mmap-backed, and a batch is capped at 65,536 samples. The default directory cap
 is intended for a pilot, not an unlimited replay window. `Replay` is a fixed snapshot;
-reopen it to see newly committed shards. A replay-window/trainer policy belongs to P5.
+reopen it to see newly committed shards. The [trainer](TRAINING.md) adds a bounded whole-game window.
 
 ## Validation and measurement
 
@@ -205,6 +205,7 @@ reference, not an existing optimized dataloader. Training, GPU copies, checksum 
 at open, and cold disk reads are excluded. The 100-game corpus occupies about 5.63 MiB including
 its ONNX snapshot and indexes; sample payload alone is 3,383,520 bytes.
 
-Next: build the P5 training/checkpoint loop, then batch independent games for GPU throughput.
+The [P5 trainer/checkpoint loop](TRAINING.md) now consumes these replay shards. Arena gating
+and batching independent games for GPU throughput remain future steps.
 These low-budget bootstrap games and throughput measurements do not establish Elo or the
 quality/optimality of the chosen exploration settings.

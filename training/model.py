@@ -90,5 +90,13 @@ def policy_value_loss(logits, value, target_policy, outcome, legal):
         raise ValueError("target policy must sum to one over legal actions")
     if not torch.isfinite(outcome).all() or (outcome.abs() > 1).any():
         raise ValueError("invalid outcome")
+    policy, mse, _ = policy_value_terms(logits, value, target_policy, outcome, legal)
+    return policy.mean() + mse.mean()
+
+
+def policy_value_terms(logits, value, target_policy, outcome, legal):
+    """Per-position terms for already validated batches; avoid per-field GPU synchronization."""
     logp = torch.log_softmax(logits.masked_fill(~legal, -torch.inf), dim=1).masked_fill(~legal, 0)
-    return -(target_policy * logp).sum(dim=1).mean() + (value - outcome).square().mean()
+    probabilities = logp.exp().masked_fill(~legal, 0)
+    return (-(target_policy * logp).sum(dim=1), (value - outcome).square().flatten(),
+            -(probabilities * logp).sum(dim=1))

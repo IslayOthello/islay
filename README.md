@@ -11,6 +11,9 @@ to PUCT. The default remains uniform policy/zero value; no trained weights are i
 See [NEURAL.md](NEURAL.md) for architecture B, export, inference and measured throughput.
 Offline self-play/replay now includes root exploration, a bounded neural cache, atomic
 resumable shards and vectorized training batches. See [SELFPLAY.md](SELFPLAY.md).
+The FP32 trainer adds CPU/MPS execution, frozen replay windows and full-state checkpoint/resume.
+See [TRAINING.md](TRAINING.md) for the learning workflow and measured performance; no champion
+or trained-strength result is provided yet.
 
 ## Features
 
