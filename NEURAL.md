@@ -3,7 +3,8 @@
 P3 implements the model, checkpoint export, optional C++ inference and UCI integration.
 P4 supplies [self-play generation and replay loading](SELFPLAY.md); the
 [P5 trainer](TRAINING.md) adds full-state checkpoint/resume. No trained playing-strength
-result or arena/champion loop is supplied yet. The random checkpoint is a test/bootstrap artifact.
+result is supplied by these foundations. The [P6 arena](ARENA.md) provides paired offline selection;
+the random checkpoint remains a test/bootstrap artifact.
 
 ## Fixed contract
 
@@ -174,6 +175,7 @@ not a general speed guarantee. Enabled remains the reference default. A second f
 measured 1,035 positions/s at C++ batch 1, versus 1,115 initially. Its 20 active-search stop
 round trips had median **208 µs**, p95 **598 µs**, including protocol/Python scheduling.
 No shared-tree parallelism, GPU C++ backend or search batching is implemented yet.
-Self-play/replay and the trainer now have their own validation gates. Arena evaluation and
-batching independent games remain next steps. Inference positions/s are **not search NPS, perft NPS or Elo**.
-No paired arena strength result exists for these untrained weights.
+Self-play/replay, training and [arena evaluation](ARENA.md) now have their own validation gates.
+Batching independent games remains a next step. Inference positions/s are **not search NPS, perft NPS or Elo**.
+These P3 speed measurements are not strength results; see [ARENA.md](ARENA.md) for the later
+low-budget bootstrap comparison of trained and initial weights.

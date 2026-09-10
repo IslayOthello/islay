@@ -12,7 +12,8 @@ Xem [NEURAL.md](NEURAL.md) để export/nạp cấu hình B và xem kết quả 
 Đã có self-play/replay offline: root noise, cache neural có giới hạn, shard atomic/resume
 và đọc batch vectorized. Hướng dẫn và phép đo: [SELFPLAY.md](SELFPLAY.md).
 Trainer FP32 đã có CPU/MPS, replay window cố định và checkpoint/resume đầy đủ trạng thái.
-Xem [TRAINING.md](TRAINING.md) để chạy huấn luyện; chưa có champion hay kết quả chứng minh sức cờ.
+Xem [TRAINING.md](TRAINING.md) để chạy huấn luyện và [ARENA.md](ARENA.md) để đấu candidate/champion
+theo cặp opening, resume và chọn model có gate. Không tự triển khai model hay đổi trọng số mặc định.
 
 ## Chức năng
 

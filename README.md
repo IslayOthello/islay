@@ -12,8 +12,9 @@ See [NEURAL.md](NEURAL.md) for architecture B, export, inference and measured th
 Offline self-play/replay now includes root exploration, a bounded neural cache, atomic
 resumable shards and vectorized training batches. See [SELFPLAY.md](SELFPLAY.md).
 The FP32 trainer adds CPU/MPS execution, frozen replay windows and full-state checkpoint/resume.
-See [TRAINING.md](TRAINING.md) for the learning workflow and measured performance; no champion
-or trained-strength result is provided yet.
+See [TRAINING.md](TRAINING.md) for the learning workflow and measured performance.
+The [paired arena](ARENA.md) adds fixed-sample candidate/champion evaluation and resumable
+selection artifacts; no model is automatically deployed or supplied as a proven strong default.
 
 ## Features
 

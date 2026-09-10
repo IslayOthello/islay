@@ -3,7 +3,7 @@
 The trainer consumes validated P4 replay and updates the fixed **8x64 shared policy/value
 network**. It provides bounded replay windows, FP32 CPU/MPS training, full-state resume,
 atomic checkpoints and export compatibility. It does not choose a champion or infer Elo;
-paired arena evaluation and automatic promotion belong to P6.
+paired evaluation and offline selection are handled by the [P6 arena](ARENA.md), without automatic deployment.
 
 ## Train, resume, export
 
@@ -202,14 +202,14 @@ same full state as a continuous run, preserving already committed files and lock
 
 A fixed eight-position training batch overfit in 120 CPU updates: total data loss
 **3.0034 → 0.3431**, eval-mode loss **0.3431**. This checks learning/export-mode mechanics;
-it is deliberately not a generalization or Elo result. Arena and champion selection remain P6.
+it is deliberately not a generalization or Elo result. See [P6](ARENA.md) for paired arena selection.
 
 The integration smoke trained 64 MPS updates, resumed to 80, exported ONNX and checked
 272 positions plus batches 1/8/32/128 against C++ ONNX Runtime. Maximum absolute output
 error was **3.49e-6**; a further train/BatchNorm/export check stayed below **3.76e-6**.
 The exported model then completed **20 fresh self-play games / 1,209 validated samples**
 at 16 simulations per move. This exercises self-play → train/resume → export → self-play,
-not the pending arena/champion gate. Checkpoint and ONNX SHA256 respectively:
+not an arena/champion result. Checkpoint and ONNX SHA256 respectively:
 
 ```text
 5ae5ffb49d668600c29b2f31a7d2a13c3a19bf7b6dafc18fa266ced0304376bc

@@ -257,6 +257,10 @@ why traversal ended, even if an infinite search subsequently waited for `stop`.
 Human perft `Time` stays in seconds and its `Nodes searched`/`Speed` remain comma-grouped.
 Search does not reuse PerftTT or change perft semantics.
 
+For offline candidate/champion matches, [ARENA.md](ARENA.md) documents a persistent UCI
+client with paired openings, fixed simulation or requested-movetime budgets, independent
+move/result validation and atomic whole-pair resume. It adds no engine protocol commands.
+
 ## Debug Commands
 
 `debug on` enables the commands below; `debug off` hides them again.
