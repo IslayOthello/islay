@@ -53,13 +53,12 @@ Thêm `nocache` để đếm không dùng bảng cache:
 go perft 8 nocache
 ```
 
-Các option: `Rule` (`Othello` hoặc `Reversi`), `PerftHash` (cache MiB, mặc định 256),
-`MctsHash` (bộ nhớ cây PUCT MiB, mặc định 64), `EvalFile` (đường dẫn ONNX, mặc định rỗng).
-Perft vẫn đồng bộ, đơn luồng.
-Search chạy một worker có thể dừng, chỉ hỗ trợ luật Othello. Chưa hỗ trợ `go depth`,
-clock/increment đầy đủ và option book. Đợi `bestmove` rồi mới gửi `quit`.
-
-Xem [UCI.md](UCI.md) để biết cú pháp lệnh, định dạng thế cờ và hành vi perft.
+Các option: `Rule` (`Othello` hoặc `Reversi`), `PerftHash` (cache MiB, mặc định 512),
+`MctsHash` (bộ nhớ cây PUCT MiB, mặc định 64), `EvalFile` (đường dẫn ONNX hoặc binary `.bin`, mặc định rỗng).
+Perft chạy đồng bộ, đơn luồng.
+Search chạy worker nền có thể dừng, hỗ trợ luật Othello với Fischer clock (`wtime`/`btime`/`winc`/`binc`/`movestogo`),
+`movetime`, `nodes`, hoặc `infinite`. Có sẵn các lệnh visual inspection `value` / `eval` và `policy` trực tiếp trên terminal.
+Xem [UCI.md](UCI.md) để biết đầy đủ danh sách lệnh (`datagen`, `train`, `value`, `policy`, `go`, `position`, `setoption`).
 
 ## Kiểm thử
 

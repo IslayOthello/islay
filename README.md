@@ -54,13 +54,12 @@ count without the transposition table:
 go perft 8 nocache
 ```
 
-Options are `Rule` (`Othello` or `Reversi`), `PerftHash` (cache MiB, default 256)
-and `MctsHash` (PUCT arena MiB, default 64), plus `EvalFile` (ONNX path, empty by default).
+Options are `Rule` (`Othello` or `Reversi`), `PerftHash` (cache MiB, default 512)
+and `MctsHash` (PUCT arena MiB, default 64), plus `EvalFile` (ONNX or native `.bin` path, empty by default).
 Perft runs synchronously and single-threaded;
-search runs on one interruptible worker and only supports Othello. `go depth`, full clock
-controls and book options are not supported yet. Wait for `bestmove` before `quit`.
-
-See [UCI.md](UCI.md) for commands, position syntax, perft semantics, and errors.
+search runs on one interruptible worker and supports Othello with Fischer clocks (`wtime`/`btime`/`winc`/`binc`/`movestogo`),
+`movetime`, `nodes`, and `infinite`. Built-in visual inspection commands `value` / `eval` and `policy` render positions directly in terminal.
+See [UCI.md](UCI.md) for the complete command reference (`datagen`, `train`, `value`, `policy`, `go`, `position`, `setoption`).
 
 ## Validation
 
