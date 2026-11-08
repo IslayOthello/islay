@@ -129,9 +129,12 @@ namespace islay {
     while (!game_status(board).terminal()) {
       if (records.size() >= kMctsMaxPly)
         throw std::runtime_error("self-play exceeded Othello ply bound");
-      const auto      status = game_status(board);
+      const auto status      = game_status(board);
+      const auto current_ply = static_cast<std::uint16_t>(records.size());
+      const bool is_opening  = (current_ply < config.opening_plies);
+
       RootExploration exploration;
-      exploration.fraction                  = config.epsilon;
+      exploration.fraction                  = is_opening ? std::max(config.epsilon, 0.5) : config.epsilon;
       double                          total = 0;
       std::array<double, kPolicySize> noise{};
       for (int a = 0; a < kPolicySize; ++a) {
@@ -148,6 +151,7 @@ namespace islay {
       limits.simulations = config.simulations;
       limits.tree_bytes  = config.tree_bytes;
       limits.exploration = &exploration;
+      limits.c_puct      = is_opening ? 2.5 : 1.5;
       const auto result  = mcts_search(board, Rule::Othello, evaluator, limits);
       if (result.reason != MctsStop::SimulationLimit || result.simulations != config.simulations)
         throw std::runtime_error("incomplete self-play search; increase tree budget");
@@ -156,20 +160,63 @@ namespace islay {
       r.board       = board;
       r.legal       = status.moves;
       r.pass        = status.forced_pass;
-      r.ply         = static_cast<std::uint16_t>(records.size());
+      r.ply         = current_ply;
       r.stm         = r.ply % 2;
       r.temperature = r.ply < config.temperature_plies;
       r.priors      = result.network_priors;
       for (int i = 0; i < result.action_count; ++i)
         r.visits[result.actions[i].action] = static_cast<std::uint32_t>(result.actions[i].visits);
       if (r.temperature) {
-        const auto    ticket     = static_cast<std::uint64_t>(rng.uniform() * config.simulations);
-        std::uint64_t cumulative = 0;
-        for (int a = 0; a < kPolicySize; ++a) {
-          cumulative += r.visits[a];
-          if (ticket < cumulative) {
-            r.action = a;
-            break;
+        if (is_opening && current_ply == 0) {
+          // At ply 0, all 4 legal moves (d3, c4, f5, e6) are D4-symmetric official openings.
+          // Sample uniformly among legal visited moves to ensure balanced opening exploration.
+          std::array<int, 4> visited_moves{};
+          int                cnt = 0;
+          for (int a = 0; a < kPolicySize; ++a) {
+            if (r.visits[a] > 0)
+              visited_moves[cnt++] = a;
+          }
+          if (cnt > 0) {
+            const int idx = static_cast<int>(rng.uniform() * cnt);
+            r.action      = visited_moves[std::min(idx, cnt - 1)];
+          } else {
+            r.action = std::max_element(r.visits.begin(), r.visits.end()) - r.visits.begin();
+          }
+        } else if (is_opening) {
+          // Soft exploration for early plies (official opening branches): sample with tau ~ 1.25
+          // (v^0.8) among visited actions to explore parallel/diagonal/perpendicular lines
+          std::array<double, kPolicySize> weights{};
+          double                          weight_sum = 0.0;
+          for (int a = 0; a < kPolicySize; ++a) {
+            if (r.visits[a] > 0) {
+              weights[a] = std::pow(static_cast<double>(r.visits[a]), 0.8);
+              weight_sum += weights[a];
+            }
+          }
+          if (weight_sum > 0.0) {
+            const double ticket     = rng.uniform() * weight_sum;
+            double       cumulative = 0.0;
+            for (int a = 0; a < kPolicySize; ++a) {
+              if (weights[a] > 0.0) {
+                cumulative += weights[a];
+                if (ticket <= cumulative) {
+                  r.action = a;
+                  break;
+                }
+              }
+            }
+          } else {
+            r.action = std::max_element(r.visits.begin(), r.visits.end()) - r.visits.begin();
+          }
+        } else {
+          const auto    ticket     = static_cast<std::uint64_t>(rng.uniform() * config.simulations);
+          std::uint64_t cumulative = 0;
+          for (int a = 0; a < kPolicySize; ++a) {
+            cumulative += r.visits[a];
+            if (ticket < cumulative) {
+              r.action = a;
+              break;
+            }
           }
         }
       } else {
