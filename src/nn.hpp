@@ -69,6 +69,7 @@ namespace islay {
     ModelWeights();
     void                      init_random(std::uint64_t seed = 20260909);
     [[nodiscard]] std::size_t total_trainable_params() const noexcept;
+    void                      apply_ema(const ModelWeights &current, float decay) noexcept;
   };
 
   // Pre-fused weights for zero-overhead inference: Conv + BN folded into Conv + Bias
@@ -144,20 +145,26 @@ namespace islay {
     TrainMetrics train_batch(std::span<const TrainingSample> batch, const OptimizerConfig &opt_cfg);
 
     // Serialization
-    void save(const std::string &path, std::uint64_t training_steps = 0) const;
+    void save(const std::string &path, std::uint64_t training_steps = 0, bool use_ema = false) const;
     void load(const std::string &path);
     void update_fused_weights();
+
+    void update_ema(float decay = 0.999f) noexcept;
+    void fuse_ema() noexcept;
 
     [[nodiscard]] std::uint64_t training_steps() const noexcept { return training_steps_; }
     void                        set_training_steps(std::uint64_t s) noexcept { training_steps_ = s; }
 
     [[nodiscard]] const ModelWeights &weights() const noexcept { return weights_; }
     [[nodiscard]] ModelWeights       &weights() noexcept { return weights_; }
+    [[nodiscard]] const ModelWeights &ema_weights() const noexcept { return ema_weights_; }
 
   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     ModelWeights          weights_;
+    ModelWeights          ema_weights_;
+    bool                  ema_initialized_{false};
     FusedWeights          fused_;
     std::uint64_t         training_steps_{0};
   };

@@ -81,9 +81,57 @@ namespace islay {
         m &= ~kCorners;
       }
 
-      while (m) {
-        const Square sq    = pop_lsb(m);
-        const int    score = -solve_wld(b.play(sq), -beta, -alpha, empties - 1);
+      if (!m)
+        return alpha;
+
+      // Fast path for small empties or 1 remaining move:
+      if (empties <= 4 || !(m & (m - 1))) {
+        while (m) {
+          const Square sq    = pop_lsb(m);
+          const int    score = -solve_wld(b.play(sq), -beta, -alpha, empties - 1);
+          if (score >= beta)
+            return score;
+          if (score > alpha)
+            alpha = score;
+        }
+        return alpha;
+      }
+
+      // Min-mobility heuristic: sort moves by opponent mobility ascending
+      struct MoveScore {
+        Square sq;
+        int    opp_mobility;
+      };
+      std::array<MoveScore, 32> candidates;
+      int                       count = 0;
+      Bitboard                  rem   = m;
+      while (rem) {
+        const Square sq      = pop_lsb(rem);
+        const Board  nb      = b.play(sq);
+        const int    opp_mob = popcount(nb.moves());
+        if (opp_mob == 0) {
+          const int score = -solve_wld(nb, -beta, -alpha, empties - 1);
+          if (score >= beta)
+            return score;
+          if (score > alpha)
+            alpha = score;
+        } else {
+          candidates[count++] = {sq, opp_mob};
+        }
+      }
+
+      for (int i = 1; i < count; ++i) {
+        MoveScore key = candidates[i];
+        int       j   = i - 1;
+        while (j >= 0 && candidates[j].opp_mobility > key.opp_mobility) {
+          candidates[j + 1] = candidates[j];
+          --j;
+        }
+        candidates[j + 1] = key;
+      }
+
+      for (int i = 0; i < count; ++i) {
+        const int score = -solve_wld(b.play(candidates[i].sq), -beta, -alpha, empties - 1);
         if (score >= beta)
           return score;
         if (score > alpha)

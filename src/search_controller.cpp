@@ -70,7 +70,7 @@ namespace islay {
       std::string error;
       try {
         UniformEvaluator uniform;
-        const bool       use_tree = (limits.simulations == std::numeric_limits<std::uint64_t>::max());
+        const bool       use_tree = true;
         if (evaluator) {
           CachedEvaluator cached(*evaluator, 32 * 1024 * 1024);
           result = mcts_search(board, rule, cached, limits, stop, use_tree ? &tree_ : nullptr);

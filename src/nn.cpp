@@ -483,6 +483,46 @@ namespace islay {
     return count;
   }
 
+  void ModelWeights::apply_ema(const ModelWeights &current, float decay) noexcept {
+    const auto update = [decay](std::vector<float> &ema, const std::vector<float> &cur) {
+      for (std::size_t i = 0; i < ema.size(); ++i)
+        ema[i] = decay * ema[i] + (1.0f - decay) * cur[i];
+    };
+    update(conv_stem_w, current.conv_stem_w);
+    update(bn_stem_gamma, current.bn_stem_gamma);
+    update(bn_stem_beta, current.bn_stem_beta);
+    update(bn_stem_mean, current.bn_stem_mean);
+    update(bn_stem_var, current.bn_stem_var);
+    for (int b = 0; b < kNumResBlocks; ++b) {
+      update(blocks[b].conv1_w, current.blocks[b].conv1_w);
+      update(blocks[b].bn1_gamma, current.blocks[b].bn1_gamma);
+      update(blocks[b].bn1_beta, current.blocks[b].bn1_beta);
+      update(blocks[b].bn1_mean, current.blocks[b].bn1_mean);
+      update(blocks[b].bn1_var, current.blocks[b].bn1_var);
+      update(blocks[b].conv2_w, current.blocks[b].conv2_w);
+      update(blocks[b].bn2_gamma, current.blocks[b].bn2_gamma);
+      update(blocks[b].bn2_beta, current.blocks[b].bn2_beta);
+      update(blocks[b].bn2_mean, current.blocks[b].bn2_mean);
+      update(blocks[b].bn2_var, current.blocks[b].bn2_var);
+    }
+    update(conv_pol_w, current.conv_pol_w);
+    update(bn_pol_gamma, current.bn_pol_gamma);
+    update(bn_pol_beta, current.bn_pol_beta);
+    update(bn_pol_mean, current.bn_pol_mean);
+    update(bn_pol_var, current.bn_pol_var);
+    update(fc_pol_w, current.fc_pol_w);
+    update(fc_pol_b, current.fc_pol_b);
+    update(conv_val_w, current.conv_val_w);
+    update(bn_val_gamma, current.bn_val_gamma);
+    update(bn_val_beta, current.bn_val_beta);
+    update(bn_val_mean, current.bn_val_mean);
+    update(bn_val_var, current.bn_val_var);
+    update(fc_val1_w, current.fc_val1_w);
+    update(fc_val1_b, current.fc_val1_b);
+    update(fc_val2_w, current.fc_val2_w);
+    update(fc_val2_b, current.fc_val2_b);
+  }
+
   FusedWeights::FusedWeights() {
     stem_w.resize(64 * 2 * 9);
     stem_w_packed.resize(64 * 2 * 9);
@@ -592,6 +632,8 @@ namespace islay {
 
   NativeNeuralNet::NativeNeuralNet() : impl_(std::make_unique<Impl>()) {
     weights_.init_random(20260909);
+    ema_weights_     = weights_;
+    ema_initialized_ = true;
     fused_.fuse_from(weights_);
   }
 
@@ -602,6 +644,20 @@ namespace islay {
   NativeNeuralNet::~NativeNeuralNet() = default;
 
   void NativeNeuralNet::update_fused_weights() { fused_.fuse_from(weights_); }
+
+  void NativeNeuralNet::update_ema(float decay) noexcept {
+    if (!ema_initialized_) {
+      ema_weights_     = weights_;
+      ema_initialized_ = true;
+    } else {
+      ema_weights_.apply_ema(weights_, decay);
+    }
+  }
+
+  void NativeNeuralNet::fuse_ema() noexcept {
+    if (ema_initialized_)
+      fused_.fuse_from(ema_weights_);
+  }
 
   void NativeNeuralNet::evaluate_board(const Board &board, Evaluation &output, bool mask_legal) const {
     alignas(64) thread_local float in[2 * 64];
@@ -1093,7 +1149,7 @@ namespace islay {
   //  Serialization (.bin format)
   // ---------------------------------------------------------------------------
 
-  void NativeNeuralNet::save(const std::string &path, std::uint64_t training_steps) const {
+  void NativeNeuralNet::save(const std::string &path, std::uint64_t training_steps, bool use_ema) const {
     std::ofstream out(path, std::ios::binary);
     if (!out)
       throw std::runtime_error("cannot open file for saving weights: " + path);
@@ -1104,47 +1160,49 @@ namespace islay {
     out.write(reinterpret_cast<const char *>(&version), sizeof(version));
     out.write(reinterpret_cast<const char *>(&training_steps), sizeof(training_steps));
 
+    const ModelWeights &w = (use_ema && ema_initialized_) ? ema_weights_ : weights_;
+
     const auto write_vec = [&out](const std::vector<float> &v) {
       out.write(reinterpret_cast<const char *>(v.data()), static_cast<std::streamsize>(v.size() * sizeof(float)));
     };
 
-    write_vec(weights_.conv_stem_w);
-    write_vec(weights_.bn_stem_gamma);
-    write_vec(weights_.bn_stem_beta);
-    write_vec(weights_.bn_stem_mean);
-    write_vec(weights_.bn_stem_var);
+    write_vec(w.conv_stem_w);
+    write_vec(w.bn_stem_gamma);
+    write_vec(w.bn_stem_beta);
+    write_vec(w.bn_stem_mean);
+    write_vec(w.bn_stem_var);
 
     for (int b = 0; b < kNumResBlocks; ++b) {
-      write_vec(weights_.blocks[b].conv1_w);
-      write_vec(weights_.blocks[b].bn1_gamma);
-      write_vec(weights_.blocks[b].bn1_beta);
-      write_vec(weights_.blocks[b].bn1_mean);
-      write_vec(weights_.blocks[b].bn1_var);
+      write_vec(w.blocks[b].conv1_w);
+      write_vec(w.blocks[b].bn1_gamma);
+      write_vec(w.blocks[b].bn1_beta);
+      write_vec(w.blocks[b].bn1_mean);
+      write_vec(w.blocks[b].bn1_var);
 
-      write_vec(weights_.blocks[b].conv2_w);
-      write_vec(weights_.blocks[b].bn2_gamma);
-      write_vec(weights_.blocks[b].bn2_beta);
-      write_vec(weights_.blocks[b].bn2_mean);
-      write_vec(weights_.blocks[b].bn2_var);
+      write_vec(w.blocks[b].conv2_w);
+      write_vec(w.blocks[b].bn2_gamma);
+      write_vec(w.blocks[b].bn2_beta);
+      write_vec(w.blocks[b].bn2_mean);
+      write_vec(w.blocks[b].bn2_var);
     }
 
-    write_vec(weights_.conv_pol_w);
-    write_vec(weights_.bn_pol_gamma);
-    write_vec(weights_.bn_pol_beta);
-    write_vec(weights_.bn_pol_mean);
-    write_vec(weights_.bn_pol_var);
-    write_vec(weights_.fc_pol_w);
-    write_vec(weights_.fc_pol_b);
+    write_vec(w.conv_pol_w);
+    write_vec(w.bn_pol_gamma);
+    write_vec(w.bn_pol_beta);
+    write_vec(w.bn_pol_mean);
+    write_vec(w.bn_pol_var);
+    write_vec(w.fc_pol_w);
+    write_vec(w.fc_pol_b);
 
-    write_vec(weights_.conv_val_w);
-    write_vec(weights_.bn_val_gamma);
-    write_vec(weights_.bn_val_beta);
-    write_vec(weights_.bn_val_mean);
-    write_vec(weights_.bn_val_var);
-    write_vec(weights_.fc_val1_w);
-    write_vec(weights_.fc_val1_b);
-    write_vec(weights_.fc_val2_w);
-    write_vec(weights_.fc_val2_b);
+    write_vec(w.conv_val_w);
+    write_vec(w.bn_val_gamma);
+    write_vec(w.bn_val_beta);
+    write_vec(w.bn_val_mean);
+    write_vec(w.bn_val_var);
+    write_vec(w.fc_val1_w);
+    write_vec(w.fc_val1_b);
+    write_vec(w.fc_val2_w);
+    write_vec(w.fc_val2_b);
   }
 
   void NativeNeuralNet::load(const std::string &path) {
@@ -1206,6 +1264,8 @@ namespace islay {
     read_vec(weights_.fc_val2_w);
     read_vec(weights_.fc_val2_b);
 
+    ema_weights_     = weights_;
+    ema_initialized_ = true;
     update_fused_weights();
   }
 

@@ -35,8 +35,8 @@ namespace islay {
   namespace {
 
     Index find_subtree(const std::vector<Node> &nodes, Index cur_idx, const Board &cur_board, const Board &target,
-                       int depth_limit) {
-      if (cur_board == target)
+                       int depth_limit, bool is_root = true) {
+      if (!is_root && cur_board == target)
         return cur_idx;
       if (depth_limit <= 0 || cur_idx >= nodes.size() || nodes[cur_idx].state != State::Expanded)
         return std::numeric_limits<Index>::max();
@@ -49,7 +49,7 @@ namespace islay {
         if (next_board == target)
           return i;
         if (depth_limit > 1) {
-          const Index sub = find_subtree(nodes, i, next_board, target, depth_limit - 1);
+          const Index sub = find_subtree(nodes, i, next_board, target, depth_limit - 1, false);
           if (sub != std::numeric_limits<Index>::max())
             return sub;
         }

@@ -217,6 +217,7 @@ namespace islay {
       }
       const auto metrics  = net_->train_batch(batch, opt);
       const auto cur_step = net_->training_steps();
+      net_->update_ema(0.999f);
       step_.store(cur_step);
 
       const auto          now        = std::chrono::steady_clock::now();
@@ -257,9 +258,9 @@ namespace islay {
         if (!config_.output_dir.empty()) {
           std::ostringstream ss;
           ss << config_.output_dir << "/checkpoint_step_" << std::setw(7) << std::setfill('0') << cur_step << ".bin";
-          net_->save(ss.str(), cur_step);
+          net_->save(ss.str(), cur_step, true);
           if (!on_progress)
-            std::cout << "Saved checkpoint: " << ss.str() << '\n';
+            std::cout << "Saved checkpoint (EMA): " << ss.str() << '\n';
         }
       }
     }
@@ -272,16 +273,17 @@ namespace islay {
       }
     }
 
-    // Save final model
+    // Fold EMA weights into active fused model and save
+    net_->fuse_ema();
     if (!config_.output_file.empty()) {
-      net_->save(config_.output_file, step_.load());
+      net_->save(config_.output_file, step_.load(), true);
       if (!on_progress)
-        std::cout << "Model saved to: " << config_.output_file << '\n';
+        std::cout << "Model saved to: " << config_.output_file << " (EMA smoothed)\n";
     } else if (!config_.output_dir.empty()) {
       const std::string final_path = config_.output_dir + "/model_final.bin";
-      net_->save(final_path, step_.load());
+      net_->save(final_path, step_.load(), true);
       if (!on_progress)
-        std::cout << "Final model saved to: " << final_path << '\n';
+        std::cout << "Final model saved to: " << final_path << " (EMA smoothed)\n";
     }
   }
 
