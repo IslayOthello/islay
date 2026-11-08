@@ -66,7 +66,7 @@ namespace islay {
                        }},
             OptionSpec{"PerftHash",
                        "spin",
-                       "256",
+                       "512",
                        {},
                        1,
                        65536,

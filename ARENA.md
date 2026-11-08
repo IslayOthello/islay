@@ -7,7 +7,9 @@ There is no shared search tree, concurrent inference, root noise or stochastic m
 Perft stays single-threaded and unchanged.
 
 This is an offline experiment and **selection artifact**, not automatic deployment or an
-autonomous training scheduler. A random initialization may serve as a bootstrap champion,
+autonomous training scheduler. The separate [learning orchestrator](LEARNING.md) consumes
+complete arena reports to select the next generation's model inside a local run.
+A random initialization may serve as a bootstrap champion,
 but beating it does not establish competitive strength or an absolute Elo rating.
 
 ## Run a fixed experiment

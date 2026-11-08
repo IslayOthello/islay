@@ -337,6 +337,119 @@ namespace islay {
       }
       if (checked < 32 || !draws || !mixed)
         return false;
+
+      // Subtree reuse verification
+      {
+        MctsTree    tree;
+        const Board start = Board::start();
+        MctsLimits  test_limits;
+        test_limits.simulations = 64;
+        test_limits.tree_bytes  = 1024 * 1024;
+
+        const auto res1 = mcts_search(start, Rule::Othello, evaluator, test_limits, {}, &tree);
+        if (tree.empty() || tree.node_count() < 2 || tree.root_visits() != 64 || tree.root_board() != start)
+          return false;
+
+        const Square best1 = res1.best_move;
+        const Board  next1 = start.play(best1);
+        if (!tree.can_reuse(next1))
+          return false;
+
+        std::uint64_t child_visits = 0;
+        for (int i = 0; i < res1.action_count; ++i) {
+          if (res1.actions[i].action == best1) {
+            child_visits = res1.actions[i].visits;
+            break;
+          }
+        }
+        if (child_visits == 0)
+          return false;
+
+        const auto res2 = mcts_search(next1, Rule::Othello, evaluator, test_limits, {}, &tree);
+        if (tree.empty() || res2.simulations != child_visits + 64 || tree.root_board() != next1)
+          return false;
+
+        const Board arbitrary{1, 0};
+        if (tree.can_reuse(arbitrary))
+          return false;
+
+        tree.clear();
+        if (!tree.empty() || tree.node_count() != 0 || tree.root_visits() != 0)
+          return false;
+      }
+
+      // Batched MCTS verification
+      {
+        TestEvaluator batch_eval;
+        MctsLimits    batch_limits;
+        batch_limits.simulations = 64;
+        batch_limits.batch_size  = 4;
+        batch_limits.tree_bytes  = 1024 * 1024;
+
+        const auto batch_res = mcts_search(start, Rule::Othello, batch_eval, batch_limits);
+        if (!valid_result(start, batch_res, batch_limits) || batch_res.simulations != 64 || batch_eval.calls == 0)
+          return false;
+
+        // Verify invalid batch size rejected
+        auto bad_limits       = batch_limits;
+        bad_limits.batch_size = 0;
+        bool rejected         = false;
+        try {
+          (void) mcts_search(start, Rule::Othello, batch_eval, bad_limits);
+        } catch (const std::invalid_argument &) {
+          rejected = true;
+        }
+        if (!rejected)
+          return false;
+
+        bad_limits.batch_size = 65;
+        rejected              = false;
+        try {
+          (void) mcts_search(start, Rule::Othello, batch_eval, bad_limits);
+        } catch (const std::invalid_argument &) {
+          rejected = true;
+        }
+        if (!rejected)
+          return false;
+      }
+
+      // Tactical bias verification
+      {
+        TestEvaluator bias_eval;
+        MctsLimits    bias_limits;
+        bias_limits.simulations   = 0;
+        bias_limits.tactical_bias = true;
+
+        // Position where corner move 0 is legal alongside moves 30 and 38
+        Board corner_pos{0, 0};
+        corner_pos.player   = square_bb(36) | square_bb(44);
+        corner_pos.opponent = square_bb(27) | square_bb(18) | square_bb(9) | square_bb(37);
+
+        const auto biased_corner   = mcts_search(corner_pos, Rule::Othello, bias_eval, bias_limits);
+        bias_limits.tactical_bias  = false;
+        const auto unbiased_corner = mcts_search(corner_pos, Rule::Othello, bias_eval, bias_limits);
+
+        // Corner 0 should have elevated prior with tactical bias enabled
+        if (biased_corner.network_priors[0] <= unbiased_corner.network_priors[0] ||
+            !close(unbiased_corner.network_priors[0], 1.0f / 3.0f))
+          return false;
+
+        // Position where X-square move 9 is legal with empty corner 0
+        Board xsq_pos{0, 0};
+        xsq_pos.player   = square_bb(27) | square_bb(28);
+        xsq_pos.opponent = square_bb(18) | square_bb(35);
+
+        bias_limits.tactical_bias = true;
+        const auto biased_xsq     = mcts_search(xsq_pos, Rule::Othello, bias_eval, bias_limits);
+        bias_limits.tactical_bias = false;
+        const auto unbiased_xsq   = mcts_search(xsq_pos, Rule::Othello, bias_eval, bias_limits);
+
+        // X-square 9 should have reduced prior with tactical bias enabled
+        if (biased_xsq.network_priors[9] >= unbiased_xsq.network_priors[9] ||
+            !close(unbiased_xsq.network_priors[9], 1.0f / 3.0f))
+          return false;
+      }
+
       return true;
     } catch (...) {
       return false;

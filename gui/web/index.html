@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Islay Othello — WZebra Professional Studio</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 1. Refined Desktop Toolbar (Native macOS Layout) -->
+  <nav class="app-toolbar">
+    <div class="tool-group">
+      <button class="tool-btn" onclick="sendCmd('new_game')" title="New Game (⌘N)">
+        <svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M3.75 2h5.5l3.5 3.5v7.25c0 .69-.56 1.25-1.25 1.25h-7.75c-.69 0-1.25-.56-1.25-1.25V3.25C2.5 2.56 3.06 2 3.75 2Zm0 1.25c-.138 0-.25.112-.25.25v9.5c0 .138.112.25.25.25h7.75c.138 0 .25-.112.25-.25V6H8.75A1.25 1.25 0 0 1 7.5 4.75V3.25ZM8.75 3.5v1.25c0 .138.112.25.25.25h1.25Z"/></svg>
+        <span>New</span>
+      </button>
+      <button class="tool-btn" onclick="sendCmd('undo')" title="Takeback Move (⌘Z)">
+        <svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M2.5 7.5a5.5 5.5 0 1 1 1.7 3.97.75.75 0 1 1 1.04-1.08A4 4 0 1 0 4 7.5h2.25a.75.75 0 0 1 0 1.5h-3.5a.75.75 0 0 1-.75-.75v-3.5a.75.75 0 0 1 1.5 0Z"/></svg>
+        <span>Undo</span>
+      </button>
+      <button class="tool-btn" onclick="sendCmd('redo')" title="Step Forward (⌘Y / ⇧⌘Z)">
+        <svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M13.5 7.5a5.5 5.5 0 1 0-1.7 3.97.75.75 0 0 0-1.04-1.08A4 4 0 1 1 12 7.5H9.75a.75.75 0 0 0 0 1.5h3.5a.75.75 0 0 0 .75-.75v-3.5a.75.75 0 0 0-1.5 0Z"/></svg>
+        <span>Redo</span>
+      </button>
+    </div>
+
+    <div class="tool-separator"></div>
+
+    <!-- Segmented VCR Steppers -->
+    <div class="tool-segmented">
+      <button class="segmented-btn" onclick="gotoPly(0)" title="Start of Game">|◀</button>
+      <button class="segmented-btn" onclick="sendCmd('undo')" title="Previous Move">◀</button>
+      <button class="segmented-btn" onclick="sendCmd('redo')" title="Next Move">▶</button>
+      <button class="segmented-btn" onclick="gotoEnd()" title="Latest Move">▶|</button>
+    </div>
+
+    <div class="tool-separator"></div>
+
+    <!-- View Toggles -->
+    <div class="tool-group">
+      <button class="tool-btn toggle active" id="btn-toggle-num" onclick="toggleNumbers()" title="Toggle move numbers on discs (⌘1)">
+        <span class="icon-tag">123</span>
+        <span>Numbers</span>
+      </button>
+      <button class="tool-btn toggle active" id="btn-toggle-eval" onclick="toggleEvals()" title="Toggle candidate evaluations on board (⌘2)">
+        <span class="icon-tag">±</span>
+        <span>Evals</span>
+      </button>
+      <button class="tool-btn toggle active" id="btn-toggle-graph" onclick="toggleGraph()" title="Toggle advantage trajectory curve (⌘3)">
+        <svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M1.5 1.5v12a1 1 0 0 0 1 1h12a.75.75 0 0 0 0-1.5H3V1.5a.75.75 0 0 0-1.5 0Zm12.78 4.22a.75.75 0 0 0-1.06 0L9.5 9.44 7.28 7.22a.75.75 0 0 0-1.06 0L3.97 9.47a.75.75 0 0 0 1.06 1.06L7 8.53l2.22 2.22a.75.75 0 0 0 1.06 0l4-4a.75.75 0 0 0 0-1.06Z"/></svg>
+        <span>Curve</span>
+      </button>
+    </div>
+
+    <div class="tool-separator"></div>
+
+    <div class="tool-group">
+      <button class="tool-btn primary" onclick="sendCmd('hint')" title="Ask engine for best move (H)">
+        <svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M8 1.5a4.5 4.5 0 0 0-3.18 7.68c.45.45.75 1.02.86 1.63.07.4.41.69.82.69h3a.83.83 0 0 0 .82-.69c.11-.61.41-1.18.86-1.63A4.5 4.5 0 0 0 8 1.5ZM6.5 13a.75.75 0 0 0 0 1.5h3a.75.75 0 0 0 0-1.5Z"/></svg>
+        <span>Hint</span>
+      </button>
+      <button class="tool-btn" onclick="triggerPerft()" title="Perft movegen benchmark (P)">
+        <svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0a8 8 0 1 0 8 8A8 8 0 0 0 8 0Zm0 1.5a6.5 6.5 0 1 1-6.5 6.5A6.5 6.5 0 0 1 8 1.5Zm.75 3v3.19l2.22 2.22a.75.75 0 0 1-1.06 1.06L7.44 8.5a.75.75 0 0 1-.19-.53V4.5a.75.75 0 0 1 1.5 0Z"/></svg>
+        <span>Perft</span>
+      </button>
+    </div>
+
+    <!-- Quick Options Menu (Available for both Native & Web Browser) -->
+    <div class="tool-dropdown" style="margin-left: auto;">
+      <button class="tool-btn" id="btn-quick-options" onclick="toggleQuickMenu(event)" title="Game mode, rules and engine budget">
+        <svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0a8 8 0 1 0 8 8A8 8 0 0 0 8 0Zm0 1.5a6.5 6.5 0 1 1-6.5 6.5A6.5 6.5 0 0 1 8 1.5ZM7.25 4.5v4.25a.75.75 0 0 0 1.5 0V4.5a.75.75 0 0 0-1.5 0Zm.75 7.5a.875.875 0 1 0 0-1.75.875.875 0 0 0 0 1.75Z"/></svg>
+        <span>Options ▾</span>
+      </button>
+      <div id="quick-menu-pane" class="dropdown-pane right-aligned">
+        <div class="dropdown-section-title">GAME MODE</div>
+        <a class="menu-action" onclick="setMode(1)"><span id="m-mode-1">● Play Black vs Islay</span></a>
+        <a class="menu-action" onclick="setMode(2)"><span id="m-mode-2">○ Play White vs Islay</span></a>
+        <a class="menu-action" onclick="setMode(3)"><span id="m-mode-3">Two Players (Manual)</span></a>
+        <a class="menu-action" onclick="setMode(4)"><span id="m-mode-4">Self-Play (AI vs AI)</span></a>
+        
+        <div class="menu-divider"></div>
+        <div class="dropdown-section-title">GAME RULE</div>
+        <a class="menu-action" onclick="setRule('Othello')"><span>Othello (Pass allowed)</span></a>
+        <a class="menu-action" onclick="setRule('Reversi')"><span>Reversi (No pass)</span></a>
+
+        <div class="menu-divider"></div>
+        <div class="dropdown-section-title">SEARCH BUDGET</div>
+        <a class="menu-action" onclick="setBudget(1)"><span id="bgt-1">Casual (1K nodes)</span></a>
+        <a class="menu-action" onclick="setBudget(2)"><span id="bgt-2">Club (10K nodes)</span></a>
+        <a class="menu-action" onclick="setBudget(3)"><span id="bgt-3">Master (50K nodes)</span></a>
+        <a class="menu-action" onclick="setBudget(4)"><span id="bgt-4">Timed (500 ms)</span></a>
+
+        <div class="menu-divider"></div>
+        <a class="menu-action" onclick="copyFen()"><span>Copy FEN</span><kbd>⇧⌘C</kbd></a>
+        <a class="menu-action" onclick="pasteFen()"><span>Paste FEN</span><kbd>⇧⌘V</kbd></a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- 2. Main Workspace -->
+  <div class="app-workspace">
+    <!-- Left Stage: Board Stage -->
+    <section class="board-stage">
+      <div class="stage-header">
+        <div class="opening-badge" id="opening-tag">
+          <svg class="opening-icon" viewBox="0 0 16 16" width="14" height="14">
+            <path fill="currentColor" d="M0 1.75A.75.75 0 0 1 .75 1h4.253c1.227 0 2.317.59 3 1.501A3.743 3.743 0 0 1 11.006 1h4.244a.75.75 0 0 1 .75.75v10.5a.75.75 0 0 1-.75.75h-4.507a2.25 2.25 0 0 0-1.591.659l-.622.621a.75.75 0 0 1-1.06 0l-.622-.621A2.25 2.25 0 0 0 5.258 13H.75a.75.75 0 0 1-.75-.75Zm7.251 10.324.53-.53a3.75 3.75 0 0 1 2.476-.794h4.243V2.5H11.006a2.25 2.25 0 0 0-2.255 2.25v7.324Zm-1.5 0V4.75A2.25 2.25 0 0 0 3.496 2.5H1.5v8.75h3.758a3.75 3.75 0 0 1 2.493.824Z"/>
+          </svg>
+          <span class="opening-name" id="opening-name">Standard Start Position</span>
+        </div>
+        <div class="ply-indicator" id="ply-indicator">Move 0</div>
+      </div>
+
+      <div class="board-frame-container">
+        <!-- Integrated Vertical Advantage Gauge (Aligned with Board) -->
+        <div class="vertical-eval-gauge" title="Advantage Gauge (-1.0 to +1.0)">
+          <div class="gauge-track">
+            <div class="gauge-white-part" id="gauge-white"></div>
+            <div class="gauge-zero-mark"></div>
+            <div class="gauge-black-part" id="gauge-black"></div>
+          </div>
+          <div class="gauge-score-badge" id="gauge-score">0.0</div>
+        </div>
+
+        <!-- The Precision Canvas Board Area (560x560) -->
+        <div class="board-wood-frame">
+          <canvas id="board-canvas" width="560" height="560"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Stage: Professional Workbench -->
+    <aside class="workbench-stage">
+      <!-- High-Density Player Match Card -->
+      <div class="match-scoreboard">
+        <div class="scoreboard-player active" id="player-card-black">
+          <div class="player-disc-avatar black"></div>
+          <div class="player-details">
+            <div class="player-name-row">
+              <span class="player-name">Black</span>
+              <span class="player-turn-pill" id="turn-pill-black">● Turn</span>
+            </div>
+            <span class="player-sub" id="type-black">Human</span>
+          </div>
+          <div class="player-score" id="score-black">2</div>
+        </div>
+
+        <div class="scoreboard-separator"></div>
+
+        <div class="scoreboard-player" id="player-card-white">
+          <div class="player-disc-avatar white"></div>
+          <div class="player-details">
+            <div class="player-name-row">
+              <span class="player-name">White</span>
+              <span class="player-turn-pill" id="turn-pill-white">● Turn</span>
+            </div>
+            <span class="player-sub" id="type-white">islay 0.1.0</span>
+          </div>
+          <div class="player-score" id="score-white">2</div>
+        </div>
+      </div>
+
+      <!-- Segmented Inspector Tabs -->
+      <div class="workbench-inspector">
+        <div class="segmented-tabs-header">
+          <button class="tab-chip active" id="tab-btn-moves" onclick="switchTab('moves')">Notation</button>
+          <button class="tab-chip" id="tab-btn-analysis" onclick="switchTab('analysis')">Engine Tree</button>
+          <button class="tab-chip" id="tab-btn-setup" onclick="switchTab('setup')">Position Setup</button>
+        </div>
+
+        <!-- Tab 1: Move Notation Sheet -->
+        <div class="tab-pane" id="pane-moves">
+          <div class="notation-scrollbox">
+            <table class="notation-table">
+              <thead>
+                <tr>
+                  <th class="col-num">#</th>
+                  <th class="col-ply">Black</th>
+                  <th class="col-ply">White</th>
+                  <th class="col-eval">Advantage</th>
+                </tr>
+              </thead>
+              <tbody id="move-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tab 2: Live Engine Tree -->
+        <div class="tab-pane" id="pane-analysis" style="display: none;">
+          <div class="engine-metrics-grid">
+            <div class="metric-cell">
+              <span class="metric-label">Simulations</span>
+              <span class="metric-value" id="stat-nodes">0</span>
+            </div>
+            <div class="metric-cell">
+              <span class="metric-label">Search Speed</span>
+              <span class="metric-value" id="stat-nps">0 NPS</span>
+            </div>
+            <div class="metric-cell">
+              <span class="metric-label">Elapsed Time</span>
+              <span class="metric-value" id="stat-time">0 ms</span>
+            </div>
+            <div class="metric-cell">
+              <span class="metric-label">Engine Value</span>
+              <span class="metric-value" id="stat-eval">0.00</span>
+            </div>
+          </div>
+
+          <div class="sub-header">Principal Variation (PV)</div>
+          <div class="pv-container" id="stat-pv">(none)</div>
+
+          <div class="sub-header">Ranked Candidate Moves</div>
+          <div class="candidates-container" id="candidates-list">
+            <div class="candidate-empty">No active search</div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Position Setup Mode -->
+        <div class="tab-pane" id="pane-setup" style="display: none;">
+          <div class="setup-panel">
+            <div class="setup-group-label">Palette (Click square to set):</div>
+            <div class="setup-chip-row">
+              <button class="tool-chip active" id="chip-black" onclick="setSetupTool(1)">● Black</button>
+              <button class="tool-chip" id="chip-white" onclick="setSetupTool(2)">○ White</button>
+              <button class="tool-chip" id="chip-empty" onclick="setSetupTool(0)">✕ Empty</button>
+            </div>
+
+            <div class="setup-group-label">Active Turn & Board Actions:</div>
+            <div class="setup-btn-row">
+              <button class="sub-btn" id="btn-setup-turn" onclick="toggleSetupTurn()">Turn: Black</button>
+              <button class="sub-btn" onclick="sendCmd('setup_invert')">Invert</button>
+              <button class="sub-btn danger" onclick="sendCmd('setup_clear')">Clear All</button>
+            </div>
+
+            <button class="apply-setup-btn" onclick="finishSetup()">Apply & Resume Match</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- WZebra Advantage Curve Panel -->
+      <div class="curve-card" id="curve-panel">
+        <div class="curve-header">
+          <span class="curve-title">Advantage Trajectory</span>
+          <span class="curve-sub"><b style="color: #0969da;">―</b> Black Advantage</span>
+        </div>
+        <div class="curve-canvas-wrap">
+          <canvas id="graph-canvas" width="436" height="80"></canvas>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 3. System Statusbar -->
+  <footer class="app-statusbar">
+    <div class="status-col" id="status-hover">Square: —</div>
+    <div class="status-col status-center" id="status-banner">Engine: islay 0.1.0 ready</div>
+    <div class="status-col status-right" id="status-engine-pill">● READY</div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

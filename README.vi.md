@@ -16,6 +16,8 @@ Xem [TRAINING.md](TRAINING.md) để chạy huấn luyện và [ARENA.md](ARENA.
 theo cặp opening, resume và chọn model có gate. Không tự triển khai model hay đổi trọng số mặc định.
 [Self-play theo batch](BATCHED_SELFPLAY.md) dùng một model CPU/MPS chung cho nhiều worker C++,
 truyền tensor qua shm và giữ cohort cố định để resume.
+[Bộ điều phối tự học](LEARNING.md) nối nhiều generation theo plan cố định, resume từng bước,
+kiểm tra parity và chọn champion bằng arena; có model mốc cố định để theo dõi tiến bộ.
 
 ## Chức năng
 
@@ -80,6 +82,7 @@ và cách chạy phép đo A/B đơn luồng.
 ```text
 main.cpp       Điểm khởi động
 src/           Bàn cờ, bitboard, sinh nước đi, perft, options và UCI
+gui/           Giao diện đồ họa (GUI) viết bằng Lua (LÖVE / SDL2)
 UCI.md         Tài liệu giao thức
 CMakeLists.txt Cấu hình build và lựa chọn kiến trúc
 ```

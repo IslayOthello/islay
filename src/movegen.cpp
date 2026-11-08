@@ -190,15 +190,14 @@ namespace islay {
       const uint64x2_t m0  = vld1q_u64(&MASKS.m[sq][0]);
       const uint64x2_t m1  = vld1q_u64(&MASKS.m[sq][2]);
 
-      uint64x2_t out0 = vaddq_u64(vornq_u64(oo, m0), one);
-      uint64x2_t out1 = vaddq_u64(vornq_u64(oo, m1), one);
-      out0            = vandq_u64(out0, vandq_u64(pp, m0));
-      out1            = vandq_u64(out1, vandq_u64(pp, m1));
-      const uint64x2_t f = vorrq_u64(vandq_u64(m0, vqsubq_u64(out0, one)),
-                                     vandq_u64(m1, vqsubq_u64(out1, one)));
+      uint64x2_t out0    = vaddq_u64(vornq_u64(oo, m0), one);
+      uint64x2_t out1    = vaddq_u64(vornq_u64(oo, m1), one);
+      out0               = vandq_u64(out0, vandq_u64(pp, m0));
+      out1               = vandq_u64(out1, vandq_u64(pp, m1));
+      const uint64x2_t f = vorrq_u64(vandq_u64(m0, vqsubq_u64(out0, one)), vandq_u64(m1, vqsubq_u64(out1, one)));
 
-      const uint64x2_t rp = reverse_bits_u64(pp);
-      const uint64x2_t ro = reverse_bits_u64(oo);
+      const uint64x2_t rp  = reverse_bits_u64(pp);
+      const uint64x2_t ro  = reverse_bits_u64(oo);
       const uint64x2_t rm0 = vld1q_u64(&MASKS.m[sq][4]);
       const uint64x2_t rm1 = vld1q_u64(&MASKS.m[sq][6]);
 

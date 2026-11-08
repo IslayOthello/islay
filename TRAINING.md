@@ -4,6 +4,8 @@ The trainer consumes validated P4 replay and updates the fixed **8x64 shared pol
 network**. It provides bounded replay windows, FP32 CPU/MPS training, full-state resume,
 atomic checkpoints and export compatibility. It does not choose a champion or infer Elo;
 paired evaluation and offline selection are handled by the [P6 arena](ARENA.md), without automatic deployment.
+The [learning orchestrator](LEARNING.md) connects these stages across a fixed number of
+generations, retaining full-state stage resume and selecting champions only within the run.
 
 ## Train, resume, export
 

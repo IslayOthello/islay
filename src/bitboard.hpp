@@ -44,13 +44,13 @@ namespace islay {
   inline constexpr Bitboard kRank8 = 0xFF00000000000000ULL;
   inline constexpr Bitboard kEdges = kFileA | kFileH | kRank1 | kRank8;
 
-  inline constexpr Bitboard kCorners = 0x8100000000000081ULL;
+  inline constexpr Bitboard kCorners  = 0x8100000000000081ULL;
   inline constexpr Bitboard kXSquares = 0x0042000000004200ULL;
   inline constexpr Bitboard kCSquares = 0x4281000000008142ULL;
 
   // TL, TR, BL, BR.
-  inline constexpr Bitboard kQuadrant[4] = {
-          0x000000000F0F0F0FULL, 0x00000000F0F0F0F0ULL, 0x0F0F0F0F00000000ULL, 0xF0F0F0F000000000ULL};
+  inline constexpr Bitboard kQuadrant[4] = {0x000000000F0F0F0FULL, 0x00000000F0F0F0F0ULL, 0x0F0F0F0F00000000ULL,
+                                            0xF0F0F0F000000000ULL};
   [[nodiscard]] ISLAY_FORCEINLINE unsigned quadrant_of(Square sq) noexcept {
     return (static_cast<unsigned>(sq) >> 5 << 1) | ((static_cast<unsigned>(sq) >> 2) & 1u);
   }
@@ -63,7 +63,7 @@ namespace islay {
       Bitboard region = remaining & (0 - remaining);
       Bitboard prev;
       do {
-        prev = region;
+        prev                     = region;
         const Bitboard east_west = ((region << 1) & ~kFileA) | ((region >> 1) & ~kFileH);
         region |= (east_west | (region << 8) | (region >> 8)) & empties;
       } while (region != prev);
@@ -76,11 +76,16 @@ namespace islay {
 
   [[nodiscard]] ISLAY_FORCEINLINE Bitboard x_square_of_corner(Square sq) noexcept {
     switch (sq) {
-      case 0: return square_bb(9);   // a1 -> b2
-      case 7: return square_bb(14);  // h1 -> g2
-      case 56: return square_bb(49); // a8 -> b7
-      case 63: return square_bb(54); // h8 -> g7
-      default: return 0;
+      case 0:
+        return square_bb(9); // a1 -> b2
+      case 7:
+        return square_bb(14); // h1 -> g2
+      case 56:
+        return square_bb(49); // a8 -> b7
+      case 63:
+        return square_bb(54); // h8 -> g7
+      default:
+        return 0;
     }
   }
 

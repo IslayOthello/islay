@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 #include "evaluator.hpp"
 #include "options.hpp"
@@ -23,7 +24,10 @@ namespace islay {
     std::size_t   tree_bytes        = 64 * 1024 * 1024; // arena only; excludes evaluator and fixed stack/result storage
     MctsClock::time_point  deadline = MctsClock::time_point::max();
     double                 c_puct   = 1.5;
-    const RootExploration *exploration = nullptr; // self-play only; valid for this synchronous call
+    const RootExploration *exploration            = nullptr; // self-play only; valid for this synchronous call
+    int                    endgame_solver_empties = 10;
+    int                    batch_size             = 1;
+    bool                   tactical_bias          = true;
   };
 
   enum class MctsStop { SimulationLimit, Deadline, Cancelled, MemoryLimit, Terminal };
@@ -51,12 +55,36 @@ namespace islay {
     int                                 pv_length{};
   };
 
+  class MctsTree {
+  public:
+    MctsTree();
+    ~MctsTree();
+    MctsTree(MctsTree &&) noexcept;
+    MctsTree &operator=(MctsTree &&) noexcept;
+
+    void                        clear() noexcept;
+    [[nodiscard]] bool          empty() const noexcept;
+    [[nodiscard]] std::size_t   node_count() const noexcept;
+    [[nodiscard]] std::uint64_t root_visits() const noexcept;
+    [[nodiscard]] const Board  &root_board() const noexcept;
+    [[nodiscard]] bool          can_reuse(const Board &target) const noexcept;
+
+    struct Impl;
+    [[nodiscard]] Impl       *impl() noexcept { return impl_.get(); }
+    [[nodiscard]] const Impl *impl() const noexcept { return impl_.get(); }
+
+  private:
+    std::unique_ptr<Impl> impl_;
+  };
+
   // Synchronous, single-owner PUCT; does not change UCI or use PerftTT.
   // Rejects Reversi/overlapping boards/invalid c_puct with invalid_argument.
   // Invalid evaluator outputs throw runtime_error; allocation/evaluator exceptions propagate.
   // Deadline/stop are checked between evaluations, not inside a blocking evaluator.
+  // When tree is non-null and matches a subtree of board, re-roots and accumulates visits.
   [[nodiscard]] MctsResult mcts_search(const Board &board, Rule rule, Evaluator &evaluator,
-                                       const MctsLimits &limits = {}, std::stop_token stop = {});
+                                       const MctsLimits &limits = {}, std::stop_token stop = {},
+                                       MctsTree *tree = nullptr);
   [[nodiscard]] bool       mcts_selftest();
 
 } // namespace islay

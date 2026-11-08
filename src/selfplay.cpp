@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "game.hpp"
 #include "hash.hpp"
 
 namespace islay {
@@ -79,22 +80,38 @@ namespace islay {
     if (boards.size() != outputs.size())
       throw std::invalid_argument("cache batch mismatch");
     for (std::size_t i = 0; i < boards.size() && !stop.stop_requested(); ++i) {
-      Entry *entry = entries_.empty()
-                             ? nullptr
-                             : &entries_[hash_board(boards[i].player, boards[i].opponent) & (entries_.size() - 1)];
-      if (entry && entry->valid && entry->board == boards[i]) {
-        outputs[i] = entry->output;
+      const auto [canon, sym] = boards[i].canonical_symmetry();
+      Entry *entry =
+              entries_.empty() ? nullptr : &entries_[hash_board(canon.player, canon.opponent) & (entries_.size() - 1)];
+      if (entry && entry->valid && entry->board == canon) {
+        if (sym == 0) {
+          outputs[i] = entry->output;
+        } else {
+          outputs[i].value = entry->output.value;
+          for (int a = 0; a < kPolicySize; ++a) {
+            outputs[i].logits[a] = entry->output.logits[symmetry_action(a, sym)];
+          }
+        }
         ++hits;
       } else {
-        backend_.evaluate(boards.subspan(i, 1), outputs.subspan(i, 1), stop);
+        Evaluation canon_out;
+        backend_.evaluate(std::span(&canon, 1), std::span(&canon_out, 1), stop);
         if (stop.stop_requested())
           return;
-        if (!std::isfinite(outputs[i].value) || std::abs(outputs[i].value) > 1 ||
-            !std::all_of(outputs[i].logits.begin(), outputs[i].logits.end(), [](float x) { return std::isfinite(x); }))
+        if (!std::isfinite(canon_out.value) || std::abs(canon_out.value) > 1 ||
+            !std::all_of(canon_out.logits.begin(), canon_out.logits.end(), [](float x) { return std::isfinite(x); }))
           throw std::runtime_error("invalid cached neural output");
         ++misses;
         if (entry)
-          *entry = {boards[i], outputs[i], true};
+          *entry = {canon, canon_out, true};
+        if (sym == 0) {
+          outputs[i] = canon_out;
+        } else {
+          outputs[i].value = canon_out.value;
+          for (int a = 0; a < kPolicySize; ++a) {
+            outputs[i].logits[a] = canon_out.logits[symmetry_action(a, sym)];
+          }
+        }
       }
     }
   }
@@ -267,7 +284,9 @@ namespace islay {
       Evaluation      output;
       cache.evaluate(std::span(&board, 1), std::span(&output, 1), {});
       cache.evaluate(std::span(&board, 1), std::span(&output, 1), {});
-      if (fake.calls != 1 || cache.hits != 1 || cache.misses != 1 || cache.bytes() > 1024)
+      const Board board_sym = board.symmetry(1);
+      cache.evaluate(std::span(&board_sym, 1), std::span(&output, 1), {});
+      if (fake.calls != 1 || cache.hits != 2 || cache.misses != 1 || cache.bytes() > 1024)
         return false;
       CachedEvaluator            collision(fake, 300); // exactly one slot; full keys must disambiguate
       const std::array<Board, 3> sequence{Board{1, 2}, Board{2, 1}, Board{1, 2}};

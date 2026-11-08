@@ -21,7 +21,7 @@ namespace islay {
     explicit NeuralEvaluator(const std::string &path, bool optimize = true);
     ~NeuralEvaluator() override;
     void evaluate(std::span<const Board> boards, std::span<Evaluation> outputs, std::stop_token stop) override;
-    [[nodiscard]] const std::string &description() const noexcept { return description_; }
+    [[nodiscard]] std::string description() const override { return description_; }
 
   private:
     struct Impl;

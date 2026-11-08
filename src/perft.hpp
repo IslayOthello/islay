@@ -17,7 +17,7 @@ namespace islay {
   // Full board key (raw or canonical) and depth are verified on every hit.
   class PerftTT {
   public:
-    explicit PerftTT(std::size_t mib = 256) { resize(mib); }
+    explicit PerftTT(std::size_t mib = 512) { resize(mib); }
 
     void resize(std::size_t mib);
 

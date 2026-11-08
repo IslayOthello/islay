@@ -21,6 +21,7 @@ namespace islay {
     // Cancellation may leave outputs unspecified; the caller discards them.
     // The caller owns this evaluator exclusively for the duration of a search.
     virtual void evaluate(std::span<const Board> boards, std::span<Evaluation> outputs, std::stop_token stop) = 0;
+    [[nodiscard]] virtual std::string description() const { return "evaluator"; }
   };
 
 } // namespace islay

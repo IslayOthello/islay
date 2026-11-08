@@ -1,5 +1,9 @@
 /build/
 /_build/
+/build-release/
 /cmake-build-debug/
 /.idea/
 /training/__pycache__/
+*.bin
+*.h5
+openings_large.txt

@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "generations": 3,
+  "seed": 20260910,
+  "games": 1024,
+  "simulations": 128,
+  "workers": 32,
+  "backend": "ort-cpu",
+  "device": "cpu",
+  "steps": 1000,
+  "replay_generations": 3,
+  "arena_pairs": 200,
+  "arena_budget": 128,
+  "anchor_pairs": 20,
+  "family_alpha": 0.05,
+  "threshold": 0.55,
+  "replay_mib": 256,
+  "checkpoint_mib": 256,
+  "arena_mib": 256,
+  "total_mib": 4096,
+  "stage_timeout_seconds": 21600
+}

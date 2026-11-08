@@ -5,7 +5,7 @@ This document describes the UCI-style Othello/Reversi interface implemented by
 single-worker Othello PUCT search. Search defaults to an explicitly advertised
 uniform policy/zero-value evaluator. Optional ONNX inference loads the shared
 8x64 policy/value network through `EvalFile`; no trained weights are supplied.
-Full clock controls are not implemented yet. See [NEURAL.md](NEURAL.md) for model setup.
+Fischer clock (`wtime`/`btime`/`winc`/`binc`/`movestogo`) is supported alongside `movetime`, `nodes`, and `infinite`. See [NEURAL.md](NEURAL.md) for model setup.
 
 ## Transport
 
@@ -61,7 +61,7 @@ id author islay
 option name Rule type combo default Othello var Othello var Reversi
 option name EvalFile type string default <empty>
 option name MctsHash type spin default 64 min 1 max 4096
-option name PerftHash type spin default 256 min 1 max 65536
+option name PerftHash type spin default 512 min 1 max 65536
 uciok
 ```
 
@@ -85,6 +85,92 @@ Cancels and joins search, suppressing any result not already published, then end
 End-of-file has the same effect. To obtain a result before exiting, send `stop` and wait for
 `bestmove`; piping `go ...` immediately followed by `quit` may discard that search.
 
+### datagen
+
+Synchronous self-play data generation command for neural network training:
+
+```text
+datagen [games <N>] [sims <S>] [output <path>] [threads <T>] [seed <S>]
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `games` | integer | `10` | Number of self-play games to generate |
+| `sims` | integer | `64` | MCTS simulations per move |
+| `output` | string | `data.bin` | Output path for binary replay records (560 bytes/sample) |
+| `threads` | integer | `1` | Number of parallel worker threads |
+| `seed` | integer | `20260909` | Base seed for Dirichlet exploration and action sampling |
+
+Positional games count is also accepted (e.g. `datagen 50`). If a neural network is loaded (`EvalFile`), `datagen` uses that model. If no model is loaded (`EvalFile` is `<empty>`), `datagen` runs generation 0 with a randomly initialized native network. Games in the output file are guaranteed to be contiguous and verified.
+
+During execution, real-time progress lines are emitted in standard UCI `info string` format:
+```text
+info string datagen progress: 5/10 games (50.0%) | 301 samples | 2.6 games/s | 158 pos/s | elapsed: 1.9s | ETA: 1.9s
+```
+Upon completion:
+```text
+info string datagen complete: 10/10 games (100.0%) | 602 samples (avg 60.2 moves/game) | 3.1 games/s | time: 3.2s -> data.bin
+```
+
+### train
+
+Synchronous neural network training command supporting both offline dataset training and online AlphaZero self-play training:
+
+```text
+train [data <path>] [steps <N>] [batch <B>] [lr <L>] [output <path>] [init <path>] [workers <W>] [sims <S>] [warmup <N>] [checkpoint <N>]
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `data` | string | `<empty>` | Path to binary replay dataset file for offline training; if omitted, runs online self-play training |
+| `steps` | integer | `500` (offline) / `1000` (online) | Number of SGD optimization steps |
+| `batch` | integer | `64` | Batch size per gradient step |
+| `lr` | float | `0.01` | Learning rate for SGD optimizer (with momentum 0.9 and weight decay 1e-4) |
+| `output` | string | `model.bin` | Output path for trained model weights |
+| `init` | string | `<empty>` | Initial `.bin` checkpoint to load before training (for fine-tuning) |
+| `workers` | integer | `4` | Number of parallel self-play workers (online mode only) |
+| `sims` | integer | `64` | MCTS simulations per move (online mode only) |
+| `warmup` | integer | `10` | Warmup self-play games before gradient steps begin (online mode only) |
+| `checkpoint` | integer | `0` | Step interval for saving intermediate checkpoints (`0` to disable) |
+
+During training, real-time progress is emitted in standard UCI `info string` format:
+```text
+info string train progress: step 50/500 (10.0%) | loss: 3.4141 (pol: 1.9141, val: 1.5000) | grad_norm: 0.1648 | 4.1 step/s | elapsed: 4.9s | ETA: 7.3s
+```
+Upon completion, the session's active evaluator is automatically updated to the newly trained model, enabling immediate PUCT MCTS play or subsequent `datagen` iterations without reloading.
+
+### value / eval
+
+Synchronous position evaluation command querying the neural network directly:
+
+```text
+value
+eval
+```
+
+Displays:
+- The 8×8 ASCII board diagram with legal move candidates marked (`*`).
+- Active evaluator identifier (e.g. `native-simd b8c64-v1 training_steps 300` or `uniform (no network loaded)`).
+- Side to move, disc counts, and number of legal moves.
+- Mover value $V \in [-1, 1]$ and corresponding winrate percentage ($50 \times (V + 1)\%$).
+- Explicit Black and White perspective values and winrates.
+- Endgame solver outcome if empties $\le 10$ or terminal outcome if game over.
+
+### policy
+
+Synchronous policy distribution command displaying the legal move probabilities on the board and in a ranked table:
+
+```text
+policy
+```
+
+Displays:
+- An 8×8 ASCII grid where each legal square displays its policy probability percentage (e.g. ` 25.1% `, `  0.5% `, ` <0.1% `), while discs are shown as `X` (Black), `O` (White), and empty non-legal squares as `.`.
+- Side to move, disc counts, and evaluator description.
+- Evaluated position value and winrate percentage.
+- Sorted ranking table of all legal moves with rank, coordinate, percentage, and raw network logit.
+- Forced pass or terminal outcome indicator when applicable.
+
 ## Options
 
 ```text
@@ -94,9 +180,9 @@ setoption name <name> value <value>
 | Name | Type | Default | Values |
 |---|---|---|---|
 | Rule | combo | Othello | Othello, Reversi |
-| EvalFile | string | `<empty>` | Compatible single-file ONNX model path; `<empty>` restores uniform evaluation |
+| EvalFile | string | `<empty>` | Compatible ONNX model path or native binary weights file (`.bin`); `<empty>` restores uniform evaluation |
 | MctsHash | spin | 64 | Tree arena MiB, 1 to 4096; independent of PerftHash |
-| PerftHash | spin | 256 | Integer MiB from 1 to 65536 |
+| PerftHash | spin | 512 | Integer MiB from 1 to 65536 |
 
 Changing an option clears the cache. Changing `PerftHash` resizes it.
 Allocation is rounded down to a power-of-two number of entries.
@@ -205,14 +291,17 @@ Depth zero emits only `Nodes searched: 1` and `Time: 0.000000000 s`.
 go nodes <N>
 go movetime <MS>
 go nodes <N> movetime <MS>
+go wtime <MS> btime <MS> [winc <MS>] [binc <MS>] [movestogo <N>]
 go infinite
 ```
 
 `nodes` is a nonnegative uint64 simulation budget. `movetime` is an integer from 0 to
-86,400,000 milliseconds. Combined limits may appear in either order; the first reached
-limit wins. Duplicates, unknown tokens, negative values and overflow are rejected.
-`infinite` cannot be combined with another limit. Bare `go`, `depth`, `wtime`, `btime`,
-increments, pondering and `searchmoves` are not supported.
+86,400,000 milliseconds. Combined `nodes` + `movetime` may appear in either order; the
+first reached limit wins. Fischer clock (`wtime`/`btime`/`winc`/`binc`/`movestogo`) is
+accepted; the engine allocates time as `our_time/remaining + 0.8*inc` where `remaining`
+defaults to 30 if `movestogo` is absent. Unknown tokens (`depth`, `ponder`, `searchmoves`)
+are silently ignored for compatibility with standard GUIs.
+`infinite` cannot be combined with another limit.
 
 Search requires `Rule=Othello`. With an empty `EvalFile`, each accepted request first emits:
 
@@ -231,7 +320,7 @@ declared export metadata, not proof of model authenticity or playing strength.
 Each worker uses the loaded session snapshot; changing `EvalFile` cancels/joins it first.
 
 On completion, one block contains `info nodes <N> nps <NPS> time <MS> [pv <moves>]`,
-`info string search <reason> value <V> evaluations <E>`, and `bestmove <move>`.
+`info string search <reason> value <V> (winrate <pct>%) evaluations <E>`, candidate move breakdown (`info string candidate moves: ...`), and `bestmove <move>`.
 Moves use coordinates or `pass`; a terminal root returns `bestmove 0000` with zero simulations.
 Reasons are `nodes`, `time`, `stop`, `memory`, `terminal`, or `error`. The reason describes
 why traversal ended, even if an infinite search subsequently waited for `stop`.

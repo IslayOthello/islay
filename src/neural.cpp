@@ -6,6 +6,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "nn.hpp"
+
 #if defined(ISLAY_ONNX_ENABLED)
 #include <onnxruntime_cxx_api.h>
 #endif
@@ -165,15 +167,40 @@ namespace islay {
     }
   }
 #else
-  struct NeuralEvaluator::Impl {};
-  const char *neural_backend() noexcept { return "disabled"; }
-  const char *neural_runtime_version() noexcept { return "none"; }
-  NeuralEvaluator::NeuralEvaluator(const std::string &, bool) {
-    throw std::runtime_error("neural inference unavailable; rebuild with ISLAY_ONNX=ON");
+  struct NeuralEvaluator::Impl {
+    std::unique_ptr<NativeNeuralNet> net;
+    explicit Impl(const std::string &path) {
+      net = std::make_unique<NativeNeuralNet>();
+      if (!path.empty() && path != "<empty>")
+        net->load(path);
+    }
+  };
+
+  const char *neural_backend() noexcept {
+#if defined(__ARM_NEON)
+    return "native-neon";
+#else
+    return "native-simd";
+#endif
   }
+  const char *neural_runtime_version() noexcept { return "1.0.0-cpp"; }
+
+  NeuralEvaluator::NeuralEvaluator(const std::string &path, bool) : impl_(std::make_unique<Impl>(path)) {
+    description_ = std::string(neural_backend()) + " b8c64-v1";
+    if (!path.empty() && path != "<empty>")
+      description_ += " file " + path;
+    else
+      description_ += " (random initialization)";
+  }
+
   NeuralEvaluator::~NeuralEvaluator() = default;
-  void NeuralEvaluator::evaluate(std::span<const Board>, std::span<Evaluation>, std::stop_token) {
-    throw std::runtime_error("neural inference unavailable");
+
+  void NeuralEvaluator::evaluate(std::span<const Board> boards, std::span<Evaluation> outputs, std::stop_token stop) {
+    if (boards.size() != outputs.size())
+      throw std::invalid_argument("neural batch must have matching spans");
+    if (boards.empty() || stop.stop_requested())
+      return;
+    impl_->net->evaluate_batch(boards, outputs, true);
   }
 #endif
 } // namespace islay

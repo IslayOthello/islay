@@ -17,6 +17,8 @@ The [paired arena](ARENA.md) adds fixed-sample candidate/champion evaluation and
 selection artifacts; no model is automatically deployed or supplied as a proven strong default.
 Opt-in [batched self-play](BATCHED_SELFPLAY.md) shares one CPU/MPS model across native workers
 using private shm buffers and deterministic, resumable cohorts.
+The [learning orchestrator](LEARNING.md) runs frozen multi-generation experiments with
+stage resume, native parity checks, paired promotion gates and fixed-anchor diagnostics.
 
 ## Features
 
@@ -81,6 +83,7 @@ median NPS measurements and the reproducible A/B driver.
 ```text
 main.cpp       Entry point
 src/           Board, bitboards, move generation, perft, options, and UCI
+gui/           Graphical user interface written in Lua (LÖVE / SDL2)
 UCI.md         Protocol reference
 CMakeLists.txt Build configuration and architecture selection
 ```

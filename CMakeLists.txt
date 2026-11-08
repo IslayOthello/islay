@@ -57,10 +57,13 @@ add_executable(islay
         src/movegen.cpp
         src/board.cpp
         src/game.cpp
+        src/endgame.cpp
         src/mcts.cpp
         src/mcts_selftest.cpp
         src/search_controller.cpp
         src/neural.cpp
+        src/nn.cpp
+        src/train.cpp
         src/selfplay.cpp
         src/options.cpp
         src/perft.cpp
@@ -168,8 +171,8 @@ if(ISLAY_ONNX)
 endif()
 
 # Serial self-play/verification share the production rules and PUCT; Python manages data.
-add_executable(islay-selfplay src/selfplay_main.cpp src/selfplay.cpp src/mcts.cpp src/neural.cpp
-                             src/game.cpp src/board.cpp src/movegen.cpp)
+add_executable(islay-selfplay src/selfplay_main.cpp src/selfplay.cpp src/mcts.cpp src/endgame.cpp src/neural.cpp
+                             src/nn.cpp src/train.cpp src/game.cpp src/board.cpp src/movegen.cpp)
 target_include_directories(islay-selfplay PRIVATE src)
 target_compile_definitions(islay-selfplay PRIVATE $<TARGET_PROPERTY:islay,COMPILE_DEFINITIONS>)
 target_compile_options(islay-selfplay PRIVATE $<TARGET_PROPERTY:islay,COMPILE_OPTIONS>)
@@ -182,10 +185,26 @@ if(ISLAY_LTO AND ISLAY_IPO_OK)
     set_property(TARGET islay-selfplay PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 endif()
 
+# Native C++ AlphaZero pipeline: multi-threaded self-play + training loop
+add_executable(islay-train src/train_main.cpp src/train.cpp src/nn.cpp src/selfplay.cpp
+                           src/mcts.cpp src/endgame.cpp src/neural.cpp src/game.cpp
+                           src/board.cpp src/movegen.cpp)
+target_include_directories(islay-train PRIVATE src)
+target_compile_definitions(islay-train PRIVATE $<TARGET_PROPERTY:islay,COMPILE_DEFINITIONS>)
+target_compile_options(islay-train PRIVATE $<TARGET_PROPERTY:islay,COMPILE_OPTIONS>)
+target_link_libraries(islay-train PRIVATE Threads::Threads)
+if(ISLAY_ONNX)
+    target_include_directories(islay-train SYSTEM PRIVATE ${ONNXRUNTIME_INCLUDE_DIR})
+    target_link_libraries(islay-train PRIVATE ${ONNXRUNTIME_LIBRARY})
+endif()
+if(ISLAY_LTO AND ISLAY_IPO_OK)
+    set_property(TARGET islay-train PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+endif()
+
 # Private POSIX shm inference client: independent trees, no ONNX/model copy in workers.
 if(UNIX)
-    add_executable(islay-selfplay-worker src/selfplay_worker.cpp src/selfplay.cpp src/mcts.cpp
-                                        src/game.cpp src/board.cpp src/movegen.cpp)
+    add_executable(islay-selfplay-worker src/selfplay_worker.cpp src/selfplay.cpp src/mcts.cpp src/endgame.cpp
+                                        src/neural.cpp src/nn.cpp src/train.cpp src/game.cpp src/board.cpp src/movegen.cpp)
     target_include_directories(islay-selfplay-worker PRIVATE src)
     target_compile_definitions(islay-selfplay-worker PRIVATE $<TARGET_PROPERTY:islay,COMPILE_DEFINITIONS>)
     target_compile_options(islay-selfplay-worker PRIVATE $<TARGET_PROPERTY:islay,COMPILE_OPTIONS>)

@@ -4,6 +4,7 @@
 
 #include <ostream>
 #include <string>
+#include <utility>
 
 #include "bitboard.hpp"
 #include "common.hpp"
@@ -60,6 +61,19 @@ namespace islay {
         }
       }
       return best;
+    }
+
+    [[nodiscard]] std::pair<Board, int> canonical_symmetry() const noexcept {
+      Board best   = *this;
+      int   best_s = 0;
+      for (int s = 1; s < 8; ++s) {
+        const Board c = symmetry(s);
+        if (c.player < best.player || (c.player == best.player && c.opponent < best.opponent)) {
+          best   = c;
+          best_s = s;
+        }
+      }
+      return {best, best_s};
     }
 
     [[nodiscard]] bool operator==(const Board &) const noexcept = default;
