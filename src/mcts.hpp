@@ -28,6 +28,7 @@ namespace islay {
     int                    endgame_solver_empties = 10;
     int                    batch_size             = 1;
     bool                   tactical_bias          = true;
+    double                 fpu_reduction          = 0.2;
   };
 
   enum class MctsStop { SimulationLimit, Deadline, Cancelled, MemoryLimit, Terminal };

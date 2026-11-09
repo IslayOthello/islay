@@ -384,13 +384,15 @@ namespace islay {
       Index select(Index parent) const {
         const auto  &node       = nodes_[parent];
         const double scale      = limits_.c_puct * std::sqrt(1.0 + static_cast<double>(node.visits));
+        const double parent_q   = node.visits > 0 ? (node.value_sum / static_cast<double>(node.visits)) : 0.0;
         Index        best       = node.first_child;
         double       best_score = -std::numeric_limits<double>::infinity();
         for (Index i = node.first_child; i < node.first_child + node.child_count; ++i) {
           const auto &child = nodes_[i];
           double      score;
           if (child.visits == 0) {
-            score = scale * child.prior;
+            const double fpu_q = parent_q - limits_.fpu_reduction * std::sqrt(std::max(0.0, static_cast<double>(child.prior)));
+            score              = fpu_q + scale * child.prior;
           } else {
             const double inv_v1 = 1.0 / (1.0 + static_cast<double>(child.visits));
             const double q      = child.value_sum / static_cast<double>(child.visits);
