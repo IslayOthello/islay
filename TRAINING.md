@@ -77,7 +77,8 @@ These are pilot hyperparameters, not proven optimal Othello settings.
 | `augment` | true | D4 training augmentation; validation is not augmented |
 | `checkpoint_every` | 100 | Persist model/optimizer/RNG and interval metrics |
 
-The objective is legal-masked policy cross-entropy plus mover-relative outcome MSE.
+The objective is legal-masked policy cross-entropy plus mover-relative value MSE. New replay v2
+uses final disc margin; legacy replay v1 continues to supply WLD targets.
 SGD weight decay adds the gradient of `(weight_decay / 2) * sum(parameter**2)` separately;
 reported policy/value losses exclude that regularizer. Forced pass remains a single legal
 policy action; illegal actions receive no target mass or policy gradient. The optimized

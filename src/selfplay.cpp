@@ -52,6 +52,10 @@ namespace islay {
         throw std::invalid_argument("invalid self-play config");
     }
 
+    std::int8_t encode_margin_target(int margin) {
+      return static_cast<std::int8_t>(std::lround(std::tanh(static_cast<double>(margin) / 15.0) * 127.0));
+    }
+
     template<class T>
     void put(std::ostream &out, T value) {
       for (std::size_t i = 0; i < sizeof(T); ++i)
@@ -226,9 +230,13 @@ namespace islay {
         throw std::logic_error("self-play selected illegal action");
       records.push_back(r);
     }
-    const int black_outcome = game_status(board).value * (records.size() % 2 ? -1 : 1);
-    for (auto &r: records)
-      r.outcome = r.stm ? -black_outcome : black_outcome;
+    const int final_margin = popcount(board.player) - popcount(board.opponent);
+    const int black_margin = records.size() % 2 ? -final_margin : final_margin;
+    for (auto &r: records) {
+      const int mover_margin = r.stm ? -black_margin : black_margin;
+      r.outcome              = encode_margin_target(mover_margin);
+      r.value_format         = 1;
+    }
     validate_replay_game(records, config);
     return records;
   }
@@ -263,11 +271,26 @@ namespace islay {
     const auto status = game_status(board);
     if (!status.terminal())
       throw std::runtime_error("truncated game is not training data");
+    const int final_margin  = popcount(board.player) - popcount(board.opponent);
+    const int black_margin  = records.size() % 2 ? -final_margin : final_margin;
     const int black_outcome = status.value * (records.size() % 2 ? -1 : 1);
     for (const auto &r: records) {
-      if (r.outcome != (r.stm ? -black_outcome : black_outcome))
+      if (r.value_format > 1)
+        throw std::runtime_error("replay has unknown value target format");
+      const int  mover_outcome = r.stm ? -black_outcome : black_outcome;
+      const int  mover_margin  = r.stm ? -black_margin : black_margin;
+      const auto expected      = r.value_format == 0 ? mover_outcome : encode_margin_target(mover_margin);
+      if (r.outcome != expected)
         throw std::runtime_error("replay outcome perspective mismatch");
     }
+  }
+
+  float replay_value_target(const ReplayRecord &record) noexcept {
+    if (record.value_format == 1)
+      return static_cast<float>(record.outcome) / 127.0f;
+    if (record.value_format == 0)
+      return static_cast<float>(record.outcome);
+    return std::numeric_limits<float>::quiet_NaN();
   }
 
   void write_replay_record(std::ostream &out, const ReplayRecord &r) {
@@ -285,7 +308,7 @@ namespace islay {
     out.put(static_cast<char>(r.outcome));
     out.put(r.temperature);
     out.put(r.pass);
-    out.put(0);
+    out.put(static_cast<char>(r.value_format));
     if (!out)
       throw std::runtime_error("replay write failed");
   }
@@ -304,13 +327,15 @@ namespace islay {
       v = get<std::uint32_t>(in);
     for (auto &p: r.priors)
       p = std::bit_cast<float>(get<std::uint32_t>(in));
-    r.ply         = get<std::uint16_t>(in);
-    r.action      = get<std::uint8_t>(in);
-    r.stm         = get<std::uint8_t>(in);
-    r.outcome     = std::bit_cast<std::int8_t>(get<std::uint8_t>(in));
-    r.temperature = get<std::uint8_t>(in);
-    r.pass        = get<std::uint8_t>(in);
-    if (get<std::uint8_t>(in) != 0)
+    r.ply          = get<std::uint16_t>(in);
+    r.action       = get<std::uint8_t>(in);
+    r.stm          = get<std::uint8_t>(in);
+    r.outcome      = std::bit_cast<std::int8_t>(get<std::uint8_t>(in));
+    r.temperature  = get<std::uint8_t>(in);
+    r.pass         = get<std::uint8_t>(in);
+    r.value_format = get<std::uint8_t>(in);
+    if (r.value_format > 1 || (r.value_format == 0 && std::abs(static_cast<int>(r.outcome)) > 1) ||
+        (r.value_format == 1 && r.outcome == std::numeric_limits<std::int8_t>::min()))
       throw std::runtime_error("unknown replay flags");
     return true;
   }
@@ -351,8 +376,14 @@ namespace islay {
       config.simulations = 8;
       config.tree_bytes  = 65536;
       for (std::uint64_t id = 0; id < 4; ++id) {
-        const auto         a = selfplay_game(id, fake, config);
-        const auto         b = selfplay_game(id, cache, config);
+        const auto a      = selfplay_game(id, fake, config);
+        const auto b      = selfplay_game(id, cache, config);
+        auto       legacy = a;
+        for (auto &record: legacy) {
+          record.outcome      = (record.outcome > 0) - (record.outcome < 0);
+          record.value_format = 0;
+        }
+        validate_replay_game(legacy, config);
         std::ostringstream x, y;
         for (const auto &r: a)
           write_replay_record(x, r);
@@ -360,6 +391,17 @@ namespace islay {
           write_replay_record(y, r);
         if (x.str() != y.str() || x.str().size() != a.size() * kReplayRecordBytes)
           return false;
+        std::ostringstream old_bytes;
+        for (const auto &r: legacy)
+          write_replay_record(old_bytes, r);
+        std::istringstream        old_input(old_bytes.str());
+        std::vector<ReplayRecord> old_roundtrip;
+        ReplayRecord              old_record;
+        while (read_replay_record(old_input, old_record))
+          old_roundtrip.push_back(old_record);
+        if (old_roundtrip.size() != legacy.size())
+          return false;
+        validate_replay_game(old_roundtrip, config);
         for (int action: {19, 26, 37, 44})
           if (a[0].priors[action] != 0.25f)
             return false;
@@ -389,6 +431,14 @@ namespace islay {
         if (!rejected)
           return false;
       }
+      ReplayRecord compatibility{};
+      compatibility.outcome = 1;
+      if (replay_value_target(compatibility) != 1.0f)
+        return false;
+      compatibility.outcome      = 127;
+      compatibility.value_format = 1;
+      if (replay_value_target(compatibility) != 1.0f)
+        return false;
       if (selfplay_seed(42, 0) == selfplay_seed(42, 1))
         return false;
       return true;

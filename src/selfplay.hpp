@@ -27,7 +27,8 @@ namespace islay {
     std::array<float, kPolicySize>         priors{};
     std::uint16_t                          ply{};
     std::uint8_t                           action{}, stm{}, temperature{}, pass{};
-    std::int8_t                            outcome{};
+    std::int8_t                            outcome{}; // WLD or quantized tanh margin, selected by value_format
+    std::uint8_t                           value_format{}; // 0=WLD, 1=tanh(disc margin / 15) scaled by 127
   };
 
   class CachedEvaluator final : public Evaluator {
@@ -50,6 +51,7 @@ namespace islay {
   [[nodiscard]] std::uint64_t             selfplay_seed(std::uint64_t master, std::uint64_t game_id) noexcept;
   [[nodiscard]] std::vector<ReplayRecord> selfplay_game(std::uint64_t id, Evaluator &, const SelfplayConfig &);
   void                                    validate_replay_game(std::span<const ReplayRecord>, const SelfplayConfig &);
+  [[nodiscard]] float                     replay_value_target(const ReplayRecord &) noexcept;
   void                                    write_replay_record(std::ostream &, const ReplayRecord &);
   // Clean EOF returns false; partial/truncated records throw.
   bool               read_replay_record(std::istream &, ReplayRecord &);

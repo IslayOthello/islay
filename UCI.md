@@ -137,7 +137,9 @@ During training, real-time progress is emitted in standard UCI `info string` for
 ```text
 info string train progress: step 50/500 (10.0%) | loss: 3.4141 (pol: 1.9141, val: 1.5000) | grad_norm: 0.1648 | 4.1 step/s | elapsed: 4.9s | ETA: 7.3s
 ```
-Upon completion, the session's active evaluator is automatically updated to the newly trained model, enabling immediate PUCT MCTS play or subsequent `datagen` iterations without reloading.
+The trainer updates an EMA shadow with decay `0.999` after every step. Intermediate checkpoints
+and the final model save EMA weights; on completion, the session's active evaluator is updated
+to that model for immediate play or later `datagen` iterations.
 
 ### value / eval
 

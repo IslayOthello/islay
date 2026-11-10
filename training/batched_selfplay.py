@@ -14,7 +14,7 @@ import time
 
 from batch_inference import Backend
 from batch_workers import SLOT_BYTES, Workers
-from replay import RECORD_BYTES, SCHEMA, manifest, sha256, shards
+from replay import RECORD_BYTES, SCHEMA, VALUE_TARGET, manifest, sha256, shards
 from selfplay import sync_directory, verify_shard, write_json
 
 
@@ -44,7 +44,8 @@ def run(args):
         if any(sha256(path) != expected for path, expected in source_hashes.items()):
             raise ValueError("generation inputs changed while loading model")
         directory = Path(__file__).parent
-        meta = {"schema": SCHEMA, "record_bytes": RECORD_BYTES, "rule": "Othello", "encoding": "relative-2x8x8-a1-v1",
+        meta = {"schema": SCHEMA, "record_bytes": RECORD_BYTES, "value_target": VALUE_TARGET,
+                "rule": "Othello", "encoding": "relative-2x8x8-a1-v1",
                 "architecture": "b8c64-v1", "policy": "visits-tau1-prefix-tau0-lowest-v1",
                 "rng": "splitmix64-boxmuller-marsaglia-v1", "split": "mix64-game-seed-mod10-v1", "c_puct": 1.5,
                 **config, "engine_sha256": source_hashes[args.worker], "verifier_sha256": source_hashes[args.verifier],

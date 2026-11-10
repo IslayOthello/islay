@@ -9,9 +9,11 @@ RECORD_BYTES = 560
 DTYPE = np.dtype([("game_id", "<u8"), ("player", "<u8"), ("opponent", "<u8"), ("legal", "<u8"),
                   ("visits", "<u4", (65,)), ("priors", "<f4", (65,)), ("ply", "<u2"),
                   ("action", "u1"), ("stm", "u1"), ("outcome", "i1"), ("temperature", "u1"),
-                  ("pass", "u1"), ("reserved", "u1")])
+                  ("pass", "u1"), ("value_format", "u1")])
 assert DTYPE.itemsize == RECORD_BYTES
-SCHEMA = "islay-replay-v1"
+SCHEMA_V1 = "islay-replay-v1"
+SCHEMA = "islay-replay-v2"
+VALUE_TARGET = "tanh-disc-margin-15-q7-v1"
 
 
 def sha256(path):
@@ -37,9 +39,10 @@ def validation_game(game_id, seed):
 
 def manifest(root):
     data = json.loads((Path(root) / "manifest.json").read_text())
-    if (data.get("schema") != SCHEMA or data.get("record_bytes") != RECORD_BYTES
+    if (data.get("schema") not in (SCHEMA_V1, SCHEMA) or data.get("record_bytes") != RECORD_BYTES
             or data.get("rule") != "Othello" or data.get("encoding") != "relative-2x8x8-a1-v1"
-            or data.get("policy") != "visits-tau1-prefix-tau0-lowest-v1"):
+            or data.get("policy") != "visits-tau1-prefix-tau0-lowest-v1"
+            or (data.get("schema") == SCHEMA and data.get("value_target") != VALUE_TARGET)):
         raise ValueError("unsupported replay manifest")
     return data
 
@@ -113,8 +116,11 @@ def decode(records, symmetries=None):
         policy = np.take_along_axis(policy, mapping, axis=1)
         priors = np.take_along_axis(priors, mapping, axis=1)
         actions = FORWARD[symmetries, actions]
+    outcome = records["outcome"].astype(np.float32)
+    margin = records["value_format"] == 1
+    outcome[margin] /= 127.0
     return {"board": board.reshape(n, 2, 8, 8).astype(np.float32), "legal": legal, "policy": policy,
-            "outcome": records["outcome"].astype(np.float32).reshape(n, 1), "priors": priors,
+            "outcome": outcome.reshape(n, 1), "priors": priors,
             "action": actions, "game_id": records["game_id"].copy(), "ply": records["ply"].copy()}
 
 
@@ -135,8 +141,11 @@ class Replay:
             cursor = 0
             for game, length in enumerate(info["lengths"], info["start"]):
                 records = array[cursor:cursor + length]
+                value_format = records["value_format"]
+                outcomes = records["outcome"].astype(int)
                 if (np.any(records["game_id"] != game) or np.any(records["ply"] != np.arange(length))
-                        or np.any(records["reserved"] != 0) or np.any(np.abs(records["outcome"].astype(int)) > 1)):
+                        or np.any(value_format > 1) or np.any((value_format == 0) & (np.abs(outcomes) > 1))
+                        or np.any((value_format == 1) & (outcomes == -128))):
                     raise ValueError("shard index/sample mismatch")
                 cursor += length
         self.indices = {"train": np.asarray(train, dtype=np.int64), "validation": np.asarray(validation, dtype=np.int64)}

@@ -62,8 +62,9 @@ class TrainingReplay:
                 for name, mask in (("opening", occupied < 24), ("middle", (occupied >= 24) & (occupied < 44)),
                                    ("end", occupied >= 44)):
                     phases[name]["samples"] += int(mask.sum())
+                    results = np.sign(records["outcome"].astype(np.int16))
                     for result, value in (("loss", -1), ("draw", 0), ("win", 1)):
-                        phases[name][result] += int(((records["outcome"] == value) & mask).sum())
+                        phases[name][result] += int(((results == value) & mask).sum())
             self.statistics["phases"][split] = phases
 
     def gather(self, indices):

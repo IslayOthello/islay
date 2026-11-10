@@ -14,7 +14,7 @@ import time
 
 import onnx
 
-from replay import RECORD_BYTES, SCHEMA, game_seed, manifest, sha256, shards
+from replay import RECORD_BYTES, SCHEMA, VALUE_TARGET, game_seed, manifest, sha256, shards
 
 FRAME = struct.Struct("<8sQQII")
 
@@ -68,7 +68,8 @@ def run(args):
     if runtime["backend"] != "onnx-cpu":
         raise ValueError("self-play requires ISLAY_ONNX=ON")
     properties = {p.key: p.value for p in onnx.load(model, load_external_data=False).metadata_props}
-    meta = {"schema": SCHEMA, "record_bytes": RECORD_BYTES, "rule": "Othello", "encoding": "relative-2x8x8-a1-v1",
+    meta = {"schema": SCHEMA, "record_bytes": RECORD_BYTES, "value_target": VALUE_TARGET,
+            "rule": "Othello", "encoding": "relative-2x8x8-a1-v1",
             "architecture": "b8c64-v1", "policy": "visits-tau1-prefix-tau0-lowest-v1",
             "rng": "splitmix64-boxmuller-marsaglia-v1", "seed": args.seed, "simulations": args.simulations,
             "tree_mib": args.tree_mib, "epsilon": args.epsilon, "alpha": args.alpha,

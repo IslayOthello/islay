@@ -20,7 +20,7 @@ namespace islay {
       sample.board        = r.board;
       sample.legal_moves  = r.legal;
       sample.forced_pass  = (r.pass != 0);
-      sample.target_value = static_cast<float>(r.outcome);
+      sample.target_value = replay_value_target(r);
 
       std::uint64_t total_visits = 0;
       for (int a = 0; a < kPolicySize; ++a)
@@ -53,7 +53,7 @@ namespace islay {
       sample.board        = record.board;
       sample.legal_moves  = record.legal;
       sample.forced_pass  = (record.pass != 0);
-      sample.target_value = static_cast<float>(record.outcome);
+      sample.target_value = replay_value_target(record);
 
       std::uint64_t total_visits = 0;
       for (int a = 0; a < kPolicySize; ++a)

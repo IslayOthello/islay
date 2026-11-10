@@ -1,5 +1,6 @@
 """Real-network self-play, resume, independent replay oracle and corruption checks."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -9,7 +10,7 @@ import sys
 
 import numpy as np
 
-from replay import DTYPE, RECORD_BYTES, Replay, decode, game_seed, manifest, shards
+from replay import DTYPE, RECORD_BYTES, Replay, decode, game_seed, manifest, sha256, shards
 from selfplay import FRAME, config_args, verify_shard
 
 sys.dont_write_bytecode = True
@@ -28,16 +29,26 @@ def generate(args, output, games, **overrides):
 
 def oracle(records):
     p, o = START
-    outcomes, game, ply, passes = [], None, 0, 0
+    outcomes, formats, game, ply, passes = [], [], None, 0, 0
+
+    def check_targets(black_margin):
+        for i, (target, value_format) in enumerate(zip(outcomes, formats)):
+            margin = black_margin if i % 2 == 0 else -black_margin
+            if value_format == 0:
+                expected = (margin > 0) - (margin < 0)
+            else:
+                raw = np.tanh(margin / 15.0) * 127.0
+                expected = int(np.sign(raw) * np.floor(abs(raw) + 0.5))
+            assert target == expected, (target, expected, value_format)
+
     for r in records:
         if game is None or int(r["game_id"]) != game:
             if game is not None:
                 assert not scalar_moves(p, o) and not scalar_moves(o, p)
-                black = (p.bit_count() > o.bit_count()) - (p.bit_count() < o.bit_count())
-                black *= -1 if ply % 2 else 1
-                assert all(z == (black if i % 2 == 0 else -black) for i, z in enumerate(outcomes))
+                black_margin = (p.bit_count() - o.bit_count()) * (-1 if ply % 2 else 1)
+                check_targets(black_margin)
             p, o = START
-            game, ply, outcomes = int(r["game_id"]), 0, []
+            game, ply, outcomes, formats = int(r["game_id"]), 0, [], []
         assert (int(r["player"]), int(r["opponent"])) == (p, o)
         moves = dict(scalar_moves(p, o))
         assert int(r["legal"]) == sum(1 << a for a in moves)
@@ -50,10 +61,11 @@ def oracle(records):
             assert action in moves and not r["pass"]
             p, o = play(p, o, (action, moves[action]))
         outcomes.append(int(r["outcome"]))
+        formats.append(int(r["value_format"]))
         ply += 1
     assert not scalar_moves(p, o) and not scalar_moves(o, p)
-    black = ((p.bit_count() > o.bit_count()) - (p.bit_count() < o.bit_count())) * (-1 if ply % 2 else 1)
-    assert all(z == (black if i % 2 == 0 else -black) for i, z in enumerate(outcomes))
+    black_margin = (p.bit_count() - o.bit_count()) * (-1 if ply % 2 else 1)
+    check_targets(black_margin)
     return passes
 
 
@@ -93,6 +105,29 @@ def main():
     if args.games >= 100: assert train and validation
 
     meta = manifest(root)
+    legacy_root = args.output / "legacy-wld"
+    shutil.copytree(root, legacy_root)
+    legacy_meta = dict(meta)
+    legacy_meta["schema"] = "islay-replay-v1"
+    legacy_meta.pop("value_target")
+    legacy_id = hashlib.sha256(json.dumps(legacy_meta, sort_keys=True).encode()).hexdigest()
+    for directory in legacy_root.glob("shard-*"):
+        samples = directory / "samples.bin"
+        old_records = np.memmap(samples, dtype=DTYPE, mode="r+")
+        old_records["outcome"] = np.sign(old_records["outcome"]).astype(np.int8)
+        old_records["value_format"] = 0
+        old_records.flush()
+        del old_records
+        index = json.loads((directory / "index.json").read_text())
+        index["dataset"], index["sha256"] = legacy_id, sha256(samples)
+        (directory / "index.json").write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
+    (legacy_root / "manifest.json").write_text(json.dumps(legacy_meta, indent=2, sort_keys=True) + "\n")
+    old_replay = Replay(legacy_root)
+    old_records = old_replay.gather(np.arange(old_replay.ends[-1]))
+    np.testing.assert_array_equal(decode(old_records)["outcome"][:, 0], np.sign(all_records["outcome"]))
+    for source, info in shards(legacy_root, legacy_meta):
+        verify_shard(args.engine, source, legacy_meta, info["start"], info["games"])
+
     direct = subprocess.run([str(args.engine), "--model", str(args.model), "--games", "4", "--cache-mib", "0",
                              *config_args(meta)], capture_output=True, check=True, timeout=120)
     position, plain = 0, []
@@ -137,7 +172,7 @@ def main():
 
     source, info = shards(root, meta)[0]
     original = source.read_bytes()
-    mutations = {"outcome": (556, 7), "action": (554, 65), "flags": (559, 1),
+    mutations = {"outcome": (556, 128), "action": (554, 65), "value_format": (559, 2),
                  "board": (8, original[8] ^ 1), "legal": (24, original[24] ^ 1), "temperature": (557, 9)}
     for name, (offset, value) in mutations.items():
         modified = bytearray(original)

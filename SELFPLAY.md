@@ -52,6 +52,8 @@ Cache size is not part of replay semantics; cache on/off and resume must preserv
 
 ## Data integrity and reproducibility
 
+The v2 manifest fixes the margin target as `tanh(final_disc_margin/15)` quantized to signed
+Q7. V1 manifests remain readable as WLD targets; existing 560-byte records remain unchanged.
 The manifest fixes schema/encoding/rule, full ONNX SHA256, declared checkpoint identity,
 engine binary SHA256, ORT version, platform, seed and semantic search configuration.
 The loaded model is a private snapshot under the dataset; its SHA is rechecked before
@@ -107,8 +109,8 @@ Each **560-byte** record has the following exact offsets (no native-struct seria
 | 292 | original legal network prior | float32[65] |
 | 552 | ply | uint16 |
 | 554 / 555 | chosen action / side (Black=0, White=1) | uint8 each |
-| 556 | final mover-relative outcome | int8, -1/0/+1 |
-| 557 / 558 / 559 | tau-one flag / legal-pass flag / reserved zero | uint8 each |
+| 556 | final mover-relative value target | int8; WLD for format 0, Q7 `tanh(disc_margin/15)` for format 1 |
+| 557 / 558 / 559 | tau-one flag / legal-pass flag / value format | uint8 each; format 0 is legacy WLD, 1 is margin |
 
 The internal producer pipe has a 32-byte frame per game (`ISLAGM01`, uint64 game ID,
 uint64 derived seed, uint32 sample count, uint32 reserved zero), followed by those records.
