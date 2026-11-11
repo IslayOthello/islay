@@ -11,11 +11,8 @@
 
 namespace islay {
 
-  ReplayBuffer::ReplayBuffer(std::size_t max_samples) : max_samples_(max_samples) { buffer_.resize(max_samples_); }
-
-  void ReplayBuffer::push_game(std::span<const ReplayRecord> game) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto &r: game) {
+  namespace {
+    TrainingSample make_sample_from_record(const ReplayRecord &r) {
       TrainingSample sample;
       sample.board        = r.board;
       sample.legal_moves  = r.legal;
@@ -33,11 +30,39 @@ namespace islay {
       } else {
         sample.target_policy = r.priors;
       }
+      return sample;
+    }
 
-      buffer_[head_] = sample;
-      head_          = (head_ + 1) % max_samples_;
-      if (head_ == 0)
-        full_ = true;
+    TrainingSample apply_symmetry(const TrainingSample &src, int s) {
+      if (s == 0)
+        return src;
+      TrainingSample dst;
+      dst.board        = src.board.symmetry(s);
+      dst.legal_moves  = Board::symmetry_bb(src.legal_moves, s);
+      dst.forced_pass  = src.forced_pass;
+      dst.target_value = src.target_value;
+
+      dst.target_policy.fill(0.0f);
+      for (int a = 0; a < kPolicySize; ++a) {
+        const Square sa       = symmetry_action(a, s);
+        dst.target_policy[sa] = src.target_policy[a];
+      }
+      return dst;
+    }
+  } // namespace
+
+  ReplayBuffer::ReplayBuffer(std::size_t max_samples) : max_samples_(max_samples) { buffer_.resize(max_samples_); }
+
+  void ReplayBuffer::push_game(std::span<const ReplayRecord> game) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto &r: game) {
+      const TrainingSample base = make_sample_from_record(r);
+      for (int s = 0; s < 8; ++s) {
+        buffer_[head_] = apply_symmetry(base, s);
+        head_          = (head_ + 1) % max_samples_;
+        if (head_ == 0)
+          full_ = true;
+      }
     }
   }
 
@@ -49,24 +74,9 @@ namespace islay {
     ReplayRecord                record;
     std::vector<TrainingSample> loaded;
     while (read_replay_record(file, record)) {
-      TrainingSample sample;
-      sample.board        = record.board;
-      sample.legal_moves  = record.legal;
-      sample.forced_pass  = (record.pass != 0);
-      sample.target_value = replay_value_target(record);
-
-      std::uint64_t total_visits = 0;
-      for (int a = 0; a < kPolicySize; ++a)
-        total_visits += record.visits[a];
-
-      if (total_visits > 0) {
-        const float inv_v = 1.0f / static_cast<float>(total_visits);
-        for (int a = 0; a < kPolicySize; ++a)
-          sample.target_policy[a] = static_cast<float>(record.visits[a]) * inv_v;
-      } else {
-        sample.target_policy = record.priors;
-      }
-      loaded.push_back(std::move(sample));
+      const TrainingSample base = make_sample_from_record(record);
+      for (int s = 0; s < 8; ++s)
+        loaded.push_back(apply_symmetry(base, s));
     }
 
     if (loaded.empty())
@@ -311,7 +321,7 @@ namespace islay {
         return false;
 
       buf.push_game(game);
-      if (buf.size() != game.size())
+      if (buf.size() != game.size() * 8)
         return false;
 
       // 2. Sample batch with symmetry augmentation
@@ -335,7 +345,7 @@ namespace islay {
           write_replay_record(out, r);
       }
       ReplayBuffer buf2(1000);
-      if (buf2.load_file(tmp_file) != game.size() || buf2.size() != game.size())
+      if (buf2.load_file(tmp_file) != game.size() * 8 || buf2.size() != game.size() * 8)
         return false;
       std::filesystem::remove(tmp_file);
 
