@@ -305,6 +305,11 @@ defaults to 30 if `movestogo` is absent. Unknown tokens (`depth`, `ponder`, `sea
 are silently ignored for compatibility with standard GUIs.
 `infinite` cannot be combined with another limit.
 
+PUCT exploration uses `c_init + log((N + 19653) / 19652)` at each node, where `N` is
+that node's visit count and `c_init` is the configured `c_puct` (default `1.5`). This
+KataGo-style form increases the exploration coefficient slowly as visits grow; it does
+not reduce exploration at deeper nodes.
+
 Search requires `Rule=Othello`. With an empty `EvalFile`, each accepted request first emits:
 
 ```text

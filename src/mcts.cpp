@@ -130,6 +130,8 @@ namespace islay {
 
   namespace {
 
+    constexpr double kCpuctBase = 19652.0;
+
     class Search {
     public:
       Search(const Board &board, Evaluator &evaluator, const MctsLimits &limits, std::stop_token stop,
@@ -382,8 +384,10 @@ namespace islay {
       }
 
       Index select(Index parent) const {
-        const auto  &node       = nodes_[parent];
-        const double scale      = limits_.c_puct * std::sqrt(1.0 + static_cast<double>(node.visits));
+        const auto  &node = nodes_[parent];
+        const double cpuct =
+                limits_.c_puct + std::log((static_cast<double>(node.visits) + kCpuctBase + 1.0) / kCpuctBase);
+        const double scale      = cpuct * std::sqrt(1.0 + static_cast<double>(node.visits));
         const double parent_q   = node.visits > 0 ? (node.value_sum / static_cast<double>(node.visits)) : 0.0;
         const double fpu_parent = parent == 0 ? parent_q : -parent_q;
         Index        best       = node.first_child;
