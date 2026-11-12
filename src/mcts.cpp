@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "endgame.hpp"
+#include "hash.hpp"
 
 namespace islay {
 
@@ -25,8 +26,19 @@ namespace islay {
     State         state = State::Fresh;
   };
 
+  // Transposition entry for sharing evaluations & search guidance across branches
+  struct alignas(16) MctsTTEntry {
+    std::uint64_t key         = 0; // hash_board(player, opponent)
+    float         q_value     = 0; // state-mover's perspective Q value
+    std::uint32_t visits      = 0; // visits seen on this board state
+    std::uint8_t  best_action = NOMOVE;
+    std::uint8_t  valid       = 0;
+    std::uint16_t pad         = 0;
+  };
+
   struct MctsTree::Impl {
     std::vector<Node>              nodes;
+    std::vector<MctsTTEntry>       tt;
     Board                          root_board{};
     bool                           valid = false;
     std::array<float, kPolicySize> root_network_priors{};
@@ -104,6 +116,7 @@ namespace islay {
   void MctsTree::clear() noexcept {
     if (impl_) {
       impl_->nodes.clear();
+      impl_->tt.clear();
       impl_->valid = false;
     }
   }
@@ -163,6 +176,7 @@ namespace islay {
               if (tree_)
                 tree_->clear();
             } else {
+              init_tt();
               bool reused = false;
               if (tree_ && tree_->can_reuse(board_)) {
                 constexpr Index kNone  = std::numeric_limits<Index>::max();
@@ -279,13 +293,56 @@ namespace islay {
       }
 
     private:
-      Board             board_;
-      Evaluator        &evaluator_;
-      const MctsLimits &limits_;
-      std::stop_token   stop_;
-      MctsTree         *tree_ = nullptr;
-      std::vector<Node> nodes_;
-      MctsResult        result_;
+      Board                     board_;
+      Evaluator                &evaluator_;
+      const MctsLimits         &limits_;
+      std::stop_token           stop_;
+      MctsTree                 *tree_ = nullptr;
+      std::vector<Node>         nodes_;
+      MctsResult                result_;
+      std::vector<MctsTTEntry> *tt_      = nullptr;
+      std::size_t               tt_mask_ = 0;
+
+      void init_tt() {
+        if (tree_) {
+          tt_ = &tree_->impl()->tt;
+        } else {
+          thread_local std::vector<MctsTTEntry> tls_tt;
+          tt_ = &tls_tt;
+        }
+        const std::size_t mib   = std::max<std::size_t>(1, limits_.tree_bytes / (1024 * 1024));
+        const std::size_t slots = tt_slots_for(mib, sizeof(MctsTTEntry));
+        if (tt_->size() != slots) {
+          tt_->assign(slots, MctsTTEntry{});
+        } else if (!tree_) {
+          std::fill(tt_->begin(), tt_->end(), MctsTTEntry{});
+        }
+        tt_mask_ = slots - 1;
+      }
+
+      const MctsTTEntry *probe_tt(const Board &b) const noexcept {
+        if (!tt_ || tt_->empty())
+          return nullptr;
+        const std::uint64_t key = hash_board(b.player, b.opponent);
+        const auto         &e   = (*tt_)[key & tt_mask_];
+        if (e.valid && e.key == key)
+          return &e;
+        return nullptr;
+      }
+
+      void store_tt(const Board &b, float q_val, std::uint32_t visits, std::uint8_t best_act) noexcept {
+        if (!tt_ || tt_->empty())
+          return;
+        const std::uint64_t key = hash_board(b.player, b.opponent);
+        auto               &e   = (*tt_)[key & tt_mask_];
+        if (!e.valid || e.key == key || visits >= e.visits) {
+          e.key         = key;
+          e.q_value     = q_val;
+          e.visits      = visits;
+          e.best_action = best_act;
+          e.valid       = 1;
+        }
+      }
 
       bool interrupted() {
         if (stop_.stop_requested()) {
@@ -347,6 +404,17 @@ namespace islay {
               const Square corner = (sq == 9 ? 0 : sq == 14 ? 7 : sq == 49 ? 56 : 63);
               if (square_bb(corner) & empty_bb)
                 output.logits[sq] -= 2.0f;
+            }
+          }
+        }
+
+        // TT-guided prior initialization: if board state has a proven best action in TT, boost its logit
+        const auto *tt_entry = probe_tt(board);
+        if (tt_entry && tt_entry->best_action != NOMOVE && n > 1) {
+          for (int i = 0; i < n; ++i) {
+            if (actions[i] == tt_entry->best_action) {
+              output.logits[actions[i]] += 0.8f;
+              break;
             }
           }
         }
@@ -414,8 +482,10 @@ namespace islay {
 
       bool simulate() {
         std::array<Index, kMctsMaxPly + 1> path;
+        std::array<Board, kMctsMaxPly + 1> boards;
         int                                depth = 0;
         path[0]                                  = 0;
+        boards[0]                                = board_;
         Board board                              = board_;
         Index index                              = 0;
         while (nodes_[index].state == State::Expanded) {
@@ -425,6 +495,7 @@ namespace islay {
           path[++depth]     = index;
           const auto action = nodes_[index].action;
           board             = action == PASS ? board.passed() : board.play(action);
+          boards[depth]     = board;
         }
         float value;
         if (nodes_[index].state == State::Terminal) {
@@ -437,14 +508,26 @@ namespace islay {
           auto &node = nodes_[path[i]];
           ++node.visits;
           node.value_sum += value;
+          // When an expanded node has accumulated reliable visits, record into MCTS TT
+          if (node.state == State::Expanded && node.visits >= 4 && node.child_count > 0) {
+            const Index best_child = most_visited(path[i]);
+            const float q_val      = static_cast<float>(node.value_sum / static_cast<double>(node.visits));
+            store_tt(boards[i], q_val, static_cast<std::uint32_t>(node.visits), nodes_[best_child].action);
+          }
         }
         ++nodes_[0].visits;
         nodes_[0].value_sum += value;
+        if (nodes_[0].state == State::Expanded && nodes_[0].visits >= 4 && nodes_[0].child_count > 0) {
+          const Index best_child = most_visited(0);
+          const float q_val      = static_cast<float>(nodes_[0].value_sum / static_cast<double>(nodes_[0].visits));
+          store_tt(board_, q_val, static_cast<std::uint32_t>(nodes_[0].visits), nodes_[best_child].action);
+        }
         return true;
       }
 
       struct PendingSim {
         std::array<Index, kMctsMaxPly + 1> path;
+        std::array<Board, kMctsMaxPly + 1> boards;
         int                                depth = 0;
         Board                              board;
         Index                              leaf_index  = 0;
@@ -465,11 +548,12 @@ namespace islay {
         for (int s = 0; s < b_size; ++s) {
           if (interrupted())
             break;
-          auto &sim   = sims[active_sims++];
-          sim.depth   = 0;
-          sim.path[0] = 0;
-          Board board = board_;
-          Index index = 0;
+          auto &sim     = sims[active_sims++];
+          sim.depth     = 0;
+          sim.path[0]   = 0;
+          sim.boards[0] = board_;
+          Board board   = board_;
+          Index index   = 0;
 
           while (nodes_[index].state == State::Expanded) {
             if (sim.depth == kMctsMaxPly)
@@ -478,6 +562,7 @@ namespace islay {
             sim.path[++sim.depth] = index;
             const auto action     = nodes_[index].action;
             board                 = action == PASS ? board.passed() : board.play(action);
+            sim.boards[sim.depth] = board;
 
             auto &node = nodes_[index];
             ++node.visits;
@@ -597,6 +682,17 @@ namespace islay {
                   }
                 }
 
+                // TT-guided prior initialization: if board state has a proven best action in TT, boost its logit
+                const auto *tt_entry = probe_tt(sim.board);
+                if (tt_entry && tt_entry->best_action != NOMOVE && n > 1) {
+                  for (int i = 0; i < n; ++i) {
+                    if (actions[i] == tt_entry->best_action) {
+                      logits[actions[i]] += 0.8f;
+                      break;
+                    }
+                  }
+                }
+
                 float maximum = logits[actions[0]];
                 for (int i = 1; i < n; ++i)
                   maximum = std::max(maximum, logits[actions[i]]);
@@ -627,9 +723,19 @@ namespace islay {
             auto &node = nodes_[sim.path[i]];
             ++node.visits;
             node.value_sum += val;
+            if (node.state == State::Expanded && node.visits >= 4 && node.child_count > 0) {
+              const Index best_child = most_visited(sim.path[i]);
+              const float q_val      = static_cast<float>(node.value_sum / static_cast<double>(node.visits));
+              store_tt(sim.boards[i], q_val, static_cast<std::uint32_t>(node.visits), nodes_[best_child].action);
+            }
           }
           ++nodes_[0].visits;
           nodes_[0].value_sum += val;
+          if (nodes_[0].state == State::Expanded && nodes_[0].visits >= 4 && nodes_[0].child_count > 0) {
+            const Index best_child = most_visited(0);
+            const float q_val      = static_cast<float>(nodes_[0].value_sum / static_cast<double>(nodes_[0].visits));
+            store_tt(board_, q_val, static_cast<std::uint32_t>(nodes_[0].visits), nodes_[best_child].action);
+          }
         }
 
         if (result_.reason == MctsStop::MemoryLimit)
