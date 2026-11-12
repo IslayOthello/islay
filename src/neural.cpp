@@ -50,7 +50,6 @@ namespace islay {
     Ort::Env           env{ORT_LOGGING_LEVEL_ERROR, "islay"};
     Ort::Session       session{nullptr};
     Ort::MemoryInfo    memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-    std::vector<float> input;
 
     Impl(const std::string &path, bool optimize) {
       std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -125,13 +124,14 @@ namespace islay {
       throw std::invalid_argument("neural batch must have matching spans and at most 128 boards");
     if (boards.empty() || stop.stop_requested())
       return;
-    impl_->input.resize(boards.size() * kNeuralInputSize);
+    thread_local std::vector<float> input;
+    input.resize(boards.size() * kNeuralInputSize);
     for (std::size_t i = 0; i < boards.size(); ++i)
-      encode_neural_board(boards[i], std::span<float, kNeuralInputSize>(impl_->input.data() + i * kNeuralInputSize,
-                                                                        kNeuralInputSize));
+      encode_neural_board(
+              boards[i], std::span<float, kNeuralInputSize>(input.data() + i * kNeuralInputSize, kNeuralInputSize));
     const std::array<std::int64_t, 4> shape{static_cast<std::int64_t>(boards.size()), 2, 8, 8};
-    auto                              input =
-            Ort::Value::CreateTensor<float>(impl_->memory, impl_->input.data(), impl_->input.size(), shape.data(), 4);
+    auto input_tensor =
+            Ort::Value::CreateTensor<float>(impl_->memory, input.data(), input.size(), shape.data(), 4);
     const char              *input_names[]  = {"board"};
     const char              *output_names[] = {"policy_logits", "value"};
     Ort::RunOptions          run;
@@ -142,7 +142,7 @@ namespace islay {
         Ort::GetApi().ReleaseStatus(status);
     });
     try {
-      auto result = impl_->session.Run(run, input_names, &input, 1, output_names, 2);
+      auto result = impl_->session.Run(run, input_names, &input_tensor, 1, output_names, 2);
       if (stop.stop_requested())
         return;
       if (result[0].GetTensorTypeAndShapeInfo().GetShape() !=

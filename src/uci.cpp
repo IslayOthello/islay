@@ -614,6 +614,7 @@ namespace islay {
         std::uint32_t sims        = 64;
         std::uint32_t threads     = 1;
         std::uint64_t seed        = 20260909;
+        std::uint32_t cache_mib   = 16;
         std::string   output_file = "data.bin";
 
         std::string tok;
@@ -641,6 +642,11 @@ namespace islay {
           } else if (tok == "seed") {
             if (!(is >> seed)) {
               out_ << "info error: invalid seed\n";
+              return;
+            }
+          } else if (tok == "cache" || tok == "cache-mib") {
+            if (!(is >> cache_mib) || cache_mib == 0 || cache_mib > 4096) {
+              out_ << "info error: invalid cache size (1..4096 MiB)\n";
               return;
             }
           } else {
@@ -676,7 +682,7 @@ namespace islay {
         }
 
         out_ << "info string datagen starting: games=" << games << " sims=" << sims << " threads=" << threads
-             << " output=" << output_file << "\n";
+             << " cache=" << cache_mib << " MiB output=" << output_file << "\n";
         flush_output();
 
         std::ofstream out_file(output_file, std::ios::binary | std::ios::trunc);
@@ -688,6 +694,8 @@ namespace islay {
         std::mutex                                         file_mutex;
         std::atomic<std::uint64_t>                         game_counter{0};
         std::atomic<std::uint64_t>                         total_samples{0};
+        std::atomic<std::uint64_t>                         cache_hits{0};
+        std::atomic<std::uint64_t>                         cache_misses{0};
         std::uint64_t                                      next_game_to_write = 0;
         std::map<std::uint64_t, std::vector<ReplayRecord>> pending;
         const auto                                         start_time      = Clock::now();
@@ -702,7 +710,7 @@ namespace islay {
 
         for (std::uint32_t t = 0; t < threads; ++t) {
           workers.emplace_back([&]() {
-            CachedEvaluator cached(*eval_backend, 16 * 1024 * 1024);
+            CachedEvaluator cached(*eval_backend, static_cast<std::size_t>(cache_mib) * 1024 * 1024);
             while (true) {
               const std::uint64_t g = game_counter.fetch_add(1);
               if (g >= games)
@@ -752,25 +760,34 @@ namespace islay {
                               << std::flush;
                   }
                 }
-                out_file.flush();
+                if (next_game_to_write == games || (next_game_to_write & 15) == 0)
+                  out_file.flush();
               }
             }
+            cache_hits.fetch_add(cached.hits);
+            cache_misses.fetch_add(cached.misses);
           });
         }
 
         for (auto &w: workers)
           w.join();
+        out_file.flush();
 
         const double elapsed_us = us_since(start_time);
         const double elapsed_s  = elapsed_us / 1e6;
         const double gps        = elapsed_us > 0 ? next_game_to_write * 1e6 / elapsed_us : 0.0;
         const double avg_plies =
                 next_game_to_write > 0 ? static_cast<double>(total_samples.load()) / next_game_to_write : 0.0;
+        const auto hits   = cache_hits.load();
+        const auto misses = cache_misses.load();
+        const auto probes = hits + misses;
+        const double hit_rate = probes ? 100.0 * static_cast<double>(hits) / static_cast<double>(probes) : 0.0;
 
         out_ << "info string datagen complete: " << next_game_to_write << "/" << games << " games (100.0%) | "
              << grouped_count(std::to_string(total_samples.load())) << " samples (avg " << std::fixed
              << std::setprecision(1) << avg_plies << " moves/game) | " << std::setprecision(1) << gps << " games/s | "
-             << "time: " << format_duration(elapsed_s) << " -> " << output_file << "\n";
+             << "cache: " << hits << " hits, " << misses << " misses (" << hit_rate << "%) | time: "
+             << format_duration(elapsed_s) << " -> " << output_file << "\n";
       }
 
       void cmd_train(std::istringstream &is) {
@@ -790,6 +807,8 @@ namespace islay {
         config.selfplay.simulations    = 64;
         config.selfplay.seed           = 20260909;
 
+        bool        steps_specified = false;
+        bool        epochs_specified = false;
         std::string tok;
         while (is >> tok) {
           if (tok == "data" || tok == "file" || tok == "dataset" || tok == "-d") {
@@ -802,6 +821,21 @@ namespace islay {
               out_ << "info error: invalid steps count\n";
               return;
             }
+            if (epochs_specified) {
+              out_ << "info error: use either steps or epoch, not both\n";
+              return;
+            }
+            steps_specified = true;
+          } else if (tok == "epoch" || tok == "epochs") {
+            if (!(is >> config.target_epochs) || config.target_epochs == 0) {
+              out_ << "info error: invalid epoch count\n";
+              return;
+            }
+            if (steps_specified) {
+              out_ << "info error: use either steps or epoch, not both\n";
+              return;
+            }
+            epochs_specified = true;
           } else if (tok == "batch" || tok == "-b") {
             if (!(is >> config.batch_size) || config.batch_size == 0) {
               out_ << "info error: invalid batch size\n";
@@ -860,6 +894,10 @@ namespace islay {
         }
 
         const bool is_offline = !config.dataset_file.empty();
+        if (epochs_specified && !is_offline) {
+          out_ << "info error: epoch requires an offline data file\n";
+          return;
+        }
         if (is_offline) {
           if (!std::filesystem::exists(config.dataset_file)) {
             out_ << "info error: dataset file not found: '" << config.dataset_file << "'\n";
@@ -882,8 +920,13 @@ namespace islay {
           out_ << "info string train mode: online AlphaZero self-play (workers=" << config.num_workers
                << " sims=" << config.selfplay.simulations << ")\n";
         }
-        out_ << "info string train starting: steps=" << config.target_steps << " batch=" << config.batch_size
-             << " lr=" << config.optimizer.learning_rate << " output=" << config.output_file << "\n";
+        out_ << "info string train starting: ";
+        if (epochs_specified)
+          out_ << "epochs=" << config.target_epochs << " ";
+        else
+          out_ << "steps=" << config.target_steps << " ";
+        out_ << "batch=" << config.batch_size << " lr=" << config.optimizer.learning_rate
+             << " output=" << config.output_file << "\n";
         flush_output();
 
         std::chrono::steady_clock::time_point last_print = Clock::now();

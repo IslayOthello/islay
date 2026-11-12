@@ -56,7 +56,8 @@ namespace islay {
   struct PipelineConfig {
     std::string     dataset_file     = "";
     std::uint32_t   num_workers      = 4;
-    std::uint32_t   target_steps     = 1000;
+    std::uint64_t   target_steps     = 1000;
+    std::uint64_t   target_epochs    = 0;
     std::uint32_t   batch_size       = 64;
     std::uint32_t   checkpoint_every = 100;
     std::uint32_t   warmup_games     = 10;

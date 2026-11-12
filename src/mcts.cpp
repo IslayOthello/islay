@@ -22,7 +22,7 @@ namespace islay {
     Index         first_child{};
     std::uint8_t  action = NOMOVE;
     std::uint8_t  child_count{};
-    std::int8_t   terminal_value{};
+    float         terminal_value{};
     State         state = State::Fresh;
   };
 
@@ -144,6 +144,10 @@ namespace islay {
   namespace {
 
     constexpr double kCpuctBase = 19652.0;
+
+    float margin_value(int margin) noexcept {
+      return static_cast<float>(std::tanh(static_cast<double>(margin) / 15.0));
+    }
 
     class Search {
     public:
@@ -365,10 +369,10 @@ namespace islay {
         }
         const int empties = 64 - board.count();
         if (index != 0 && empties <= limits_.endgame_solver_empties) {
-          const int outcome            = solve_exact_wld(board, empties);
+          const int margin             = solve_exact_margin(board, empties);
           nodes_[index].state          = State::Terminal;
-          nodes_[index].terminal_value = static_cast<std::int8_t>(outcome);
-          value                        = static_cast<float>(outcome);
+          nodes_[index].terminal_value = margin_value(margin);
+          value                        = nodes_[index].terminal_value;
           return true;
         }
         const auto count = static_cast<std::size_t>(status.action_count());
@@ -578,11 +582,11 @@ namespace islay {
           } else {
             const int empties = 64 - board.count();
             if (index != 0 && empties <= limits_.endgame_solver_empties) {
-              const int outcome            = solve_exact_wld(board, empties);
+              const int margin             = solve_exact_margin(board, empties);
               nodes_[index].state          = State::Terminal;
-              nodes_[index].terminal_value = static_cast<std::int8_t>(outcome);
+              nodes_[index].terminal_value = margin_value(margin);
               sim.is_terminal              = true;
-              sim.value                    = static_cast<float>(outcome);
+              sim.value                    = nodes_[index].terminal_value;
             } else {
               const auto status = game_status(board);
               if (status.terminal()) {

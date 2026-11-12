@@ -1,6 +1,7 @@
 #include "endgame.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -20,9 +21,21 @@ namespace islay {
       std::uint8_t  pad     = 0;
     };
 
-    // 64 MiB transposition table = 4,194,304 slots of 16 bytes.
-    constexpr std::size_t       kEndgameTTSlots = 4194304;
-    std::vector<EndgameTTEntry> g_endgame_tt(kEndgameTTSlots);
+    // Per-thread 16 MiB transposition table = 1,048,576 slots of 16 bytes.
+    // Endgame solving is used by concurrent self-play workers; a shared table
+    // would introduce races or require a lock on every probe and store.
+    constexpr std::size_t kEndgameTTSlots = 1048576;
+    thread_local std::vector<EndgameTTEntry> g_endgame_tt(kEndgameTTSlots);
+
+    struct alignas(16) EndgameMarginTTEntry {
+      std::uint64_t key     = 0;
+      std::int8_t   lower   = -65;
+      std::int8_t   upper   = 65;
+      std::uint8_t  empties = 0;
+      std::uint8_t  pad[3]  = {};
+    };
+
+    thread_local std::vector<EndgameMarginTTEntry> g_endgame_margin_tt(kEndgameTTSlots);
 
     ISLAY_FORCEINLINE int solve1(const Board &b, Bitboard moves) noexcept {
       const int    p = popcount(b.player), o = popcount(b.opponent);
@@ -112,7 +125,8 @@ namespace islay {
       }
 
       // TT probe for deep endgames (empties >= 5)
-      const std::uint64_t key   = hash_board(b.player, b.opponent);
+      const Board          canonical = b.canonical();
+      const std::uint64_t  key       = hash_board(canonical.player, canonical.opponent);
       const std::size_t   idx   = key & (kEndgameTTSlots - 1);
       EndgameTTEntry     &entry = g_endgame_tt[idx];
 
@@ -203,6 +217,91 @@ namespace islay {
       return alpha;
     }
 
+    int solve_margin(const Board &b, int alpha, int beta, int empties) noexcept {
+      if (empties <= 0)
+        return popcount(b.player) - popcount(b.opponent);
+
+      const Bitboard moves = b.moves();
+      if (!moves) {
+        const Board passed = b.passed();
+        if (passed.has_moves())
+          return -solve_margin(passed, -beta, -alpha, empties);
+        return popcount(b.player) - popcount(b.opponent);
+      }
+
+      const Board            canonical = b.canonical();
+      const std::uint64_t    key       = hash_board(canonical.player, canonical.opponent);
+      const std::size_t      idx       = key & (kEndgameTTSlots - 1);
+      EndgameMarginTTEntry  &entry     = g_endgame_margin_tt[idx];
+
+      if (entry.key == key && entry.empties == empties) {
+        if (entry.lower >= beta)
+          return entry.lower;
+        if (entry.upper <= alpha)
+          return entry.upper;
+        alpha = std::max(alpha, static_cast<int>(entry.lower));
+        beta  = std::min(beta, static_cast<int>(entry.upper));
+        if (alpha >= beta)
+          return alpha;
+      }
+
+      const int orig_alpha = alpha;
+
+      struct MoveScore {
+        Square sq;
+        int    opp_mobility;
+      };
+      std::array<MoveScore, 32> candidates;
+      int                       count = 0;
+      Bitboard                  rem   = moves;
+      while (rem) {
+        const Square sq      = pop_lsb(rem);
+        const Board  nb      = b.play(sq);
+        candidates[count++]  = {sq, popcount(nb.moves())};
+      }
+
+      for (int i = 1; i < count; ++i) {
+        MoveScore key_s = candidates[i];
+        int       j     = i - 1;
+        while (j >= 0 && candidates[j].opp_mobility > key_s.opp_mobility) {
+          candidates[j + 1] = candidates[j];
+          --j;
+        }
+        candidates[j + 1] = key_s;
+      }
+
+      for (int i = 0; i < count; ++i) {
+        const int score = -solve_margin(b.play(candidates[i].sq), -beta, -alpha, empties - 1);
+        if (score >= beta) {
+          if (entry.key != key || entry.empties != empties) {
+            entry.key     = key;
+            entry.empties = static_cast<std::uint8_t>(empties);
+            entry.lower   = static_cast<std::int8_t>(score);
+            entry.upper   = 65;
+          } else {
+            entry.lower = std::max(entry.lower, static_cast<std::int8_t>(score));
+          }
+          return score;
+        }
+        if (score > alpha)
+          alpha = score;
+      }
+
+      if (entry.key != key || entry.empties != empties) {
+        entry.key     = key;
+        entry.empties = static_cast<std::uint8_t>(empties);
+        entry.lower   = -65;
+        entry.upper   = 65;
+      }
+      if (alpha <= orig_alpha)
+        entry.upper = std::min(entry.upper, static_cast<std::int8_t>(alpha));
+      else {
+        entry.lower = static_cast<std::int8_t>(alpha);
+        entry.upper = static_cast<std::int8_t>(alpha);
+      }
+      return alpha;
+    }
+
     // Unpruned minimax reference oracle used solely for self-testing.
     int reference_exact_outcome(const Board &board) {
       auto moves = board.moves();
@@ -218,6 +317,19 @@ namespace islay {
       return best;
     }
 
+    int reference_exact_margin(const Board &board) {
+      auto moves = board.moves();
+      if (!moves) {
+        if (board.passed().has_moves())
+          return -reference_exact_margin(board.passed());
+        return popcount(board.player) - popcount(board.opponent);
+      }
+      int best = -65;
+      while (moves)
+        best = std::max(best, -reference_exact_margin(board.play(pop_lsb(moves))));
+      return best;
+    }
+
   } // namespace
 
   void clear_endgame_tt() noexcept {
@@ -225,6 +337,12 @@ namespace islay {
       e.key     = 0;
       e.lower   = -2;
       e.upper   = 2;
+      e.empties = 0;
+    }
+    for (auto &e: g_endgame_margin_tt) {
+      e.key     = 0;
+      e.lower   = -65;
+      e.upper   = 65;
       e.empties = 0;
     }
   }
@@ -235,6 +353,10 @@ namespace islay {
       return (margin > 0) - (margin < 0);
     }
     return solve_wld(board, -1, 1, empties);
+  }
+
+  int solve_exact_margin(const Board &board, int empties) noexcept {
+    return solve_margin(board, -65, 65, empties);
   }
 
   bool endgame_selftest() {
@@ -279,6 +401,8 @@ namespace islay {
         const int actual   = solve_exact_wld(b, empties);
         const int expected = reference_exact_outcome(b);
         if (actual != expected)
+          return false;
+        if (solve_exact_margin(b, empties) != reference_exact_margin(b))
           return false;
         ++checked;
         wins += (actual == 1);

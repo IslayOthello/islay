@@ -12,7 +12,10 @@ namespace islay {
   // Assumes Othello rules (pass if mover has no legal moves; terminal if both pass or board full).
   [[nodiscard]] int solve_exact_wld(const Board &board, int empties) noexcept;
 
-  // Clear endgame transposition table.
+  // Exact final disc margin from the perspective of board's mover.
+  [[nodiscard]] int solve_exact_margin(const Board &board, int empties) noexcept;
+
+  // Clear the calling thread's endgame transposition table.
   void clear_endgame_tt() noexcept;
 
   // Standalone self-test comparing solve_exact_wld against an unpruned minimax reference.

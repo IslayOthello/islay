@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <thread>
 
@@ -193,6 +194,14 @@ namespace islay {
       }
       if (total_loaded == 0)
         throw std::runtime_error("dataset file is empty or cannot be read: " + config_.dataset_file);
+      if (config_.target_epochs > 0) {
+        const std::uint64_t batches_per_epoch =
+                (static_cast<std::uint64_t>(buffer_.size()) + config_.batch_size - 1) / config_.batch_size;
+        if (batches_per_epoch == 0 ||
+            config_.target_epochs > std::numeric_limits<std::uint64_t>::max() / batches_per_epoch)
+          throw std::runtime_error("epoch count is too large");
+        config_.target_steps = config_.target_epochs * batches_per_epoch;
+      }
     } else {
       // 1. Launch self-play worker threads
       workers.reserve(config_.num_workers);

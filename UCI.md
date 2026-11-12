@@ -90,7 +90,7 @@ End-of-file has the same effect. To obtain a result before exiting, send `stop` 
 Synchronous self-play data generation command for neural network training:
 
 ```text
-datagen [games <N>] [sims <S>] [output <path>] [threads <T>] [seed <S>]
+datagen [games <N>] [sims <S>] [output <path>] [threads <T>] [seed <S>] [cache <MiB>]
 ```
 
 | Parameter | Type | Default | Description |
@@ -100,6 +100,7 @@ datagen [games <N>] [sims <S>] [output <path>] [threads <T>] [seed <S>]
 | `output` | string | `data.bin` | Output path for binary replay records (560 bytes/sample) |
 | `threads` | integer | `1` | Number of parallel worker threads |
 | `seed` | integer | `20260909` | Base seed for Dirichlet exploration and action sampling |
+| `cache` | integer | `16` | Per-worker evaluator cache size in MiB (`1` to `4096`) |
 
 Positional games count is also accepted (e.g. `datagen 50`). If a neural network is loaded (`EvalFile`), `datagen` uses that model. If no model is loaded (`EvalFile` is `<empty>`), `datagen` runs generation 0 with a randomly initialized native network. Games in the output file are guaranteed to be contiguous and verified.
 
@@ -109,7 +110,7 @@ info string datagen progress: 5/10 games (50.0%) | 301 samples | 2.6 games/s | 1
 ```
 Upon completion:
 ```text
-info string datagen complete: 10/10 games (100.0%) | 602 samples (avg 60.2 moves/game) | 3.1 games/s | time: 3.2s -> data.bin
+info string datagen complete: 10/10 games (100.0%) | 602 samples (avg 60.2 moves/game) | 3.1 games/s | cache: 120 hits, 480 misses (20.0%) | time: 3.2s -> data.bin
 ```
 
 ### train
@@ -117,13 +118,14 @@ info string datagen complete: 10/10 games (100.0%) | 602 samples (avg 60.2 moves
 Synchronous neural network training command supporting both offline dataset training and online AlphaZero self-play training:
 
 ```text
-train [data <path>] [steps <N>] [batch <B>] [lr <L>] [output <path>] [init <path>] [workers <W>] [sims <S>] [warmup <N>] [checkpoint <N>]
+train [data <path>] [steps <N> | epoch <N>] [batch <B>] [lr <L>] [output <path>] [init <path>] [workers <W>] [sims <S>] [warmup <N>] [checkpoint <N>]
 ```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `data` | string | `<empty>` | Path to binary replay dataset file for offline training; if omitted, runs online self-play training |
 | `steps` | integer | `500` (offline) / `1000` (online) | Number of SGD optimization steps |
+| `epoch` | integer | `<empty>` | Number of passes over the offline replay dataset; one epoch is rounded up to `ceil(samples / batch)` SGD steps. Cannot be combined with `steps` and is not available for online self-play |
 | `batch` | integer | `64` | Batch size per gradient step |
 | `lr` | float | `0.01` | Learning rate for SGD optimizer (with momentum 0.9 and weight decay 1e-4) |
 | `output` | string | `model.bin` | Output path for trained model weights |
