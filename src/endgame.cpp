@@ -2,13 +2,27 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <vector>
 
 #include "bitboard.hpp"
 #include "game.hpp"
+#include "hash.hpp"
 #include "movegen.hpp"
 
 namespace islay {
   namespace {
+
+    struct alignas(16) EndgameTTEntry {
+      std::uint64_t key     = 0;
+      std::int8_t   lower   = -2;
+      std::int8_t   upper   = 2;
+      std::uint8_t  empties = 0;
+      std::uint8_t  pad     = 0;
+    };
+
+    // 64 MiB transposition table = 4,194,304 slots of 16 bytes.
+    constexpr std::size_t       kEndgameTTSlots = 4194304;
+    std::vector<EndgameTTEntry> g_endgame_tt(kEndgameTTSlots);
 
     ISLAY_FORCEINLINE int solve1(const Board &b, Bitboard moves) noexcept {
       const int    p = popcount(b.player), o = popcount(b.opponent);
@@ -97,6 +111,24 @@ namespace islay {
         return alpha;
       }
 
+      // TT probe for deep endgames (empties >= 5)
+      const std::uint64_t key   = hash_board(b.player, b.opponent);
+      const std::size_t   idx   = key & (kEndgameTTSlots - 1);
+      EndgameTTEntry     &entry = g_endgame_tt[idx];
+
+      if (entry.key == key && entry.empties == empties) {
+        if (entry.lower >= beta)
+          return entry.lower;
+        if (entry.upper <= alpha)
+          return entry.upper;
+        alpha = std::max(alpha, static_cast<int>(entry.lower));
+        beta  = std::min(beta, static_cast<int>(entry.upper));
+        if (alpha >= beta)
+          return alpha;
+      }
+
+      const int orig_alpha = alpha;
+
       // Min-mobility heuristic: sort moves by opponent mobility ascending
       struct MoveScore {
         Square sq;
@@ -111,8 +143,17 @@ namespace islay {
         const int    opp_mob = popcount(nb.moves());
         if (opp_mob == 0) {
           const int score = -solve_wld(nb, -beta, -alpha, empties - 1);
-          if (score >= beta)
+          if (score >= beta) {
+            if (entry.key != key || entry.empties != empties) {
+              entry.key     = key;
+              entry.empties = static_cast<std::uint8_t>(empties);
+              entry.lower   = static_cast<std::int8_t>(score);
+              entry.upper   = 2;
+            } else {
+              entry.lower = std::max(entry.lower, static_cast<std::int8_t>(score));
+            }
             return score;
+          }
           if (score > alpha)
             alpha = score;
         } else {
@@ -121,21 +162,43 @@ namespace islay {
       }
 
       for (int i = 1; i < count; ++i) {
-        MoveScore key = candidates[i];
-        int       j   = i - 1;
-        while (j >= 0 && candidates[j].opp_mobility > key.opp_mobility) {
+        MoveScore key_s = candidates[i];
+        int       j     = i - 1;
+        while (j >= 0 && candidates[j].opp_mobility > key_s.opp_mobility) {
           candidates[j + 1] = candidates[j];
           --j;
         }
-        candidates[j + 1] = key;
+        candidates[j + 1] = key_s;
       }
 
       for (int i = 0; i < count; ++i) {
         const int score = -solve_wld(b.play(candidates[i].sq), -beta, -alpha, empties - 1);
-        if (score >= beta)
+        if (score >= beta) {
+          if (entry.key != key || entry.empties != empties) {
+            entry.key     = key;
+            entry.empties = static_cast<std::uint8_t>(empties);
+            entry.lower   = static_cast<std::int8_t>(score);
+            entry.upper   = 2;
+          } else {
+            entry.lower = std::max(entry.lower, static_cast<std::int8_t>(score));
+          }
           return score;
+        }
         if (score > alpha)
           alpha = score;
+      }
+
+      if (entry.key != key || entry.empties != empties) {
+        entry.key     = key;
+        entry.empties = static_cast<std::uint8_t>(empties);
+        entry.lower   = -2;
+        entry.upper   = 2;
+      }
+      if (alpha <= orig_alpha)
+        entry.upper = std::min(entry.upper, static_cast<std::int8_t>(alpha));
+      else {
+        entry.lower = static_cast<std::int8_t>(alpha);
+        entry.upper = static_cast<std::int8_t>(alpha);
       }
       return alpha;
     }
@@ -157,6 +220,15 @@ namespace islay {
 
   } // namespace
 
+  void clear_endgame_tt() noexcept {
+    for (auto &e: g_endgame_tt) {
+      e.key     = 0;
+      e.lower   = -2;
+      e.upper   = 2;
+      e.empties = 0;
+    }
+  }
+
   int solve_exact_wld(const Board &board, int empties) noexcept {
     if (empties <= 0) {
       const int margin = popcount(board.player) - popcount(board.opponent);
@@ -166,6 +238,7 @@ namespace islay {
   }
 
   bool endgame_selftest() {
+    clear_endgame_tt();
     // 1. Edge case: full board
     const Board full{0x5555555555555555ULL, 0xAAAAAAAAAAAAAAAAULL};
     if (solve_exact_wld(full, 0) != 0)

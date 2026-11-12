@@ -282,6 +282,7 @@ namespace islay {
             tt_.clear();
           }
           search_.clear_tree();
+          clear_endgame_tt();
           out_ << "info string option " << name << " = " << value << '\n';
         } else {
           out_ << "info error: unknown option or invalid value: '" << name << "' = '" << value << "'\n";
@@ -987,7 +988,7 @@ namespace islay {
             out_ << "Draw (" << black_count << " - " << white_count << ")\n";
         } else {
           const int empties = 64 - board_.count();
-          if (empties <= 10) {
+          if (empties <= kEndgameMaxEmpties) {
             const int outcome = solve_exact_wld(board_, empties);
             out_ << "Endgame solver (depth " << empties << "): "
                  << (outcome > 0   ? "Mover Win (+1)"

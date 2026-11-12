@@ -25,7 +25,7 @@ namespace islay {
     MctsClock::time_point  deadline = MctsClock::time_point::max();
     double                 c_puct   = 1.5;
     const RootExploration *exploration            = nullptr; // self-play only; valid for this synchronous call
-    int                    endgame_solver_empties = 10;
+    int                    endgame_solver_empties = 14;
     int                    batch_size             = 1;
     bool                   tactical_bias          = true;
     double                 fpu_reduction          = 0.2;

@@ -5,12 +5,15 @@
 
 namespace islay {
 
-  inline constexpr int kEndgameMaxEmpties = 8;
+  inline constexpr int kEndgameMaxEmpties = 14;
 
   // Exact Win/Loss/Draw solver for small endgames (empties <= kEndgameMaxEmpties).
   // Returns +1 for Win, 0 for Draw, -1 for Loss from the perspective of board's mover.
   // Assumes Othello rules (pass if mover has no legal moves; terminal if both pass or board full).
   [[nodiscard]] int solve_exact_wld(const Board &board, int empties) noexcept;
+
+  // Clear endgame transposition table.
+  void clear_endgame_tt() noexcept;
 
   // Standalone self-test comparing solve_exact_wld against an unpruned minimax reference.
   [[nodiscard]] bool endgame_selftest();
