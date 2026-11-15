@@ -29,6 +29,7 @@ loaded once per run, not once per move/game/shard. Perft remains single-threaded
 | `--tree-mib` | 8 | Arena cap; an incomplete/memory-limited search aborts the game |
 | `--cache-mib` | 16 | Exact neural-output cache budget; 0 disables it |
 | `--epsilon` / `--alpha` | 0.25 / 0.3 | Root Dirichlet mixture fraction and concentration |
+| opening plies | 8 | Enhanced exploration and soft action sampling at the start of each game |
 | `--temperature-plies` | 16 | Sample visits with tau=1 before this ply, then tau=0 |
 | `--shard-games` | 16 | Complete games per atomic shard, at most 1024 |
 | `--max-mib` | 256 | Dataset byte cap including model snapshot and abandoned partial files |
@@ -38,6 +39,10 @@ Every pass consumes a ply and flips the mover perspective. The policy is
 action index breaking ties. There is always at least one completed simulation. Policy is
 reconstructed from exact uint32 visits; it is not rounded to a stored float target.
 The original legal neural prior is stored separately from root-noise priors.
+
+Training replay sampling balances opening, middlegame, and endgame positions at
+approximately 25% / 37.5% / 37.5% when all phases are present. Missing phases
+fall back to uniform sampling.
 
 Noise is applied once to the root only, after legal softmax and outside the evaluation
 cache. Terminal nodes bypass inference; forced pass has probability one. UCI search

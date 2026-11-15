@@ -1,6 +1,7 @@
 #ifndef ISLAY_TRAIN_HPP
 #define ISLAY_TRAIN_HPP
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -50,7 +51,10 @@ namespace islay {
     std::vector<TrainingSample> buffer_;
     std::size_t                 head_{0};
     bool                        full_{false};
+    std::array<std::size_t, 3>  phase_counts_{};
     mutable std::mutex          mutex_;
+
+    void store_sample(TrainingSample sample);
   };
 
   struct PipelineConfig {

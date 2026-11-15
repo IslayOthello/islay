@@ -13,6 +13,11 @@
 namespace islay {
 
   namespace {
+    std::size_t sample_phase(const TrainingSample &sample) noexcept {
+      const int discs = sample.board.count();
+      return discs <= 20 ? 0 : discs <= 44 ? 1 : 2;
+    }
+
     TrainingSample make_sample_from_record(const ReplayRecord &r) {
       TrainingSample sample;
       sample.board        = r.board;
@@ -54,16 +59,22 @@ namespace islay {
 
   ReplayBuffer::ReplayBuffer(std::size_t max_samples) : max_samples_(max_samples) { buffer_.resize(max_samples_); }
 
+  void ReplayBuffer::store_sample(TrainingSample sample) {
+    if (full_)
+      --phase_counts_[sample_phase(buffer_[head_])];
+    buffer_[head_] = std::move(sample);
+    ++phase_counts_[sample_phase(buffer_[head_])];
+    head_ = (head_ + 1) % max_samples_;
+    if (head_ == 0)
+      full_ = true;
+  }
+
   void ReplayBuffer::push_game(std::span<const ReplayRecord> game) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto &r: game) {
       const TrainingSample base = make_sample_from_record(r);
-      for (int s = 0; s < 8; ++s) {
-        buffer_[head_] = apply_symmetry(base, s);
-        head_          = (head_ + 1) % max_samples_;
-        if (head_ == 0)
-          full_ = true;
-      }
+      for (int s = 0; s < 8; ++s)
+        store_sample(apply_symmetry(base, s));
     }
   }
 
@@ -88,12 +99,8 @@ namespace islay {
       max_samples_ = loaded.size();
       buffer_.resize(max_samples_);
     }
-    for (auto &s: loaded) {
-      buffer_[head_] = std::move(s);
-      head_          = (head_ + 1) % max_samples_;
-      if (head_ == 0)
-        full_ = true;
-    }
+    for (auto &s: loaded)
+      store_sample(std::move(s));
     return loaded.size();
   }
 
@@ -106,6 +113,7 @@ namespace islay {
     std::lock_guard<std::mutex> lock(mutex_);
     head_ = 0;
     full_ = false;
+    phase_counts_.fill(0);
   }
 
   bool ReplayBuffer::sample_batch(std::size_t batch_size, std::vector<TrainingSample> &out, std::mt19937_64 &rng,
@@ -118,9 +126,22 @@ namespace islay {
     out.resize(batch_size);
     std::uniform_int_distribution<std::size_t> dist_idx(0, current_size - 1);
     std::uniform_int_distribution<int>         dist_sym(0, 7);
+    constexpr std::array<int, 8> phase_schedule{0, 0, 1, 1, 1, 2, 2, 2};
+    std::uniform_int_distribution<std::size_t> retry_dist(0, current_size - 1);
 
     for (std::size_t i = 0; i < batch_size; ++i) {
-      const auto &src = buffer_[dist_idx(rng)];
+      const int requested_phase = phase_schedule[i % phase_schedule.size()];
+      std::size_t selected       = dist_idx(rng);
+      if (phase_counts_[requested_phase] > 0) {
+        for (int attempt = 0; attempt < 64; ++attempt) {
+          const std::size_t candidate = retry_dist(rng);
+          if (sample_phase(buffer_[candidate]) == static_cast<std::size_t>(requested_phase)) {
+            selected = candidate;
+            break;
+          }
+        }
+      }
+      const auto &src = buffer_[selected];
       if (!augment) {
         out[i] = src;
       } else {

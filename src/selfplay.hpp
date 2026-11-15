@@ -16,7 +16,7 @@ namespace islay {
     double        epsilon           = 0.25;
     double        alpha             = 0.3;
     std::uint16_t temperature_plies = 16; // tau=1 before this ply, then tau=0
-    std::uint16_t opening_plies     = 4; // plies with enhanced exploration & soft action sampling
+    std::uint16_t opening_plies     = 8; // plies with enhanced exploration & soft action sampling
   };
 
   struct ReplayRecord {
