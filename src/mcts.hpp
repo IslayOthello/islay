@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 #include "evaluator.hpp"
@@ -19,16 +20,20 @@ namespace islay {
     double                         fraction = 0.25;
   };
 
+  struct MctsResult;
+
   struct MctsLimits {
-    std::uint64_t simulations       = 800;
-    std::size_t   tree_bytes        = 64 * 1024 * 1024; // arena only; excludes evaluator and fixed stack/result storage
-    MctsClock::time_point  deadline = MctsClock::time_point::max();
-    double                 c_puct   = 1.5;
-    const RootExploration *exploration            = nullptr; // self-play only; valid for this synchronous call
-    int                    endgame_solver_empties = 14;
-    int                    batch_size             = 1;
-    bool                   tactical_bias          = true;
-    double                 fpu_reduction          = 0.2;
+    std::uint64_t simulations = 800;
+    std::size_t   tree_bytes  = 64 * 1024 * 1024; // arena only; excludes evaluator and fixed stack/result storage
+    MctsClock::time_point                   deadline    = MctsClock::time_point::max();
+    double                                  c_puct      = 1.5;
+    const RootExploration                  *exploration = nullptr; // self-play only; valid for this synchronous call
+    int                                     endgame_solver_empties = 14;
+    int                                     batch_size             = 1;
+    bool                                    q_aware_early_stop     = false;
+    bool                                    tactical_bias          = true;
+    double                                  fpu_reduction          = 0.2;
+    std::function<void(const MctsResult &)> progress;
   };
 
   enum class MctsStop { SimulationLimit, Deadline, Cancelled, MemoryLimit, Terminal };

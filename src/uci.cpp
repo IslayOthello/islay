@@ -376,8 +376,10 @@ namespace islay {
 
       void cmd_search(std::string tok, std::istringstream &is) {
         MctsLimits limits;
-        limits.simulations = std::numeric_limits<std::uint64_t>::max();
-        limits.tree_bytes  = static_cast<std::size_t>(options_.mcts_hash_mib) * 1024 * 1024;
+        limits.simulations        = std::numeric_limits<std::uint64_t>::max();
+        limits.tree_bytes         = static_cast<std::size_t>(options_.mcts_hash_mib) * 1024 * 1024;
+        limits.batch_size         = options_.mcts_batch;
+        limits.q_aware_early_stop = options_.mcts_q_aware_stop;
 
         bool          nodes = false, timed = false, infinite = false;
         std::uint64_t milliseconds = 0;
@@ -613,6 +615,7 @@ namespace islay {
         std::uint64_t games       = 10;
         std::uint32_t sims        = 64;
         std::uint32_t threads     = 1;
+        std::uint32_t batch_size  = 8;
         std::uint64_t seed        = 20260909;
         std::uint32_t cache_mib   = 16;
         std::string   output_file = "data.bin";
@@ -632,6 +635,11 @@ namespace islay {
           } else if (tok == "threads" || tok == "-t") {
             if (!(is >> threads) || threads == 0) {
               out_ << "info error: invalid threads count\n";
+              return;
+            }
+          } else if (tok == "batch" || tok == "batch-size") {
+            if (!(is >> batch_size) || batch_size == 0 || batch_size > 64) {
+              out_ << "info error: invalid inference batch size (1..64)\n";
               return;
             }
           } else if (tok == "output" || tok == "file" || tok == "-o") {
@@ -668,6 +676,7 @@ namespace islay {
 
         SelfplayConfig config;
         config.simulations = sims;
+        config.batch_size  = batch_size;
         config.seed        = seed;
         config.tree_bytes  = static_cast<std::size_t>(options_.mcts_hash_mib) * 1024 * 1024;
 
@@ -682,7 +691,7 @@ namespace islay {
         }
 
         out_ << "info string datagen starting: games=" << games << " sims=" << sims << " threads=" << threads
-             << " cache=" << cache_mib << " MiB output=" << output_file << "\n";
+             << " batch=" << batch_size << " cache=" << cache_mib << " MiB output=" << output_file << "\n";
         flush_output();
 
         std::ofstream out_file(output_file, std::ios::binary | std::ios::trunc);
@@ -1002,20 +1011,37 @@ namespace islay {
           }
         }
 
-        const double mover_val = eval.value;
-        const double mover_wr  = (mover_val + 1.0) * 50.0;
-        const double black_wr  = (stm_ == Color::Black) ? mover_wr : (100.0 - mover_wr);
-        const double white_wr  = 100.0 - black_wr;
-        const double black_val = (stm_ == Color::Black) ? mover_val : -mover_val;
-
+        MctsResult search_result{};
+        const bool has_search_result = search_.last_result(board_, search_result);
+        const double mover_val       = eval.value;
+        const double mover_score     = (mover_val + 1.0) * 50.0;
+        const double black_val       = (stm_ == Color::Black) ? mover_val : -mover_val;
+        const double black_score     = (black_val + 1.0) * 50.0;
+        const double white_score     = 100.0 - black_score;
         const GameStatus status = game_status(board_);
+        int exact_outcome = status.terminal() ? status.value : 2;
+        if (!status.terminal() && 64 - board_.count() <= kEndgameMaxEmpties)
+          exact_outcome = solve_exact_wld(board_, 64 - board_.count());
         out_ << "Evaluator: " << (neural_ ? neural_->description() : "uniform (no network loaded)") << '\n';
-        out_ << "Value (mover): " << std::showpos << std::fixed << std::setprecision(4) << mover_val << std::noshowpos
-             << " | Winrate: " << std::fixed << std::setprecision(2) << mover_wr << "%\n";
+        out_ << "WDL value (mover): " << std::showpos << std::fixed << std::setprecision(4) << mover_val << std::noshowpos
+             << " | Expected score: " << std::fixed << std::setprecision(2) << mover_score << "%\n";
+        if (exact_outcome == 2) {
+          out_ << "Draw probability: unavailable (scalar WDL head)\n";
+        } else {
+          out_ << "Exact W/D/L (mover): "
+               << (exact_outcome > 0 ? "100/0/0" : exact_outcome < 0 ? "0/0/100" : "0/100/0") << "%\n";
+        }
+        out_ << "Disc margin (mover): " << std::showpos << std::fixed << std::setprecision(4) << eval.margin
+             << std::noshowpos << '\n';
+        if (has_search_result) {
+          out_ << "Search: " << search_result.simulations << " nodes | Q " << std::showpos << std::fixed
+               << std::setprecision(4) << search_result.value << std::noshowpos
+               << " (margin-blended; draw probability unavailable)\n";
+        }
         out_ << "Perspective: Black: " << std::showpos << std::fixed << std::setprecision(4) << black_val
-             << std::noshowpos << " (" << std::fixed << std::setprecision(2) << black_wr
+             << std::noshowpos << " (expected score " << std::fixed << std::setprecision(2) << black_score
              << "%) | White: " << std::showpos << std::fixed << std::setprecision(4) << -black_val << std::noshowpos
-             << " (" << std::fixed << std::setprecision(2) << white_wr << "%)\n";
+             << " (expected score " << std::fixed << std::setprecision(2) << white_score << "%)\n";
 
         if (status.terminal()) {
           const Bitboard black       = (stm_ == Color::Black) ? board_.player : board_.opponent;
@@ -1032,7 +1058,7 @@ namespace islay {
         } else {
           const int empties = 64 - board_.count();
           if (empties <= kEndgameMaxEmpties) {
-            const int outcome = solve_exact_wld(board_, empties);
+            const int outcome = exact_outcome;
             out_ << "Endgame solver (depth " << empties << "): "
                  << (outcome > 0   ? "Mover Win (+1)"
                      : outcome < 0 ? "Mover Loss (-1)"
@@ -1059,6 +1085,9 @@ namespace islay {
         }
 
         const GameStatus                status = game_status(board_);
+        int exact_outcome = status.terminal() ? status.value : 2;
+        if (!status.terminal() && 64 - board_.count() <= kEndgameMaxEmpties)
+          exact_outcome = solve_exact_wld(board_, 64 - board_.count());
         std::array<Square, kPolicySize> actions;
         int                             n     = 0;
         auto                            moves = status.moves;
@@ -1067,8 +1096,31 @@ namespace islay {
         if (status.forced_pass)
           actions[n++] = PASS;
 
+        MctsResult search_result{};
+        const bool has_search_result = search_.last_result(board_, search_result);
         std::array<double, kPolicySize> probs{};
-        if (n > 0) {
+        std::array<std::uint64_t, kPolicySize> visits{};
+        std::array<double, kPolicySize> q_values{};
+        std::array<float, kPolicySize> search_priors{};
+        std::uint64_t total_visits = 0;
+        double total_prior = 0.0;
+        if (has_search_result) {
+          for (int i = 0; i < search_result.action_count; ++i) {
+            const auto &action = search_result.actions[i];
+            visits[action.action] = action.visits;
+            q_values[action.action] = action.value;
+            search_priors[action.action] = action.prior;
+            total_visits += action.visits;
+            total_prior += action.prior;
+          }
+        }
+        if (has_search_result && total_visits > 0) {
+          for (int i = 0; i < n; ++i)
+            probs[actions[i]] = static_cast<double>(visits[actions[i]]) / total_visits;
+        } else if (has_search_result && total_prior > 0.0) {
+          for (int i = 0; i < n; ++i)
+            probs[actions[i]] = search_priors[actions[i]] / total_prior;
+        } else if (n > 0) {
           float max_logit = eval.logits[actions[0]];
           for (int i = 1; i < n; ++i)
             max_logit = std::max(max_logit, eval.logits[actions[i]]);
@@ -1126,19 +1178,37 @@ namespace islay {
         }
         out_ << "         a       b       c       d       e       f       g       h\n";
 
-        const double mover_val = eval.value;
-        const double mover_wr  = (mover_val + 1.0) * 50.0;
-        const double black_wr  = (stm_ == Color::Black) ? mover_wr : (100.0 - mover_wr);
-        const double white_wr  = 100.0 - black_wr;
+        const double mover_val   = eval.value;
+        const double mover_score = (mover_val + 1.0) * 50.0;
+        const double black_val   = (stm_ == Color::Black) ? mover_val : -mover_val;
+        const double black_score = (black_val + 1.0) * 50.0;
+        const double white_score = 100.0 - black_score;
 
         out_ << "\nEvaluator: " << (neural_ ? neural_->description() : "uniform (no network loaded)") << '\n';
         out_ << "Side to move: " << (stm_ == Color::Black ? "Black (X)" : "White (O)")
              << " | Discs: X=" << popcount(black) << " O=" << popcount(white)
              << " | Legal moves: " << popcount(status.moves) << '\n';
-        out_ << "Value (mover): " << std::showpos << std::fixed << std::setprecision(4) << mover_val << std::noshowpos
-             << " | Winrate: " << std::fixed << std::setprecision(2) << mover_wr << "% (Black: " << black_wr
-             << "%, White: " << white_wr << "%)\n";
-
+        out_ << "WDL value (mover): " << std::showpos << std::fixed << std::setprecision(4) << mover_val << std::noshowpos
+             << " | Expected score: " << std::fixed << std::setprecision(2) << mover_score << "%\n";
+        if (exact_outcome == 2) {
+          out_ << "Draw probability: unavailable (scalar WDL head)\n";
+        } else {
+          out_ << "Exact W/D/L (mover): "
+               << (exact_outcome > 0 ? "100/0/0" : exact_outcome < 0 ? "0/0/100" : "0/100/0") << "%\n";
+        }
+        out_ << "Disc margin (mover): " << std::showpos << std::fixed << std::setprecision(4) << eval.margin
+             << std::noshowpos << '\n';
+        const bool has_visit_policy = has_search_result && total_visits > 0;
+        out_ << "Policy source: " << (has_visit_policy ? "search visits" : "network priors");
+        if (has_search_result)
+          out_ << " (" << search_result.simulations << " nodes)";
+        out_ << '\n';
+        if (has_search_result) {
+          out_ << "Search Q (mover): " << std::showpos << std::fixed << std::setprecision(4) << search_result.value
+               << std::noshowpos << " (margin-blended; draw probability unavailable)\n";
+        }
+        out_ << "Perspective expected score: Black " << std::fixed << std::setprecision(2) << black_score
+             << "% | White " << white_score << "%\n";
         if (status.terminal()) {
           const int black_count = popcount(black);
           const int white_count = popcount(white);
@@ -1158,11 +1228,15 @@ namespace islay {
             Square action;
             double prob;
             float  logit;
+            std::uint64_t visits;
+            double q;
+            float prior;
           };
           std::vector<ActionPolicy> sorted;
           sorted.reserve(n);
           for (int i = 0; i < n; ++i) {
-            sorted.push_back({actions[i], probs[actions[i]], eval.logits[actions[i]]});
+            sorted.push_back({actions[i], probs[actions[i]], eval.logits[actions[i]], visits[actions[i]],
+                              q_values[actions[i]], search_priors[actions[i]]});
           }
           std::sort(sorted.begin(), sorted.end(), [](const ActionPolicy &a, const ActionPolicy &b) {
             if (std::abs(a.prob - b.prob) > 1e-7)
@@ -1175,8 +1249,11 @@ namespace islay {
             const auto  &ap  = sorted[i];
             const double pct = ap.prob * 100.0;
             out_ << "  #" << std::left << std::setw(2) << (i + 1) << " " << std::setw(4) << square_to_string(ap.action)
-                 << ": " << std::right << std::fixed << std::setprecision(1) << std::setw(5) << pct
-                 << "%  (logit: " << std::showpos << std::fixed << std::setprecision(3) << ap.logit << std::noshowpos
+                 << ": " << std::right << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%";
+            if (has_search_result)
+              out_ << " (N=" << ap.visits << ", Q=" << std::showpos << std::fixed << std::setprecision(3) << ap.q
+                   << std::noshowpos << ", prior=" << std::fixed << std::setprecision(1) << ap.prior * 100.0 << "%)";
+            out_ << "  (logit: " << std::showpos << std::fixed << std::setprecision(3) << ap.logit << std::noshowpos
                  << ")\n";
           }
         }

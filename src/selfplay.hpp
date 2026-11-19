@@ -12,6 +12,7 @@ namespace islay {
   struct SelfplayConfig {
     std::uint64_t seed              = 20260909;
     std::uint32_t simulations       = 128;
+    std::uint32_t batch_size        = 1;
     std::size_t   tree_bytes        = 8 * 1024 * 1024;
     double        epsilon           = 0.25;
     double        alpha             = 0.3;

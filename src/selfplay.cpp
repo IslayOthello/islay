@@ -46,9 +46,9 @@ namespace islay {
     };
 
     void check_config(const SelfplayConfig &c) {
-      if (!c.simulations || c.simulations > 1000000 || c.tree_bytes < 4096 || !std::isfinite(c.epsilon) ||
-          c.epsilon < 0 || c.epsilon > 1 || !std::isfinite(c.alpha) || c.alpha < 0.01 || c.alpha > 100 ||
-          c.temperature_plies > 128)
+      if (!c.simulations || c.simulations > 1000000 || c.batch_size < 1 || c.batch_size > 64 || c.tree_bytes < 4096 ||
+          !std::isfinite(c.epsilon) || c.epsilon < 0 || c.epsilon > 1 || !std::isfinite(c.alpha) || c.alpha < 0.01 ||
+          c.alpha > 100 || c.temperature_plies > 128)
         throw std::invalid_argument("invalid self-play config");
     }
 
@@ -83,10 +83,21 @@ namespace islay {
   void CachedEvaluator::evaluate(std::span<const Board> boards, std::span<Evaluation> outputs, std::stop_token stop) {
     if (boards.size() != outputs.size())
       throw std::invalid_argument("cache batch mismatch");
+    struct Miss {
+      std::size_t output_index;
+      std::size_t cache_index;
+      int         symmetry;
+    };
+    std::vector<Board>      miss_boards;
+    std::vector<Miss>       misses;
+    std::vector<Evaluation> miss_outputs;
+    miss_boards.reserve(boards.size());
+    misses.reserve(boards.size());
     for (std::size_t i = 0; i < boards.size() && !stop.stop_requested(); ++i) {
       const auto [canon, sym] = boards[i].canonical_symmetry();
-      Entry *entry =
-              entries_.empty() ? nullptr : &entries_[hash_board(canon.player, canon.opponent) & (entries_.size() - 1)];
+      const std::size_t cache_index =
+              entries_.empty() ? 0 : hash_board(canon.player, canon.opponent) & (entries_.size() - 1);
+      Entry *entry = entries_.empty() ? nullptr : &entries_[cache_index];
       if (entry && entry->valid && entry->board == canon) {
         if (sym == 0) {
           outputs[i] = entry->output;
@@ -98,25 +109,30 @@ namespace islay {
         }
         ++hits;
       } else {
-        Evaluation canon_out;
-        backend_.evaluate(std::span(&canon, 1), std::span(&canon_out, 1), stop);
-        if (stop.stop_requested())
-          return;
-        if (!std::isfinite(canon_out.value) || std::abs(canon_out.value) > 1 ||
-            !std::isfinite(canon_out.margin) || std::abs(canon_out.margin) > 1 ||
-            !std::all_of(canon_out.logits.begin(), canon_out.logits.end(), [](float x) { return std::isfinite(x); }))
-          throw std::runtime_error("invalid cached neural output");
-        ++misses;
-        if (entry)
-          *entry = {canon, canon_out, true};
-        if (sym == 0) {
-          outputs[i] = canon_out;
-        } else {
-          outputs[i] = canon_out;
-          for (int a = 0; a < kPolicySize; ++a) {
-            outputs[i].logits[a] = canon_out.logits[symmetry_action(a, sym)];
-          }
-        }
+        miss_boards.push_back(canon);
+        misses.push_back({i, cache_index, sym});
+      }
+    }
+    if (miss_boards.empty() || stop.stop_requested())
+      return;
+    miss_outputs.resize(miss_boards.size());
+    backend_.evaluate(miss_boards, miss_outputs, stop);
+    if (stop.stop_requested())
+      return;
+    for (std::size_t i = 0; i < misses.size(); ++i) {
+      const auto &miss  = misses[i];
+      auto       &value = miss_outputs[i];
+      if (!std::isfinite(value.value) || std::abs(value.value) > 1 || !std::isfinite(value.margin) ||
+          std::abs(value.margin) > 1 ||
+          !std::all_of(value.logits.begin(), value.logits.end(), [](float x) { return std::isfinite(x); }))
+        throw std::runtime_error("invalid cached neural output");
+      ++this->misses;
+      if (!entries_.empty())
+        entries_[miss.cache_index] = {miss_boards[i], value, true};
+      outputs[miss.output_index] = value;
+      if (miss.symmetry != 0) {
+        for (int a = 0; a < kPolicySize; ++a)
+          outputs[miss.output_index].logits[a] = value.logits[symmetry_action(a, miss.symmetry)];
       }
     }
   }
@@ -154,6 +170,7 @@ namespace islay {
         exploration.noise[a] = static_cast<float>(noise[a] / total);
       MctsLimits limits;
       limits.simulations = config.simulations;
+      limits.batch_size  = config.batch_size;
       limits.tree_bytes  = config.tree_bytes;
       limits.exploration = &exploration;
       limits.c_puct      = is_opening ? 2.5 : 1.5;

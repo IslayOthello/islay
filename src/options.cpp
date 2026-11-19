@@ -64,6 +64,41 @@ namespace islay {
                            return false;
                          }
                        }},
+            OptionSpec{"MctsBatch",
+                       "spin",
+                       "1",
+                       {},
+                       1,
+                       16,
+                       [](Options &o, const std::string &v) {
+                         try {
+                           std::size_t parsed = 0;
+                           const long  batch  = std::stol(v, &parsed);
+                           if (parsed != v.size() || batch < 1 || batch > 16)
+                             return false;
+                           o.mcts_batch = static_cast<int>(batch);
+                           return true;
+                         } catch (...) {
+                           return false;
+                         }
+                       }},
+            OptionSpec{"MctsQAwareStop",
+                       "check",
+                       "false",
+                       {},
+                       0,
+                       0,
+                       [](Options &o, const std::string &v) {
+                         if (iequals(v, "true")) {
+                           o.mcts_q_aware_stop = true;
+                           return true;
+                         }
+                         if (iequals(v, "false")) {
+                           o.mcts_q_aware_stop = false;
+                           return true;
+                         }
+                         return false;
+                       }},
             OptionSpec{"PerftHash",
                        "spin",
                        "512",

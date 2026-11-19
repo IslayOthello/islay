@@ -37,6 +37,20 @@ namespace islay {
 
   SearchController::~SearchController() { cancel(); }
 
+  void SearchController::clear_tree() noexcept {
+    tree_.clear();
+    const std::lock_guard lock(output_mutex_);
+    has_last_result_ = false;
+  }
+
+  bool SearchController::last_result(const Board &board, MctsResult &result) const {
+    const std::lock_guard lock(output_mutex_);
+    if (!has_last_result_ || result_board_ != board)
+      return false;
+    result = last_result_;
+    return true;
+  }
+
   void SearchController::stop() {
     if (worker_.joinable()) {
       worker_.request_stop();
@@ -62,8 +76,44 @@ namespace islay {
     // Offline exploration is borrowed by synchronous self-play, never by the worker.
     if (limits.exploration)
       throw std::invalid_argument("root exploration is only supported by offline self-play");
-    publish_           = true;
+    {
+      const std::lock_guard lock(output_mutex_);
+      publish_           = true;
+      has_last_result_   = false;
+    }
     const auto started = MctsClock::now();
+    limits.progress = [this, board, started](const MctsResult &progress) {
+      std::ostringstream message;
+      const double       elapsed_us = std::chrono::duration<double, std::micro>(MctsClock::now() - started).count();
+      message << "info nodes " << progress.simulations << " time " << static_cast<std::uint64_t>(elapsed_us / 1000)
+              << "\ninfo string search progress Q " << std::showpos << std::fixed << std::setprecision(4)
+              << progress.value << std::noshowpos << " (draw rate unavailable: scalar WDL head)";
+      if (progress.action_count > 0) {
+        std::vector<RootAction> actions(progress.actions.begin(), progress.actions.begin() + progress.action_count);
+        std::sort(actions.begin(), actions.end(), [](const RootAction &a, const RootAction &b) {
+          return a.visits > b.visits;
+        });
+        std::uint64_t total_visits = 0;
+        for (const auto &action: actions)
+          total_visits += action.visits;
+        message << "\ninfo string search policy:";
+        for (std::size_t i = 0; i < std::min<std::size_t>(actions.size(), 6); ++i) {
+          const auto  &action = actions[i];
+          const double visit_pct = total_visits ? 100.0 * action.visits / total_visits : 0.0;
+          message << " " << square_to_string(action.action) << "=" << std::fixed << std::setprecision(1) << visit_pct
+                  << "%/N" << action.visits << "/Q" << std::showpos << std::setprecision(3) << action.value
+                  << std::noshowpos;
+        }
+      }
+      message << '\n';
+      const std::lock_guard lock(output_mutex_);
+      if (publish_) {
+        last_result_     = progress;
+        result_board_    = board;
+        has_last_result_ = true;
+        output_ << message.str() << std::flush;
+      }
+    };
     worker_            = std::jthread([this, board, rule, limits, infinite, started,
                                        evaluator = std::move(evaluator)](std::stop_token stop) {
       MctsResult  result;
@@ -106,10 +156,12 @@ namespace islay {
         for (int i = 0; i < result.pv_length; ++i)
           message << ' ' << square_to_string(result.pv[i]);
       }
-      const double winrate_pct = (result.value + 1.0) * 50.0;
-      message << "\ninfo string search " << (error.empty() ? stop_name(result.reason) : "error") << " value "
-              << std::setprecision(6) << result.value << " (winrate " << std::fixed << std::setprecision(1)
-              << winrate_pct << "%) evaluations " << result.evaluations;
+      message << "\ninfo string search " << (error.empty() ? stop_name(result.reason) : "error") << " Q "
+              << std::setprecision(6) << result.value << " (draw rate unavailable: scalar WDL head) evaluations "
+              << result.evaluations;
+      if (result.reason == MctsStop::Terminal)
+        message << "\ninfo string exact WDL win/draw/loss "
+                << (result.value > 0 ? "100/0/0" : result.value < 0 ? "0/0/100" : "0/100/0") << "%";
 
       if (result.action_count > 1) {
         std::vector<RootAction> sorted_actions(result.actions.begin(), result.actions.begin() + result.action_count);
@@ -132,6 +184,11 @@ namespace islay {
       }
       message << "\nbestmove " << (result.best_move == NOMOVE ? "0000" : square_to_string(result.best_move)) << '\n';
       const std::lock_guard lock(output_mutex_);
+      if (error.empty()) {
+        last_result_     = result;
+        result_board_    = board;
+        has_last_result_ = true;
+      }
       if (publish_)
         output_ << message.str() << std::flush;
     });

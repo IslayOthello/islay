@@ -14,9 +14,11 @@ namespace islay {
   [[nodiscard]] const char *rule_name(Rule r) noexcept;
 
   struct Options {
-    Rule        rule           = Rule::Othello;
-    int         perft_hash_mib = 512; // perft transposition table size, in MiB
-    int         mcts_hash_mib  = 64; // single-worker tree arena, independent of PerftTT
+    Rule        rule              = Rule::Othello;
+    int         perft_hash_mib    = 512; // perft transposition table size, in MiB
+    int         mcts_hash_mib     = 64; // single-worker tree arena, independent of PerftTT
+    int         mcts_batch        = 1;
+    bool        mcts_q_aware_stop = false;
     std::string eval_file; // empty selects the explicit uniform scaffold
   };
 

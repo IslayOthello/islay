@@ -149,6 +149,10 @@ namespace islay {
       return static_cast<float>(std::tanh(static_cast<double>(margin) / 15.0));
     }
 
+    float network_value(const Evaluation &output) noexcept {
+      return std::clamp(output.value + 0.1f * output.margin, -1.0f, 1.0f);
+    }
+
     class Search {
     public:
       Search(const Board &board, Evaluator &evaluator, const MctsLimits &limits, std::stop_token stop,
@@ -157,6 +161,7 @@ namespace islay {
 
       MctsResult run() {
         const auto start  = MctsClock::now();
+        auto       last_progress = start;
         const auto status = game_status(board_);
         auto       moves  = status.moves;
         while (moves)
@@ -250,31 +255,57 @@ namespace islay {
                   return false;
                 std::uint64_t n_best   = 0;
                 std::uint64_t n_second = 0;
+                double        q_best   = 0.0;
+                double        q_second = 0.0;
                 for (Index c = 0; c < nodes_[0].child_count; ++c) {
-                  const auto v = nodes_[nodes_[0].first_child + c].visits;
+                  const auto  &child = nodes_[nodes_[0].first_child + c];
+                  const auto   v     = child.visits;
+                  const double q     = v ? child.value_sum / static_cast<double>(v) : 0.0;
                   if (v > n_best) {
                     n_second = n_best;
+                    q_second = q_best;
                     n_best   = v;
+                    q_best   = q;
                   } else if (v > n_second) {
                     n_second = v;
+                    q_second = q;
                   }
                 }
                 const auto now          = MctsClock::now();
                 const auto elapsed      = now - start;
                 const auto total_budget = limits_.deadline - start;
-                return (n_best >= 4 * n_second && elapsed * 3 >= total_budget);
+                return n_best >= 4 * n_second && elapsed * 3 >= total_budget &&
+                       (!limits_.q_aware_early_stop || q_best - q_second >= 0.05);
+              };
+              const auto report_progress = [&] {
+                if (!limits_.progress || MctsClock::now() - last_progress < std::chrono::milliseconds(500))
+                  return;
+                collect();
+                result_.elapsed_us = std::chrono::duration<double, std::micro>(MctsClock::now() - start).count();
+                try {
+                  limits_.progress(result_);
+                } catch (...) {
+                }
+                last_progress = MctsClock::now();
               };
 
               if (limits_.batch_size > 1) {
                 for (std::uint64_t i = 0; i < limits_.simulations; i += limits_.batch_size) {
                   const int cur_batch = static_cast<int>(
                           std::min(static_cast<std::uint64_t>(limits_.batch_size), limits_.simulations - i));
-                  if (interrupted() || !simulate_batch(cur_batch) || check_early_cutoff(i + cur_batch))
+                  if (interrupted() || !simulate_batch(cur_batch))
+                    break;
+                  report_progress();
+                  if (check_early_cutoff(i + cur_batch))
                     break;
                 }
               } else {
                 for (std::uint64_t i = 0; i < limits_.simulations; ++i) {
-                  if (interrupted() || !simulate() || check_early_cutoff(i + 1))
+                  if (interrupted() || !simulate())
+                    break;
+                  if ((i & 127) == 127)
+                    report_progress();
+                  if (check_early_cutoff(i + 1))
                     break;
                 }
               }
@@ -453,7 +484,7 @@ namespace islay {
         nodes_[index].child_count = static_cast<std::uint8_t>(n);
         nodes_[index].state       = State::Expanded;
         // Keep WDL as the primary search value; margin is a small calibration signal.
-        value                     = std::clamp(output.value + 0.1f * output.margin, -1.0f, 1.0f);
+        value                     = network_value(output);
         return true;
       }
 
@@ -641,6 +672,7 @@ namespace islay {
           }
           for (std::size_t i = 0; i < eval_outputs.size(); ++i) {
             if (!std::isfinite(eval_outputs[i].value) || eval_outputs[i].value < -1 || eval_outputs[i].value > 1 ||
+                !std::isfinite(eval_outputs[i].margin) || eval_outputs[i].margin < -1 || eval_outputs[i].margin > 1 ||
                 !std::all_of(eval_outputs[i].logits.begin(), eval_outputs[i].logits.end(),
                              [](float x) { return std::isfinite(x); }))
               throw std::runtime_error("MCTS evaluator returned invalid logits/value in batch");
@@ -658,7 +690,7 @@ namespace islay {
 
           if (sim.eval_idx >= 0) {
             const auto &out = eval_outputs[static_cast<std::size_t>(sim.eval_idx)];
-            sim.value       = out.value;
+            sim.value       = network_value(out);
 
             if (sim.needs_eval && nodes_[sim.leaf_index].state != State::Expanded) {
               const auto status = game_status(sim.board);
@@ -763,6 +795,7 @@ namespace islay {
       void collect() {
         result_.nodes       = nodes_.size();
         result_.simulations = nodes_[0].visits;
+        result_.pv_length   = 0;
         if (nodes_[0].visits)
           result_.value = nodes_[0].value_sum / static_cast<double>(nodes_[0].visits);
         if (nodes_[0].state != State::Expanded)

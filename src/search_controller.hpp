@@ -20,7 +20,8 @@ namespace islay {
     void start(Board board, Rule rule, MctsLimits limits, bool infinite, std::shared_ptr<Evaluator> evaluator = {});
     void stop(); // join, publishing exactly one result unless already published
     void cancel(); // join, suppressing any result not yet published
-    void clear_tree() noexcept { tree_.clear(); }
+    void clear_tree() noexcept;
+    [[nodiscard]] bool last_result(const Board &board, MctsResult &result) const;
 
   private:
     std::ostream               &output_;
@@ -30,6 +31,9 @@ namespace islay {
     bool                        publish_ = false; // output_mutex protects concurrent access
     MctsTree                    tree_;
     std::jthread                worker_;
+    Board                       result_board_{};
+    MctsResult                  last_result_{};
+    bool                        has_last_result_ = false;
   };
 
   [[nodiscard]] bool search_controller_selftest();
