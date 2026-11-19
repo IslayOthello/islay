@@ -35,13 +35,13 @@ class Backend:
         network, steps = load_checkpoint(checkpoint)
         reference = ort_session(model)
         props = reference.get_modelmeta().custom_metadata_map
-        expected = {"islay.arch": "b8c64-v1", "islay.encoding": "relative-2x8x8-a1-v1",
-                    "islay.policy": "a1-h8-pass65-v1", "islay.value": "relative-wdl-v1",
+        expected = {"islay.arch": "b8c64-v2", "islay.encoding": "relative-2x8x8-a1-v1",
+                    "islay.policy": "a1-h8-pass65-v1", "islay.value": "relative-wdl-margin-v2",
                     "islay.checkpoint_sha256": sha256(checkpoint), "islay.training_steps": str(steps)}
         if any(props.get(k) != v for k, v in expected.items()):
             raise ValueError("ONNX/checkpoint identity or architecture mismatch")
         if ([i.name for i in reference.get_inputs()] != ["board"]
-                or [i.name for i in reference.get_outputs()] != ["policy_logits", "value"]):
+                or [i.name for i in reference.get_outputs()] != ["policy_logits", "wdl", "margin"]):
             raise ValueError("invalid ONNX inference interface")
         self.network = network.to(self.device).eval() if kind != "ort-cpu" else None
         self.session = reference if kind == "ort-cpu" else None
@@ -57,15 +57,15 @@ class Backend:
             chosen = boards[start:start + batch]
             chosen += [(0, 0)] * (batch - len(chosen))
             planes = encode(chosen).numpy()
-            expected_p, expected_v = reference.run(None, {"board": planes})
+            expected_p, expected_wdl, expected_margin = reference.run(None, {"board": planes})
             if kind == "ort-cpu":
                 # Compare the checkpoint too, not an ORT session against itself.
                 with torch.inference_mode():
-                    p, v = network(torch.from_numpy(planes))
-                    actual = np.concatenate((p.numpy(), v.numpy()), axis=1)
+                    p, wdl, margin = network(torch.from_numpy(planes))
+                    actual = np.concatenate((p.numpy(), wdl.numpy(), margin.numpy()), axis=1)
             else:
                 actual = self.forward(planes)
-            expected_output = np.concatenate((expected_p, expected_v), axis=1)
+            expected_output = np.concatenate((expected_p, expected_wdl, expected_margin), axis=1)
             np.testing.assert_allclose(actual, expected_output, rtol=1e-4, atol=2e-5)
             error = max(error, float(np.abs(actual - expected_output).max()))
         self.identity = {"backend": kind, "batch": batch, "torch": str(torch.__version__),
@@ -77,14 +77,14 @@ class Backend:
         if planes.shape != (self.batch, 2, 8, 8) or planes.dtype != np.float32:
             raise ValueError("inference batch shape/dtype mismatch")
         if self.session is not None:
-            p, v = self.session.run(None, {"board": planes})
+            p, wdl, margin = self.session.run(None, {"board": planes})
         else:
             with torch.inference_mode():
-                p, v = self.network(torch.from_numpy(planes).to(self.device))
-                p, v = p.cpu().numpy(), v.cpu().numpy()
-        if p.shape != (self.batch, 65) or v.shape != (self.batch, 1):
+                p, wdl, margin = self.network(torch.from_numpy(planes).to(self.device))
+                p, wdl, margin = p.cpu().numpy(), wdl.cpu().numpy(), margin.cpu().numpy()
+        if p.shape != (self.batch, 65) or wdl.shape != (self.batch, 1) or margin.shape != (self.batch, 1):
             raise ValueError("inference output shape mismatch")
-        result = np.concatenate((p, v), axis=1)
-        if not np.isfinite(result).all() or (np.abs(v) > 1).any():
+        result = np.concatenate((p, wdl, margin), axis=1)
+        if not np.isfinite(result).all() or (np.abs(wdl) > 1).any() or (np.abs(margin) > 1).any():
             raise ValueError("non-finite/out-of-range inference result")
         return result

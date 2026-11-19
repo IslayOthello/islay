@@ -51,7 +51,11 @@ namespace islay {
   [[nodiscard]] std::uint64_t             selfplay_seed(std::uint64_t master, std::uint64_t game_id) noexcept;
   [[nodiscard]] std::vector<ReplayRecord> selfplay_game(std::uint64_t id, Evaluator &, const SelfplayConfig &);
   void                                    validate_replay_game(std::span<const ReplayRecord>, const SelfplayConfig &);
-  [[nodiscard]] float                     replay_value_target(const ReplayRecord &) noexcept;
+  [[nodiscard]] float                     replay_wdl_target(const ReplayRecord &) noexcept;
+  [[nodiscard]] float                     replay_margin_target(const ReplayRecord &) noexcept;
+  [[nodiscard]] inline float              replay_value_target(const ReplayRecord &r) noexcept {
+    return replay_wdl_target(r);
+  }
   void                                    write_replay_record(std::ostream &, const ReplayRecord &);
   // Clean EOF returns false; partial/truncated records throw.
   bool               read_replay_record(std::istream &, ReplayRecord &);

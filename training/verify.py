@@ -47,12 +47,13 @@ def protocol(binary, model, invalid):
             assert any("option EvalFile =" in line for line in lines), lines
             engine.send("position startpos\ngo nodes 8")
             lines = engine.until("bestmove ")
-            assert any("onnx-cpu b8c64-v1" in line for line in lines), lines
+            assert any(any(f"{backend} b8c64-v2" in line for backend in ("onnx-cpu", "onnx-coreml"))
+                       for line in lines), lines
             assert any(line.startswith("info nodes 8 ") for line in lines), lines
             engine.barrier()
         for position in corpus():
-            search(engine, (position["p"], position["o"]), "go nodes 16", 16, evaluator="onnx-cpu b8c64-v1")
-        search(engine, (2, 1), "go nodes 8", 8, "pass", evaluator="onnx-cpu b8c64-v1")
+            search(engine, (position["p"], position["o"]), "go nodes 16", 16, evaluator="b8c64-v2")
+        search(engine, (2, 1), "go nodes 8", 8, "pass", evaluator="b8c64-v2")
         engine.send("go infinite")
         engine.barrier()
         engine.send(f"setoption name EvalFile value {invalid}")
@@ -61,7 +62,8 @@ def protocol(binary, model, invalid):
         assert not any(line.startswith("bestmove ") for line in lines), lines
         engine.send("go nodes 1")
         lines = engine.until("bestmove ")
-        assert any("onnx-cpu b8c64-v1" in line for line in lines), lines
+        assert any(any(f"{backend} b8c64-v2" in line for backend in ("onnx-cpu", "onnx-coreml"))
+                   for line in lines), lines
         for _ in range(20):
             engine.send("position startpos\ngo infinite")
             engine.barrier()
@@ -74,7 +76,7 @@ def protocol(binary, model, invalid):
             assert sum(line.startswith("bestmove ") for line in lines) == 1, lines
             assert not any("search error" in line for line in lines), lines
         search(engine, (1 << 28 | 1 << 35, 1 << 27 | 1 << 36), "go movetime 20",
-               evaluator="onnx-cpu b8c64-v1")
+               evaluator="b8c64-v2")
         engine.send("go infinite")
         engine.barrier()
         engine.send("setoption name EvalFile value <empty>\ngo nodes 1")
@@ -104,8 +106,8 @@ def updated_checkpoint_parity(args, boards):
     optimizer = torch.optim.SGD(model.parameters(), lr=0.001)
     for _ in range(4):
         optimizer.zero_grad(set_to_none=True)
-        p, v = model(inputs)
-        policy_value_loss(p, v, target, torch.zeros(8, 1), legal).backward()
+        p, wdl, margin = model(inputs)
+        policy_value_loss(p, wdl, margin, target, torch.zeros(8, 1), torch.zeros(8, 1), legal).backward()
         optimizer.step()
     path = args.output / "synthetic-smoke.pt"
     torch.save({"schema": 1, "architecture": ARCHITECTURE, "training_steps": 4,
@@ -145,8 +147,8 @@ def main():
         batches = [boards[i:i + 32] for i in range(0, len(boards), 32)]
         batches += [boards[:size] for size in (1, 8, 32, 128)]
         for batch in batches:
-            p, v = model(encode(batch))
-            expected = torch.cat((p, v), dim=1).numpy()
+            p, wdl, margin = model(encode(batch))
+            expected = torch.cat((p, wdl, margin), dim=1).numpy()
             actual = np.asarray(probe(args.probe, args.model, batch)["outputs"])
             np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=2e-5)
             max_error = max(max_error, float(np.max(np.abs(actual - expected))))

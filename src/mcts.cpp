@@ -386,6 +386,7 @@ namespace islay {
         if (interrupted())
           return false;
         if (!std::isfinite(output.value) || output.value < -1 || output.value > 1 ||
+            !std::isfinite(output.margin) || output.margin < -1 || output.margin > 1 ||
             !std::all_of(output.logits.begin(), output.logits.end(), [](float x) { return std::isfinite(x); }))
           throw std::runtime_error("MCTS evaluator returned invalid logits/value");
 
@@ -451,7 +452,8 @@ namespace islay {
         nodes_[index].first_child = first;
         nodes_[index].child_count = static_cast<std::uint8_t>(n);
         nodes_[index].state       = State::Expanded;
-        value                     = output.value;
+        // Keep WDL as the primary search value; margin is a small calibration signal.
+        value                     = std::clamp(output.value + 0.1f * output.margin, -1.0f, 1.0f);
         return true;
       }
 

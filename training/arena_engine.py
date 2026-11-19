@@ -89,7 +89,8 @@ class Engine:
                 for s in lines if s.startswith("info nodes ")]
         reason = [re.fullmatch(r"info string search (\w+) value ([-\d.]+) evaluations (\d+)", s)
                   for s in lines if s.startswith("info string search ")]
-        evaluator = [s for s in lines if s.startswith("info string evaluator onnx-cpu b8c64-v1 checkpoint ")]
+        evaluator = [s for s in lines if s.startswith(("info string evaluator onnx-cpu b8c64-v2 checkpoint ",
+                                                       "info string evaluator onnx-coreml b8c64-v2 checkpoint "))]
         if len(info) != 1 or not info[0] or len(reason) != 1 or not reason[0] or len(evaluator) != 1:
             raise ValueError("invalid search response: " + repr(lines))
         info, reason = info[0], reason[0]

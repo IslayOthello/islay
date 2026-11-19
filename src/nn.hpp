@@ -18,10 +18,10 @@ namespace islay {
   inline constexpr int kChannels         = 64;
   inline constexpr int kBoardSpatial     = 64; // 8x8
   inline constexpr int kKernelSpatial    = 9; // 3x3
-  inline constexpr int kNumParams        = 605960;
+  inline constexpr int kNumParams        = 606025;
   inline constexpr int kNumBnStatsFloats = 2182; // running mean and var
 
-  // Weight layout matching b8c64-v1 contract exactly.
+  // Weight layout for the versioned b8c64-v2 WDL+margin contract.
   struct ModelWeights {
     // Stem: Conv 64x2x3x3 + BN
     std::vector<float> conv_stem_w; // 64 * 2 * 9 = 1152
@@ -55,7 +55,7 @@ namespace islay {
     std::vector<float> fc_pol_w; // 65 * 128 = 8320
     std::vector<float> fc_pol_b; // 65
 
-    // Value Head: Conv 1x64x1x1 + BN + Linear 64->64 + Linear 64->1
+    // Value Head: Conv 1x64x1x1 + BN + Linear 64->64 + two Linear 64->1 outputs
     std::vector<float> conv_val_w; // 1 * 64 * 1 = 64
     std::vector<float> bn_val_gamma; // 1
     std::vector<float> bn_val_beta; // 1
@@ -63,8 +63,8 @@ namespace islay {
     std::vector<float> bn_val_var; // 1
     std::vector<float> fc_val1_w; // 64 * 64 = 4096
     std::vector<float> fc_val1_b; // 64
-    std::vector<float> fc_val2_w; // 1 * 64 = 64
-    std::vector<float> fc_val2_b; // 1
+    std::vector<float> fc_val2_w; // 2 * 64 (WDL, margin)
+    std::vector<float> fc_val2_b; // 2 (WDL, margin)
 
     ModelWeights();
     void                      init_random(std::uint64_t seed = 20260909);
@@ -101,8 +101,8 @@ namespace islay {
     std::vector<float> val_conv_b; // 1
     std::vector<float> val_fc1_w; // 64 * 64
     std::vector<float> val_fc1_b; // 64
-    std::vector<float> val_fc2_w; // 1 * 64
-    std::vector<float> val_fc2_b; // 1
+    std::vector<float> val_fc2_w; // 2 * 64
+    std::vector<float> val_fc2_b; // 2
 
     FusedWeights();
     void fuse_from(const ModelWeights &src);
@@ -114,7 +114,8 @@ namespace islay {
     Bitboard                       legal_moves{0};
     bool                           forced_pass{false};
     std::array<float, kPolicySize> target_policy{};
-    float                          target_value{0.0f}; // expected outcome in [-1, 1]
+    float                          target_wdl{0.0f};
+    float                          target_margin{0.0f};
   };
 
   // Optimizer hyperparameters

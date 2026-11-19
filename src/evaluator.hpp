@@ -11,7 +11,8 @@ namespace islay {
 
   struct Evaluation {
     std::array<float, kPolicySize> logits{};
-    float                          value{}; // [-1, 1], from the input board's mover perspective
+    float                          value{};  // WDL outcome [-1, 1], from mover perspective
+    float                          margin{}; // normalized disc margin [-1, 1], from mover perspective
   };
 
   class Evaluator {

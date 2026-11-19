@@ -71,10 +71,14 @@ def verify_pair(pair, manifest, index):
             side = (manifest["openings"][index]["side"] + ply) % 2
             owner = "candidate" if side == game["candidate_color"] else "champion"
             model = manifest["models"][owner]
-            prefix = ("info string evaluator onnx-cpu b8c64-v1 checkpoint " + model["checkpoint_sha256"]
-                      + " training_steps " + str(model["training_steps"]))
+            backend = row["evaluator"].split(" ")[3]
+            if backend not in ("onnx-cpu", "onnx-coreml"):
+                raise ValueError("search used unsupported evaluator")
+            prefix = ("info string evaluator " + backend + " b8c64-v2 checkpoint "
+                      + model["checkpoint_sha256"] + " training_steps " + str(model["training_steps"]))
             expected = prefix + (" (untrained initialization)" if model["training_steps"] == 0 else "")
-            if row["evaluator"] != expected: raise ValueError("search used wrong evaluator")
+            if row["evaluator"] != expected:
+                raise ValueError("search used wrong evaluator")
             if (type(row["nodes"]) is not int or row["nodes"] < 0
                     or type(row["evaluations"]) is not int or row["evaluations"] < 0
                     or type(row["engine_ms"]) is not int or row["engine_ms"] < 0

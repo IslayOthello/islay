@@ -91,7 +91,7 @@ namespace islay {
         if (sym == 0) {
           outputs[i] = entry->output;
         } else {
-          outputs[i].value = entry->output.value;
+          outputs[i] = entry->output;
           for (int a = 0; a < kPolicySize; ++a) {
             outputs[i].logits[a] = entry->output.logits[symmetry_action(a, sym)];
           }
@@ -103,6 +103,7 @@ namespace islay {
         if (stop.stop_requested())
           return;
         if (!std::isfinite(canon_out.value) || std::abs(canon_out.value) > 1 ||
+            !std::isfinite(canon_out.margin) || std::abs(canon_out.margin) > 1 ||
             !std::all_of(canon_out.logits.begin(), canon_out.logits.end(), [](float x) { return std::isfinite(x); }))
           throw std::runtime_error("invalid cached neural output");
         ++misses;
@@ -111,7 +112,7 @@ namespace islay {
         if (sym == 0) {
           outputs[i] = canon_out;
         } else {
-          outputs[i].value = canon_out.value;
+          outputs[i] = canon_out;
           for (int a = 0; a < kPolicySize; ++a) {
             outputs[i].logits[a] = canon_out.logits[symmetry_action(a, sym)];
           }
@@ -285,12 +286,19 @@ namespace islay {
     }
   }
 
-  float replay_value_target(const ReplayRecord &record) noexcept {
+  float replay_margin_target(const ReplayRecord &record) noexcept {
     if (record.value_format == 1)
       return static_cast<float>(record.outcome) / 127.0f;
     if (record.value_format == 0)
       return static_cast<float>(record.outcome);
     return std::numeric_limits<float>::quiet_NaN();
+  }
+
+  float replay_wdl_target(const ReplayRecord &record) noexcept {
+    const float margin = replay_margin_target(record);
+    if (!std::isfinite(margin))
+      return margin;
+    return (margin > 0) - (margin < 0);
   }
 
   void write_replay_record(std::ostream &out, const ReplayRecord &r) {
@@ -437,7 +445,10 @@ namespace islay {
         return false;
       compatibility.outcome      = 127;
       compatibility.value_format = 1;
-      if (replay_value_target(compatibility) != 1.0f)
+      if (replay_wdl_target(compatibility) != 1.0f || replay_margin_target(compatibility) != 1.0f)
+        return false;
+      compatibility.outcome = -64;
+      if (replay_wdl_target(compatibility) >= 0 || replay_margin_target(compatibility) >= 0)
         return false;
       if (selfplay_seed(42, 0) == selfplay_seed(42, 1))
         return false;

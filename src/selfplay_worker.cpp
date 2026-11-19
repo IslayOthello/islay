@@ -20,7 +20,7 @@
 
 namespace {
   // Private local protocol v1; all descriptors are inherited, no public listener or shm name.
-  constexpr std::size_t kInputBytes = 128 * sizeof(float), kOutputBytes = 66 * sizeof(float);
+  constexpr std::size_t kInputBytes = 128 * sizeof(float), kOutputBytes = 67 * sizeof(float);
   constexpr std::size_t kFrameBytes = 32 + islay::kMctsMaxPly * islay::kReplayRecordBytes;
   constexpr std::size_t kSlotBytes  = kInputBytes + kOutputBytes + kFrameBytes + 16;
   static_assert(std::endian::native == std::endian::little && sizeof(float) == 4);
@@ -118,10 +118,12 @@ namespace {
       if (answer != 'A')
         throw std::runtime_error("worker invalid inference acknowledgement");
       std::atomic_thread_fence(std::memory_order_acquire);
-      if (!std::all_of(output_, output_ + 66, [](float v) { return std::isfinite(v); }) || std::abs(output_[65]) > 1)
+      if (!std::all_of(output_, output_ + 67, [](float v) { return std::isfinite(v); }) ||
+          std::abs(output_[65]) > 1 || std::abs(output_[66]) > 1)
         throw std::runtime_error("worker invalid inference output");
       std::copy_n(output_, 65, outputs[0].logits.begin());
       outputs[0].value = output_[65];
+      outputs[0].margin = output_[66];
     }
     void publish(std::uint64_t id, const islay::SelfplayConfig &config, std::span<const islay::ReplayRecord> records,
                  const islay::CachedEvaluator &cache) {

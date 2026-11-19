@@ -23,7 +23,8 @@ namespace islay {
       sample.board        = r.board;
       sample.legal_moves  = r.legal;
       sample.forced_pass  = (r.pass != 0);
-      sample.target_value = replay_value_target(r);
+      sample.target_wdl    = replay_wdl_target(r);
+      sample.target_margin = replay_margin_target(r);
 
       std::uint64_t total_visits = 0;
       for (int a = 0; a < kPolicySize; ++a)
@@ -46,7 +47,8 @@ namespace islay {
       dst.board        = src.board.symmetry(s);
       dst.legal_moves  = Board::symmetry_bb(src.legal_moves, s);
       dst.forced_pass  = src.forced_pass;
-      dst.target_value = src.target_value;
+      dst.target_wdl    = src.target_wdl;
+      dst.target_margin = src.target_margin;
 
       dst.target_policy.fill(0.0f);
       for (int a = 0; a < kPolicySize; ++a) {
@@ -150,7 +152,8 @@ namespace islay {
         dst.board        = src.board.symmetry(s);
         dst.legal_moves  = Board::symmetry_bb(src.legal_moves, s);
         dst.forced_pass  = src.forced_pass;
-        dst.target_value = src.target_value;
+        dst.target_wdl    = src.target_wdl;
+        dst.target_margin = src.target_margin;
 
         dst.target_policy.fill(0.0f);
         for (int a = 0; a < kPolicySize; ++a) {

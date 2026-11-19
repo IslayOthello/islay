@@ -1,11 +1,11 @@
-"""Configuration B: shared 8x64 residual policy/value network, encoding v1."""
+"""Configuration B: shared 8x64 residual policy/WDL/margin network, encoding v2."""
 import torch
 from torch import nn
 
-ARCHITECTURE = "b8c64-v1"
+ARCHITECTURE = "b8c64-v2"
 ENCODING = "relative-2x8x8-a1-v1"
 POLICY = "a1-h8-pass65-v1"
-PARAMETERS = 605960
+PARAMETERS = 606025
 
 
 class ConvBlock(nn.Sequential):
@@ -31,11 +31,12 @@ class PolicyValueNet(nn.Module):
         self.trunk = nn.Sequential(ConvBlock(2, 64, 3), *(ResidualBlock() for _ in range(8)))
         self.policy = nn.Sequential(ConvBlock(64, 2, 1), nn.Flatten(), nn.Linear(128, 65))
         self.value = nn.Sequential(ConvBlock(64, 1, 1), nn.Flatten(), nn.Linear(64, 64),
-                                   nn.ReLU(), nn.Linear(64, 1), nn.Tanh())
+                                   nn.ReLU(), nn.Linear(64, 2), nn.Tanh())
 
     def forward(self, board):
         features = self.trunk(board)
-        return self.policy(features), self.value(features)
+        values = self.value(features)
+        return self.policy(features), values[..., 0:1], values[..., 1:2]
 
 
 def encode(boards):
@@ -73,14 +74,15 @@ def transform_policy(policy, symmetry, inverse=False):
     return result
 
 
-def policy_value_loss(logits, value, target_policy, outcome, legal):
+def policy_value_loss(logits, wdl, margin, target_policy, target_wdl, target_margin, legal,
+                      wdl_weight=1.0, margin_weight=1.0):
     """Terminal samples are excluded. Regularization belongs to the optimizer/config."""
     if (logits.ndim != 2 or logits.shape[0] == 0 or logits.shape != target_policy.shape
             or logits.shape != legal.shape or logits.shape[-1] != 65):
         raise ValueError("policy shape mismatch")
-    if value.shape != outcome.shape or value.shape != (logits.shape[0], 1):
+    if wdl.shape != target_wdl.shape or margin.shape != target_margin.shape or wdl.shape != (logits.shape[0], 1):
         raise ValueError("value shape mismatch")
-    if not torch.isfinite(logits).all() or not torch.isfinite(value).all():
+    if not torch.isfinite(logits).all() or not torch.isfinite(wdl).all() or not torch.isfinite(margin).all():
         raise ValueError("non-finite network output")
     legal = legal.bool()
     if not legal.any(dim=1).all() or not torch.isfinite(target_policy).all() or (target_policy < 0).any():
@@ -88,15 +90,19 @@ def policy_value_loss(logits, value, target_policy, outcome, legal):
     if (target_policy.masked_select(~legal) != 0).any() or not torch.allclose(
             target_policy.sum(dim=1), torch.ones_like(target_policy[:, 0]), atol=1e-6):
         raise ValueError("target policy must sum to one over legal actions")
-    if not torch.isfinite(outcome).all() or (outcome.abs() > 1).any():
-        raise ValueError("invalid outcome")
-    policy, mse, _ = policy_value_terms(logits, value, target_policy, outcome, legal)
-    return policy.mean() + mse.mean()
+    if (not torch.isfinite(target_wdl).all() or not torch.isfinite(target_margin).all() or
+            (target_wdl.abs() > 1).any() or (target_margin.abs() > 1).any()):
+        raise ValueError("invalid value targets")
+    policy, wdl_loss, margin_loss, _ = policy_value_terms(
+        logits, wdl, margin, target_policy, target_wdl, target_margin, legal)
+    return policy.mean() + wdl_weight * wdl_loss.mean() + margin_weight * margin_loss.mean()
 
 
-def policy_value_terms(logits, value, target_policy, outcome, legal):
+def policy_value_terms(logits, wdl, margin, target_policy, target_wdl, target_margin, legal,
+                        include_entropy=True):
     """Per-position terms for already validated batches; avoid per-field GPU synchronization."""
     logp = torch.log_softmax(logits.masked_fill(~legal, -torch.inf), dim=1).masked_fill(~legal, 0)
     probabilities = logp.exp().masked_fill(~legal, 0)
-    return (-(target_policy * logp).sum(dim=1), (value - outcome).square().flatten(),
-            -(probabilities * logp).sum(dim=1))
+    entropy = -(probabilities * logp).sum(dim=1) if include_entropy else torch.zeros_like(wdl[:, 0])
+    return (-(target_policy * logp).sum(dim=1), (wdl - target_wdl).square().flatten(),
+            (margin - target_margin).square().flatten(), entropy)

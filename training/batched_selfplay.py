@@ -46,7 +46,7 @@ def run(args):
         directory = Path(__file__).parent
         meta = {"schema": SCHEMA, "record_bytes": RECORD_BYTES, "value_target": VALUE_TARGET,
                 "rule": "Othello", "encoding": "relative-2x8x8-a1-v1",
-                "architecture": "b8c64-v1", "policy": "visits-tau1-prefix-tau0-lowest-v1",
+                "architecture": "b8c64-v2", "policy": "visits-tau1-prefix-tau0-lowest-v1",
                 "rng": "splitmix64-boxmuller-marsaglia-v1", "split": "mix64-game-seed-mod10-v1", "c_puct": 1.5,
                 **config, "engine_sha256": source_hashes[args.worker], "verifier_sha256": source_hashes[args.verifier],
                 "model_sha256": source_hashes[args.model], "checkpoint_sha256": source_hashes[args.checkpoint],

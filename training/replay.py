@@ -116,11 +116,12 @@ def decode(records, symmetries=None):
         policy = np.take_along_axis(policy, mapping, axis=1)
         priors = np.take_along_axis(priors, mapping, axis=1)
         actions = FORWARD[symmetries, actions]
-    outcome = records["outcome"].astype(np.float32)
-    margin = records["value_format"] == 1
-    outcome[margin] /= 127.0
+    margin_format = records["value_format"] == 1
+    margin = records["outcome"].astype(np.float32)
+    margin[margin_format] /= 127.0
+    wdl = np.sign(margin)
     return {"board": board.reshape(n, 2, 8, 8).astype(np.float32), "legal": legal, "policy": policy,
-            "outcome": outcome.reshape(n, 1), "priors": priors,
+            "wdl": wdl.reshape(n, 1), "margin": margin.reshape(n, 1), "priors": priors,
             "action": actions, "game_id": records["game_id"].copy(), "ply": records["ply"].copy()}
 
 

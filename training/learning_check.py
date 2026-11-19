@@ -25,8 +25,11 @@ def check(checkpoint, model, binary, engine_binary, backend, workers):
         engine.configure(model, 8)
         row = engine.search((1 << 28 | 1 << 35, 1 << 27 | 1 << 36),
                             {"mode": "nodes", "budget": 1, "timeout_ms": 30000})
-        expected = ("info string evaluator onnx-cpu b8c64-v1 checkpoint " + identity["checkpoint_sha256"]
-                    + " training_steps " + str(identity["training_steps"]))
+        evaluator_backend = row["evaluator"].split(" ")[3]
+        if evaluator_backend not in ("onnx-cpu", "onnx-coreml"):
+            raise ValueError("native engine used unsupported evaluator")
+        expected = ("info string evaluator " + evaluator_backend + " b8c64-v2 checkpoint "
+                    + identity["checkpoint_sha256"] + " training_steps " + str(identity["training_steps"]))
         if not identity["training_steps"]: expected += " (untrained initialization)"
         if row["evaluator"] != expected: raise ValueError("native engine used wrong evaluator")
         engine.close()

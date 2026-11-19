@@ -7,6 +7,7 @@
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 #if defined(__ARM_NEON)
@@ -446,8 +447,8 @@ namespace islay {
     bn_val_var.assign(1, 1.0f);
     fc_val1_w.resize(64 * 64);
     fc_val1_b.assign(64, 0.0f);
-    fc_val2_w.resize(1 * 64);
-    fc_val2_b.assign(1, 0.0f);
+    fc_val2_w.resize(2 * 64);
+    fc_val2_b.assign(2, 0.0f);
   }
 
   void ModelWeights::init_random(std::uint64_t seed) {
@@ -544,8 +545,8 @@ namespace islay {
     val_conv_b.resize(1);
     val_fc1_w.resize(64 * 64);
     val_fc1_b.resize(64);
-    val_fc2_w.resize(1 * 64);
-    val_fc2_b.resize(1);
+    val_fc2_w.resize(2 * 64);
+    val_fc2_b.resize(2);
   }
 
   void FusedWeights::fuse_from(const ModelWeights &src) {
@@ -704,9 +705,10 @@ namespace islay {
     linear(v_conv, 64, fused_.val_fc1_w.data(), fused_.val_fc1_b.data(), v_fc1, 64);
     apply_relu(v_fc1, 64);
 
-    float v_raw = 0.0f;
-    linear(v_fc1, 64, fused_.val_fc2_w.data(), fused_.val_fc2_b.data(), &v_raw, 1);
-    output.value = std::tanh(v_raw);
+    float v_raw[2]{};
+    linear(v_fc1, 64, fused_.val_fc2_w.data(), fused_.val_fc2_b.data(), v_raw, 2);
+    output.value  = std::tanh(v_raw[0]);
+    output.margin = std::tanh(v_raw[1]);
 
     // 6. Mask illegal moves
     if (mask_legal) {
@@ -737,326 +739,384 @@ namespace islay {
     if (batch.empty())
       return {};
 
-    const std::size_t B              = batch.size();
-    float             total_pol_loss = 0.0f;
-    float             total_val_loss = 0.0f;
-
-    // Allocate gradient accumulators matching ModelWeights
-    ModelWeights grads;
-    // Zero-fill all gradient vectors
-    const auto zero_vec = [](std::vector<float> &v) { std::fill(v.begin(), v.end(), 0.0f); };
-    zero_vec(grads.conv_stem_w);
-    zero_vec(grads.bn_stem_gamma);
-    zero_vec(grads.bn_stem_beta);
-    for (int b = 0; b < kNumResBlocks; ++b) {
-      zero_vec(grads.blocks[b].conv1_w);
-      zero_vec(grads.blocks[b].bn1_gamma);
-      zero_vec(grads.blocks[b].bn1_beta);
-      zero_vec(grads.blocks[b].conv2_w);
-      zero_vec(grads.blocks[b].bn2_gamma);
-      zero_vec(grads.blocks[b].bn2_beta);
-    }
-    zero_vec(grads.conv_pol_w);
-    zero_vec(grads.bn_pol_gamma);
-    zero_vec(grads.bn_pol_beta);
-    zero_vec(grads.fc_pol_w);
-    zero_vec(grads.fc_pol_b);
-    zero_vec(grads.conv_val_w);
-    zero_vec(grads.bn_val_gamma);
-    zero_vec(grads.bn_val_beta);
-    zero_vec(grads.fc_val1_w);
-    zero_vec(grads.fc_val1_b);
-    zero_vec(grads.fc_val2_w);
-    zero_vec(grads.fc_val2_b);
-
-    // Forward and Backward for each sample in batch
-    for (std::size_t s = 0; s < B; ++s) {
-      const auto       &sample = batch[s];
-      alignas(64) float in[2 * 64];
-      for (int sq = 0; sq < 64; ++sq) {
-        in[sq]      = static_cast<float>((sample.board.player >> sq) & 1);
-        in[64 + sq] = static_cast<float>((sample.board.opponent >> sq) & 1);
-      }
-
-      // Record forward activations
-      alignas(64) float stem_out[64 * 64];
-      conv3x3_bias_packed(in, 2, fused_.stem_w_packed.data(), fused_.stem_b.data(), stem_out, 64);
-      apply_relu(stem_out, 64 * 64);
-
-      struct ResActivation {
-        alignas(64) float in_x[64 * 64];
-        alignas(64) float conv1_out[64 * 64];
-        alignas(64) float conv2_out[64 * 64];
-      };
-      std::vector<ResActivation> res_acts(kNumResBlocks);
-
-      float *cur_x = stem_out;
+    const std::size_t B            = batch.size();
+    const auto        zero_weights = [](ModelWeights &weights) {
+      const auto zero_vec = [](std::vector<float> &v) { std::fill(v.begin(), v.end(), 0.0f); };
+      zero_vec(weights.conv_stem_w);
+      zero_vec(weights.bn_stem_gamma);
+      zero_vec(weights.bn_stem_beta);
       for (int b = 0; b < kNumResBlocks; ++b) {
-        std::memcpy(res_acts[b].in_x, cur_x, 64 * 64 * sizeof(float));
-        conv3x3_bias_packed(cur_x, 64, fused_.blocks[b].conv1_w_packed.data(), fused_.blocks[b].conv1_b.data(),
-                            res_acts[b].conv1_out, 64);
-        apply_relu(res_acts[b].conv1_out, 64 * 64);
-
-        conv3x3_bias_packed(res_acts[b].conv1_out, 64, fused_.blocks[b].conv2_w_packed.data(),
-                            fused_.blocks[b].conv2_b.data(), res_acts[b].conv2_out, 64);
-
-        add_inplace(cur_x, res_acts[b].conv2_out, 64 * 64);
-        apply_relu(cur_x, 64 * 64);
+        zero_vec(weights.blocks[b].conv1_w);
+        zero_vec(weights.blocks[b].bn1_gamma);
+        zero_vec(weights.blocks[b].bn1_beta);
+        zero_vec(weights.blocks[b].conv2_w);
+        zero_vec(weights.blocks[b].bn2_gamma);
+        zero_vec(weights.blocks[b].bn2_beta);
       }
+      zero_vec(weights.conv_pol_w);
+      zero_vec(weights.bn_pol_gamma);
+      zero_vec(weights.bn_pol_beta);
+      zero_vec(weights.fc_pol_w);
+      zero_vec(weights.fc_pol_b);
+      zero_vec(weights.conv_val_w);
+      zero_vec(weights.bn_val_gamma);
+      zero_vec(weights.bn_val_beta);
+      zero_vec(weights.fc_val1_w);
+      zero_vec(weights.fc_val1_b);
+      zero_vec(weights.fc_val2_w);
+      zero_vec(weights.fc_val2_b);
+    };
 
-      // Policy head forward
-      alignas(64) float pol_conv[128];
-      conv1x1_bias(cur_x, 64, fused_.pol_conv_w.data(), fused_.pol_conv_b.data(), pol_conv, 2);
-      apply_relu(pol_conv, 128);
+    // Keep sample order within each chunk and reduce workers in a fixed order.
+    // This avoids synchronization in the hot path while keeping updates reproducible.
+    const unsigned worker_count = static_cast<unsigned>(
+            std::min<std::size_t>(B, std::max(1u, std::min(8u, std::thread::hardware_concurrency()))));
+    std::vector<ModelWeights> worker_grads(worker_count);
+    for (auto &worker_grad: worker_grads)
+      zero_weights(worker_grad);
+    std::vector<float> worker_pol_loss(worker_count, 0.0f);
+    std::vector<float> worker_val_loss(worker_count, 0.0f);
 
-      alignas(64) float logits[65];
-      linear(pol_conv, 128, fused_.pol_fc_w.data(), fused_.pol_fc_b.data(), logits, 65);
-
-      // Value head forward
-      alignas(64) float val_conv[64];
-      conv1x1_bias(cur_x, 64, fused_.val_conv_w.data(), fused_.val_conv_b.data(), val_conv, 1);
-      apply_relu(val_conv, 64);
-
-      alignas(64) float val_fc1[64];
-      linear(val_conv, 64, fused_.val_fc1_w.data(), fused_.val_fc1_b.data(), val_fc1, 64);
-      apply_relu(val_fc1, 64);
-
-      float val_raw = 0.0f;
-      linear(val_fc1, 64, fused_.val_fc2_w.data(), fused_.val_fc2_b.data(), &val_raw, 1);
-      const float pred_val = std::tanh(val_raw);
-
-      // --- Loss and Output Gradients with Legal Move Masking ---
-      // Policy Legal Mask & Softmax
-      float max_l = -1e30f;
-      for (int a = 0; a < 65; ++a) {
-        const bool legal = (a < 64 && (sample.legal_moves & (Bitboard{1} << a))) || (a == 64 && sample.forced_pass);
-        if (legal)
-          max_l = std::max(max_l, logits[a]);
-      }
-
-      double                sum_exp = 0.0;
-      std::array<float, 65> probs{};
-      for (int a = 0; a < 65; ++a) {
-        const bool legal = (a < 64 && (sample.legal_moves & (Bitboard{1} << a))) || (a == 64 && sample.forced_pass);
-        if (legal) {
-          probs[a] = static_cast<float>(std::exp(logits[a] - max_l));
-          sum_exp += probs[a];
+    const auto process_samples = [&](std::size_t begin, std::size_t end, ModelWeights &local_grads,
+                                     float &local_pol_loss, float &local_val_loss) {
+      // Forward and Backward for each sample in this worker's disjoint chunk
+      for (std::size_t s = begin; s < end; ++s) {
+        const auto       &sample = batch[s];
+        alignas(64) float in[2 * 64];
+        for (int sq = 0; sq < 64; ++sq) {
+          in[sq]      = static_cast<float>((sample.board.player >> sq) & 1);
+          in[64 + sq] = static_cast<float>((sample.board.opponent >> sq) & 1);
         }
-      }
 
-      std::array<float, 65> d_logits{};
-      float                 cur_pol_loss = 0.0f;
-      for (int a = 0; a < 65; ++a) {
-        const bool legal = (a < 64 && (sample.legal_moves & (Bitboard{1} << a))) || (a == 64 && sample.forced_pass);
-        if (legal && sum_exp > 0.0) {
-          probs[a] /= static_cast<float>(sum_exp);
-          const float target = sample.target_policy[a];
-          if (target > 0.0f)
-            cur_pol_loss -= target * std::log(std::max(probs[a], 1e-12f));
-          d_logits[a] = probs[a] - target;
-        } else {
-          d_logits[a] = 0.0f;
+        // Record forward activations
+        alignas(64) float stem_out[64 * 64];
+        conv3x3_bias_packed(in, 2, fused_.stem_w_packed.data(), fused_.stem_b.data(), stem_out, 64);
+        apply_relu(stem_out, 64 * 64);
+
+        struct ResActivation {
+          alignas(64) float in_x[64 * 64];
+          alignas(64) float conv1_out[64 * 64];
+          alignas(64) float conv2_out[64 * 64];
+        };
+        std::vector<ResActivation> res_acts(kNumResBlocks);
+
+        float *cur_x = stem_out;
+        for (int b = 0; b < kNumResBlocks; ++b) {
+          std::memcpy(res_acts[b].in_x, cur_x, 64 * 64 * sizeof(float));
+          conv3x3_bias_packed(cur_x, 64, fused_.blocks[b].conv1_w_packed.data(), fused_.blocks[b].conv1_b.data(),
+                              res_acts[b].conv1_out, 64);
+          apply_relu(res_acts[b].conv1_out, 64 * 64);
+
+          conv3x3_bias_packed(res_acts[b].conv1_out, 64, fused_.blocks[b].conv2_w_packed.data(),
+                              fused_.blocks[b].conv2_b.data(), res_acts[b].conv2_out, 64);
+
+          add_inplace(cur_x, res_acts[b].conv2_out, 64 * 64);
+          apply_relu(cur_x, 64 * 64);
         }
-      }
-      total_pol_loss += cur_pol_loss;
 
-      // Value MSE Loss
-      const float val_diff = pred_val - sample.target_value;
-      total_val_loss += val_diff * val_diff;
-      const float d_val_raw = 2.0f * val_diff * (1.0f - pred_val * pred_val);
+        // Policy head forward
+        alignas(64) float pol_conv[128];
+        conv1x1_bias(cur_x, 64, fused_.pol_conv_w.data(), fused_.pol_conv_b.data(), pol_conv, 2);
+        apply_relu(pol_conv, 128);
 
-      // --- Backward through Value Head ---
-      // FC2: val_raw = W * val_fc1 + b
-      for (int i = 0; i < 64; ++i)
-        grads.fc_val2_w[i] += d_val_raw * val_fc1[i];
-      grads.fc_val2_b[0] += d_val_raw;
+        alignas(64) float logits[65];
+        linear(pol_conv, 128, fused_.pol_fc_w.data(), fused_.pol_fc_b.data(), logits, 65);
 
-      alignas(64) float d_val_fc1[64];
-      for (int i = 0; i < 64; ++i)
-        d_val_fc1[i] = (val_fc1[i] > 0.0f ? d_val_raw * fused_.val_fc2_w[i] : 0.0f);
+        // Value head forward
+        alignas(64) float val_conv[64];
+        conv1x1_bias(cur_x, 64, fused_.val_conv_w.data(), fused_.val_conv_b.data(), val_conv, 1);
+        apply_relu(val_conv, 64);
 
-      // FC1: val_fc1 = W * val_conv + b
-      for (int o = 0; o < 64; ++o) {
-        grads.fc_val1_b[o] += d_val_fc1[o];
-        for (int i = 0; i < 64; ++i)
-          grads.fc_val1_w[o * 64 + i] += d_val_fc1[o] * val_conv[i];
-      }
+        alignas(64) float val_fc1[64];
+        linear(val_conv, 64, fused_.val_fc1_w.data(), fused_.val_fc1_b.data(), val_fc1, 64);
+        apply_relu(val_fc1, 64);
 
-      alignas(64) float d_val_conv[64];
-      for (int i = 0; i < 64; ++i) {
-        float sum = 0.0f;
-        for (int o = 0; o < 64; ++o)
-          sum += d_val_fc1[o] * fused_.val_fc1_w[o * 64 + i];
-        d_val_conv[i] = (val_conv[i] > 0.0f ? sum : 0.0f);
-      }
+        float val_raw[2]{};
+        linear(val_fc1, 64, fused_.val_fc2_w.data(), fused_.val_fc2_b.data(), val_raw, 2);
+        const float pred_wdl    = std::tanh(val_raw[0]);
+        const float pred_margin = std::tanh(val_raw[1]);
 
-      // Conv 1x1: val_conv = W * cur_x + b
-      for (int ci = 0; ci < 64; ++ci) {
-        float sum = 0.0f;
-        for (int p = 0; p < 64; ++p)
-          sum += d_val_conv[p] * cur_x[ci * 64 + p];
-        grads.conv_val_w[ci] += sum;
-      }
-      for (int p = 0; p < 64; ++p)
-        grads.bn_val_beta[0] += d_val_conv[p];
+        // --- Loss and Output Gradients with Legal Move Masking ---
+        // Policy Legal Mask & Softmax
+        float max_l = -1e30f;
+        for (int a = 0; a < 65; ++a) {
+          const bool legal = (a < 64 && (sample.legal_moves & (Bitboard{1} << a))) || (a == 64 && sample.forced_pass);
+          if (legal)
+            max_l = std::max(max_l, logits[a]);
+        }
 
-      alignas(64) float d_trunk[64 * 64];
-      for (int ci = 0; ci < 64; ++ci) {
-        for (int p = 0; p < 64; ++p)
-          d_trunk[ci * 64 + p] = d_val_conv[p] * fused_.val_conv_w[ci];
-      }
+        double                sum_exp = 0.0;
+        std::array<float, 65> probs{};
+        for (int a = 0; a < 65; ++a) {
+          const bool legal = (a < 64 && (sample.legal_moves & (Bitboard{1} << a))) || (a == 64 && sample.forced_pass);
+          if (legal) {
+            probs[a] = static_cast<float>(std::exp(logits[a] - max_l));
+            sum_exp += probs[a];
+          }
+        }
 
-      // --- Backward through Policy Head ---
-      // FC: logits = W * pol_conv + b
-      for (int o = 0; o < 65; ++o) {
-        grads.fc_pol_b[o] += d_logits[o];
-        for (int i = 0; i < 128; ++i)
-          grads.fc_pol_w[o * 128 + i] += d_logits[o] * pol_conv[i];
-      }
+        std::array<float, 65> d_logits{};
+        float                 cur_pol_loss = 0.0f;
+        for (int a = 0; a < 65; ++a) {
+          const bool legal = (a < 64 && (sample.legal_moves & (Bitboard{1} << a))) || (a == 64 && sample.forced_pass);
+          if (legal && sum_exp > 0.0) {
+            probs[a] /= static_cast<float>(sum_exp);
+            const float target = sample.target_policy[a];
+            if (target > 0.0f)
+              cur_pol_loss -= target * std::log(std::max(probs[a], 1e-12f));
+            d_logits[a] = probs[a] - target;
+          } else {
+            d_logits[a] = 0.0f;
+          }
+        }
+        local_pol_loss += cur_pol_loss;
 
-      alignas(64) float d_pol_conv[128];
-      for (int i = 0; i < 128; ++i) {
-        float sum = 0.0f;
-        for (int o = 0; o < 65; ++o)
-          sum += d_logits[o] * fused_.pol_fc_w[o * 128 + i];
-        d_pol_conv[i] = (pol_conv[i] > 0.0f ? sum : 0.0f);
-      }
+        // WDL drives move selection; margin is a lower-weight calibration target.
+        constexpr float kWdlLossWeight    = 1.0f;
+        constexpr float kMarginLossWeight = 0.25f;
+        const float     wdl_diff          = pred_wdl - sample.target_wdl;
+        const float     margin_diff       = pred_margin - sample.target_margin;
+        local_val_loss += kWdlLossWeight * wdl_diff * wdl_diff + kMarginLossWeight * margin_diff * margin_diff;
+        const float d_val_raw[2] = {2.0f * kWdlLossWeight * wdl_diff * (1.0f - pred_wdl * pred_wdl),
+                                    2.0f * kMarginLossWeight * margin_diff * (1.0f - pred_margin * pred_margin)};
 
-      // Conv 1x1: pol_conv (2x64) = W (2x64) * cur_x (64x64) + b
-      for (int co = 0; co < 2; ++co) {
+        // --- Backward through Value Head ---
+        // FC2: val_raw = W * val_fc1 + b
+        for (int head = 0; head < 2; ++head) {
+          for (int i = 0; i < 64; ++i)
+            local_grads.fc_val2_w[head * 64 + i] += d_val_raw[head] * val_fc1[i];
+          local_grads.fc_val2_b[head] += d_val_raw[head];
+        }
+
+        alignas(64) float d_val_fc1[64];
+        for (int i = 0; i < 64; ++i) {
+          float sum    = d_val_raw[0] * fused_.val_fc2_w[i] + d_val_raw[1] * fused_.val_fc2_w[64 + i];
+          d_val_fc1[i] = (val_fc1[i] > 0.0f ? sum : 0.0f);
+        }
+
+        // FC1: val_fc1 = W * val_conv + b
+        for (int o = 0; o < 64; ++o) {
+          local_grads.fc_val1_b[o] += d_val_fc1[o];
+          for (int i = 0; i < 64; ++i)
+            local_grads.fc_val1_w[o * 64 + i] += d_val_fc1[o] * val_conv[i];
+        }
+
+        alignas(64) float d_val_conv[64];
+        for (int i = 0; i < 64; ++i) {
+          float sum = 0.0f;
+          for (int o = 0; o < 64; ++o)
+            sum += d_val_fc1[o] * fused_.val_fc1_w[o * 64 + i];
+          d_val_conv[i] = (val_conv[i] > 0.0f ? sum : 0.0f);
+        }
+
+        // Conv 1x1: val_conv = W * cur_x + b
         for (int ci = 0; ci < 64; ++ci) {
           float sum = 0.0f;
           for (int p = 0; p < 64; ++p)
-            sum += d_pol_conv[co * 64 + p] * cur_x[ci * 64 + p];
-          grads.conv_pol_w[co * 64 + ci] += sum;
+            sum += d_val_conv[p] * cur_x[ci * 64 + p];
+          local_grads.conv_val_w[ci] += sum;
         }
         for (int p = 0; p < 64; ++p)
-          grads.bn_pol_beta[co] += d_pol_conv[co * 64 + p];
-      }
+          local_grads.bn_val_beta[0] += d_val_conv[p];
 
-      // Add to d_trunk
-      for (int ci = 0; ci < 64; ++ci) {
-        for (int p = 0; p < 64; ++p) {
-          d_trunk[ci * 64 + p] += d_pol_conv[0 * 64 + p] * fused_.pol_conv_w[0 * 64 + ci] +
-                                  d_pol_conv[1 * 64 + p] * fused_.pol_conv_w[1 * 64 + ci];
-        }
-      }
-
-      // --- Backward through 8 ResBlocks ---
-      for (int b = kNumResBlocks - 1; b >= 0; --b) {
-        // d_trunk is gradient at output of block b
-        for (int i = 0; i < 64 * 64; ++i)
-          if (cur_x[i] <= 0.0f)
-            d_trunk[i] = 0.0f;
-
-        // Skip connection branch: d_skip = d_trunk
-        alignas(64) float d_conv2_out[64 * 64];
-        std::memcpy(d_conv2_out, d_trunk, 64 * 64 * sizeof(float));
-
-        // Conv2 backward
-        alignas(64) float d_conv1_out[64 * 64];
-        std::memset(d_conv1_out, 0, 64 * 64 * sizeof(float));
-
-        alignas(64) float shifted_in[9 * 64];
+        alignas(64) float d_trunk[64 * 64];
         for (int ci = 0; ci < 64; ++ci) {
-          const float *in_c = res_acts[b].conv1_out + ci * 64;
-          for (int t = 0; t < 9; ++t)
-            shift_plane(in_c, shifted_in + t * 64, (t / 3) - 1, (t % 3) - 1);
+          for (int p = 0; p < 64; ++p)
+            d_trunk[ci * 64 + p] = d_val_conv[p] * fused_.val_conv_w[ci];
+        }
 
+        // --- Backward through Policy Head ---
+        // FC: logits = W * pol_conv + b
+        for (int o = 0; o < 65; ++o) {
+          local_grads.fc_pol_b[o] += d_logits[o];
+          for (int i = 0; i < 128; ++i)
+            local_grads.fc_pol_w[o * 128 + i] += d_logits[o] * pol_conv[i];
+        }
+
+        alignas(64) float d_pol_conv[128];
+        for (int i = 0; i < 128; ++i) {
+          float sum = 0.0f;
+          for (int o = 0; o < 65; ++o)
+            sum += d_logits[o] * fused_.pol_fc_w[o * 128 + i];
+          d_pol_conv[i] = (pol_conv[i] > 0.0f ? sum : 0.0f);
+        }
+
+        // Conv 1x1: pol_conv (2x64) = W (2x64) * cur_x (64x64) + b
+        for (int co = 0; co < 2; ++co) {
+          for (int ci = 0; ci < 64; ++ci) {
+            float sum = 0.0f;
+            for (int p = 0; p < 64; ++p)
+              sum += d_pol_conv[co * 64 + p] * cur_x[ci * 64 + p];
+            local_grads.conv_pol_w[co * 64 + ci] += sum;
+          }
+          for (int p = 0; p < 64; ++p)
+            local_grads.bn_pol_beta[co] += d_pol_conv[co * 64 + p];
+        }
+
+        // Add to d_trunk
+        for (int ci = 0; ci < 64; ++ci) {
+          for (int p = 0; p < 64; ++p) {
+            d_trunk[ci * 64 + p] += d_pol_conv[0 * 64 + p] * fused_.pol_conv_w[0 * 64 + ci] +
+                                    d_pol_conv[1 * 64 + p] * fused_.pol_conv_w[1 * 64 + ci];
+          }
+        }
+
+        // --- Backward through 8 ResBlocks ---
+        for (int b = kNumResBlocks - 1; b >= 0; --b) {
+          // d_trunk is gradient at output of block b
+          for (int i = 0; i < 64 * 64; ++i)
+            if (cur_x[i] <= 0.0f)
+              d_trunk[i] = 0.0f;
+
+          // Skip connection branch: d_skip = d_trunk
+          alignas(64) float d_conv2_out[64 * 64];
+          std::memcpy(d_conv2_out, d_trunk, 64 * 64 * sizeof(float));
+
+          // Conv2 backward
+          alignas(64) float d_conv1_out[64 * 64];
+          std::memset(d_conv1_out, 0, 64 * 64 * sizeof(float));
+
+          alignas(64) float shifted_in[9 * 64];
+          for (int ci = 0; ci < 64; ++ci) {
+            const float *in_c = res_acts[b].conv1_out + ci * 64;
+            for (int t = 0; t < 9; ++t)
+              shift_plane(in_c, shifted_in + t * 64, (t / 3) - 1, (t % 3) - 1);
+
+            for (int co = 0; co < 64; ++co) {
+              const float *dy_c = d_conv2_out + co * 64;
+              for (int t = 0; t < 9; ++t) {
+                const float *s_c = shifted_in + t * 64;
+                float        dot = 0.0f;
+                for (int p = 0; p < 64; ++p)
+                  dot += dy_c[p] * s_c[p];
+                local_grads.blocks[b].conv2_w[(co * 64 + ci) * 9 + t] += dot;
+              }
+            }
+          }
+
+          // Conv2 input gradient (d_conv1_out) using inverted shifts
           for (int co = 0; co < 64; ++co) {
             const float *dy_c = d_conv2_out + co * 64;
             for (int t = 0; t < 9; ++t) {
-              const float *s_c = shifted_in + t * 64;
-              float        dot = 0.0f;
-              for (int p = 0; p < 64; ++p)
-                dot += dy_c[p] * s_c[p];
-              grads.blocks[b].conv2_w[(co * 64 + ci) * 9 + t] += dot;
+              alignas(64) float shifted_dy[64];
+              // Inverted tap: -(dy, dx)
+              shift_plane(dy_c, shifted_dy, -((t / 3) - 1), -((t % 3) - 1));
+              for (int ci = 0; ci < 64; ++ci) {
+                const float w    = fused_.blocks[b].conv2_w[(co * 64 + ci) * 9 + t];
+                float      *dx_c = d_conv1_out + ci * 64;
+                for (int p = 0; p < 64; ++p)
+                  dx_c[p] += shifted_dy[p] * w;
+              }
             }
           }
-        }
 
-        // Conv2 input gradient (d_conv1_out) using inverted shifts
-        for (int co = 0; co < 64; ++co) {
-          const float *dy_c = d_conv2_out + co * 64;
-          for (int t = 0; t < 9; ++t) {
-            alignas(64) float shifted_dy[64];
-            // Inverted tap: -(dy, dx)
-            shift_plane(dy_c, shifted_dy, -((t / 3) - 1), -((t % 3) - 1));
-            for (int ci = 0; ci < 64; ++ci) {
-              const float w    = fused_.blocks[b].conv2_w[(co * 64 + ci) * 9 + t];
-              float      *dx_c = d_conv1_out + ci * 64;
-              for (int p = 0; p < 64; ++p)
-                dx_c[p] += shifted_dy[p] * w;
+          // ReLU backward on conv1 output
+          for (int i = 0; i < 64 * 64; ++i)
+            if (res_acts[b].conv1_out[i] <= 0.0f)
+              d_conv1_out[i] = 0.0f;
+
+          // Conv1 backward
+          alignas(64) float d_in_x[64 * 64];
+          std::memset(d_in_x, 0, 64 * 64 * sizeof(float));
+
+          for (int ci = 0; ci < 64; ++ci) {
+            const float *in_c = res_acts[b].in_x + ci * 64;
+            for (int t = 0; t < 9; ++t)
+              shift_plane(in_c, shifted_in + t * 64, (t / 3) - 1, (t % 3) - 1);
+
+            for (int co = 0; co < 64; ++co) {
+              const float *dy_c = d_conv1_out + co * 64;
+              for (int t = 0; t < 9; ++t) {
+                const float *s_c = shifted_in + t * 64;
+                float        dot = 0.0f;
+                for (int p = 0; p < 64; ++p)
+                  dot += dy_c[p] * s_c[p];
+                local_grads.blocks[b].conv1_w[(co * 64 + ci) * 9 + t] += dot;
+              }
             }
           }
-        }
-
-        // ReLU backward on conv1 output
-        for (int i = 0; i < 64 * 64; ++i)
-          if (res_acts[b].conv1_out[i] <= 0.0f)
-            d_conv1_out[i] = 0.0f;
-
-        // Conv1 backward
-        alignas(64) float d_in_x[64 * 64];
-        std::memset(d_in_x, 0, 64 * 64 * sizeof(float));
-
-        for (int ci = 0; ci < 64; ++ci) {
-          const float *in_c = res_acts[b].in_x + ci * 64;
-          for (int t = 0; t < 9; ++t)
-            shift_plane(in_c, shifted_in + t * 64, (t / 3) - 1, (t % 3) - 1);
 
           for (int co = 0; co < 64; ++co) {
             const float *dy_c = d_conv1_out + co * 64;
             for (int t = 0; t < 9; ++t) {
-              const float *s_c = shifted_in + t * 64;
+              alignas(64) float shifted_dy[64];
+              shift_plane(dy_c, shifted_dy, -((t / 3) - 1), -((t % 3) - 1));
+              for (int ci = 0; ci < 64; ++ci) {
+                const float w    = fused_.blocks[b].conv1_w[(co * 64 + ci) * 9 + t];
+                float      *dx_c = d_in_x + ci * 64;
+                for (int p = 0; p < 64; ++p)
+                  dx_c[p] += shifted_dy[p] * w;
+              }
+            }
+          }
+
+          // Add residual skip gradient: d_trunk_prev = d_in_x + d_trunk
+          add_inplace(d_trunk, d_in_x, 64 * 64);
+        }
+
+        // --- Backward through Stem ---
+        for (int i = 0; i < 64 * 64; ++i)
+          if (stem_out[i] <= 0.0f)
+            d_trunk[i] = 0.0f;
+
+        alignas(64) float shifted_stem_in[9 * 64];
+        for (int ci = 0; ci < 2; ++ci) {
+          const float *in_c = in + ci * 64;
+          for (int t = 0; t < 9; ++t)
+            shift_plane(in_c, shifted_stem_in + t * 64, (t / 3) - 1, (t % 3) - 1);
+
+          for (int co = 0; co < 64; ++co) {
+            const float *dy_c = d_trunk + co * 64;
+            for (int t = 0; t < 9; ++t) {
+              const float *s_c = shifted_stem_in + t * 64;
               float        dot = 0.0f;
               for (int p = 0; p < 64; ++p)
                 dot += dy_c[p] * s_c[p];
-              grads.blocks[b].conv1_w[(co * 64 + ci) * 9 + t] += dot;
+              local_grads.conv_stem_w[(co * 2 + ci) * 9 + t] += dot;
             }
           }
         }
-
-        for (int co = 0; co < 64; ++co) {
-          const float *dy_c = d_conv1_out + co * 64;
-          for (int t = 0; t < 9; ++t) {
-            alignas(64) float shifted_dy[64];
-            shift_plane(dy_c, shifted_dy, -((t / 3) - 1), -((t % 3) - 1));
-            for (int ci = 0; ci < 64; ++ci) {
-              const float w    = fused_.blocks[b].conv1_w[(co * 64 + ci) * 9 + t];
-              float      *dx_c = d_in_x + ci * 64;
-              for (int p = 0; p < 64; ++p)
-                dx_c[p] += shifted_dy[p] * w;
-            }
-          }
-        }
-
-        // Add residual skip gradient: d_trunk_prev = d_in_x + d_trunk
-        add_inplace(d_trunk, d_in_x, 64 * 64);
       }
+    };
 
-      // --- Backward through Stem ---
-      for (int i = 0; i < 64 * 64; ++i)
-        if (stem_out[i] <= 0.0f)
-          d_trunk[i] = 0.0f;
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+    for (unsigned worker = 0; worker < worker_count; ++worker) {
+      const std::size_t begin = B * worker / worker_count;
+      const std::size_t end   = B * (worker + 1) / worker_count;
+      workers.emplace_back(process_samples, begin, end, std::ref(worker_grads[worker]),
+                           std::ref(worker_pol_loss[worker]), std::ref(worker_val_loss[worker]));
+    }
+    for (auto &worker: workers)
+      worker.join();
 
-      alignas(64) float shifted_stem_in[9 * 64];
-      for (int ci = 0; ci < 2; ++ci) {
-        const float *in_c = in + ci * 64;
-        for (int t = 0; t < 9; ++t)
-          shift_plane(in_c, shifted_stem_in + t * 64, (t / 3) - 1, (t % 3) - 1);
-
-        for (int co = 0; co < 64; ++co) {
-          const float *dy_c = d_trunk + co * 64;
-          for (int t = 0; t < 9; ++t) {
-            const float *s_c = shifted_stem_in + t * 64;
-            float        dot = 0.0f;
-            for (int p = 0; p < 64; ++p)
-              dot += dy_c[p] * s_c[p];
-            grads.conv_stem_w[(co * 2 + ci) * 9 + t] += dot;
-          }
-        }
+    ModelWeights grads;
+    zero_weights(grads);
+    float      total_pol_loss = 0.0f;
+    float      total_val_loss = 0.0f;
+    const auto add_vec        = [](std::vector<float> &dst, const std::vector<float> &src) {
+      for (std::size_t i = 0; i < dst.size(); ++i)
+        dst[i] += src[i];
+    };
+    const auto add_weights = [&](const ModelWeights &src) {
+      add_vec(grads.conv_stem_w, src.conv_stem_w);
+      for (int b = 0; b < kNumResBlocks; ++b) {
+        add_vec(grads.blocks[b].conv1_w, src.blocks[b].conv1_w);
+        add_vec(grads.blocks[b].conv2_w, src.blocks[b].conv2_w);
       }
+      add_vec(grads.conv_pol_w, src.conv_pol_w);
+      add_vec(grads.fc_pol_w, src.fc_pol_w);
+      add_vec(grads.fc_pol_b, src.fc_pol_b);
+      add_vec(grads.conv_val_w, src.conv_val_w);
+      add_vec(grads.fc_val1_w, src.fc_val1_w);
+      add_vec(grads.fc_val1_b, src.fc_val1_b);
+      add_vec(grads.fc_val2_w, src.fc_val2_w);
+      add_vec(grads.fc_val2_b, src.fc_val2_b);
+    };
+    for (unsigned worker = 0; worker < worker_count; ++worker) {
+      add_weights(worker_grads[worker]);
+      total_pol_loss += worker_pol_loss[worker];
+      total_val_loss += worker_val_loss[worker];
     }
 
     // Average gradients over batch
@@ -1156,7 +1216,7 @@ namespace islay {
 
     const char magic[8] = {'I', 'S', 'L', 'A', 'Y', 'N', 'E', 'T'};
     out.write(magic, 8);
-    const std::uint32_t version = 1;
+    const std::uint32_t version = 2;
     out.write(reinterpret_cast<const char *>(&version), sizeof(version));
     out.write(reinterpret_cast<const char *>(&training_steps), sizeof(training_steps));
 
@@ -1217,8 +1277,8 @@ namespace islay {
 
     std::uint32_t version = 0;
     in.read(reinterpret_cast<char *>(&version), sizeof(version));
-    if (version != 1)
-      throw std::runtime_error("unsupported weights version");
+    if (version != 1 && version != 2)
+      throw std::runtime_error("unsupported weights version (WDL+margin network required)");
 
     in.read(reinterpret_cast<char *>(&training_steps_), sizeof(training_steps_));
 
@@ -1261,8 +1321,19 @@ namespace islay {
     read_vec(weights_.bn_val_var);
     read_vec(weights_.fc_val1_w);
     read_vec(weights_.fc_val1_b);
-    read_vec(weights_.fc_val2_w);
-    read_vec(weights_.fc_val2_b);
+    if (version == 1) {
+      std::array<float, 64> wdl_weights{};
+      float                wdl_bias = 0.0f;
+      in.read(reinterpret_cast<char *>(wdl_weights.data()), sizeof(wdl_weights));
+      in.read(reinterpret_cast<char *>(&wdl_bias), sizeof(wdl_bias));
+      std::copy(wdl_weights.begin(), wdl_weights.end(), weights_.fc_val2_w.begin());
+      std::fill(weights_.fc_val2_w.begin() + 64, weights_.fc_val2_w.end(), 0.0f);
+      weights_.fc_val2_b[0] = wdl_bias;
+      weights_.fc_val2_b[1] = 0.0f;
+    } else {
+      read_vec(weights_.fc_val2_w);
+      read_vec(weights_.fc_val2_b);
+    }
 
     ema_weights_     = weights_;
     ema_initialized_ = true;
@@ -1286,7 +1357,7 @@ namespace islay {
   }
 
   std::string NativeNeuralEvaluator::description() const {
-    return "native-simd b8c64-v1 training_steps " + std::to_string(net_->training_steps());
+    return "native-simd b8c64-v2 training_steps " + std::to_string(net_->training_steps());
   }
 
   // ---------------------------------------------------------------------------
@@ -1333,7 +1404,8 @@ namespace islay {
       Evaluation  out;
       net.evaluate_board(start, out, true);
 
-      if (!std::isfinite(out.value) || std::abs(out.value) > 1.0f)
+      if (!std::isfinite(out.value) || std::abs(out.value) > 1.0f || !std::isfinite(out.margin) ||
+          std::abs(out.margin) > 1.0f)
         return false;
 
       const auto status = game_status(start);
@@ -1356,7 +1428,8 @@ namespace islay {
       for (int sq = 0; sq < 64; ++sq)
         if (status.moves & (Bitboard{1} << sq))
           sample.target_policy[sq] = 0.25f;
-      sample.target_value = 0.5f;
+      sample.target_wdl    = 0.5f;
+      sample.target_margin = 0.25f;
 
       OptimizerConfig cfg;
       cfg.learning_rate  = 0.01f;
@@ -1378,7 +1451,7 @@ namespace islay {
 
       Evaluation out2;
       reloaded.evaluate_board(start, out2, true);
-      if (std::abs(out2.value - out_trained.value) > 1e-4f)
+      if (std::abs(out2.value - out_trained.value) > 1e-4f || std::abs(out2.margin - out_trained.margin) > 1e-4f)
         return false;
 
       return true;

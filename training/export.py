@@ -46,11 +46,11 @@ def main():
     assert count == PARAMETERS, count
     identity = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
     metadata = {"islay.arch": ARCHITECTURE, "islay.encoding": ENCODING, "islay.policy": POLICY,
-                "islay.value": "relative-wdl-v1", "islay.checkpoint_sha256": identity,
+                "islay.value": "relative-wdl-margin-v2", "islay.checkpoint_sha256": identity,
                 "islay.training_steps": str(steps)}
     path = args.output / "model.onnx"
     torch.onnx.export(model, (torch.zeros(2, 2, 8, 8),), str(path), input_names=["board"],
-                      output_names=["policy_logits", "value"], opset_version=18, dynamo=True,
+                      output_names=["policy_logits", "wdl", "margin"], opset_version=18, dynamo=True,
                       dynamic_shapes=({0: torch.export.Dim("batch", min=1, max=128)},),
                       external_data=False)
     graph = onnx.load(path)
