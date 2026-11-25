@@ -78,11 +78,21 @@ namespace islay {
       throw std::invalid_argument("root exploration is only supported by offline self-play");
     {
       const std::lock_guard lock(output_mutex_);
-      publish_           = true;
-      has_last_result_   = false;
+      publish_         = true;
+      has_last_result_ = false;
     }
-    const auto started = MctsClock::now();
-    limits.progress = [this, board, started](const MctsResult &progress) {
+    if (evaluator) {
+      if (cached_backend_ != evaluator || !eval_cache_) {
+        eval_cache_     = std::make_unique<CachedEvaluator>(*evaluator, 32 * 1024 * 1024);
+        cached_backend_ = evaluator;
+      }
+    } else {
+      eval_cache_.reset();
+      cached_backend_.reset();
+    }
+    CachedEvaluator *cache   = eval_cache_.get();
+    const auto       started = MctsClock::now();
+    limits.progress          = [this, board, started](const MctsResult &progress) {
       std::ostringstream message;
       const double       elapsed_us = std::chrono::duration<double, std::micro>(MctsClock::now() - started).count();
       message << "info nodes " << progress.simulations << " time " << static_cast<std::uint64_t>(elapsed_us / 1000)
@@ -90,15 +100,14 @@ namespace islay {
               << progress.value << std::noshowpos << " (draw rate unavailable: scalar WDL head)";
       if (progress.action_count > 0) {
         std::vector<RootAction> actions(progress.actions.begin(), progress.actions.begin() + progress.action_count);
-        std::sort(actions.begin(), actions.end(), [](const RootAction &a, const RootAction &b) {
-          return a.visits > b.visits;
-        });
+        std::sort(actions.begin(), actions.end(),
+                  [](const RootAction &a, const RootAction &b) { return a.visits > b.visits; });
         std::uint64_t total_visits = 0;
         for (const auto &action: actions)
           total_visits += action.visits;
         message << "\ninfo string search policy:";
         for (std::size_t i = 0; i < std::min<std::size_t>(actions.size(), 6); ++i) {
-          const auto  &action = actions[i];
+          const auto  &action    = actions[i];
           const double visit_pct = total_visits ? 100.0 * action.visits / total_visits : 0.0;
           message << " " << square_to_string(action.action) << "=" << std::fixed << std::setprecision(1) << visit_pct
                   << "%/N" << action.visits << "/Q" << std::showpos << std::setprecision(3) << action.value
@@ -114,16 +123,15 @@ namespace islay {
         output_ << message.str() << std::flush;
       }
     };
-    worker_            = std::jthread([this, board, rule, limits, infinite, started,
-                                       evaluator = std::move(evaluator)](std::stop_token stop) {
+    worker_ = std::jthread([this, board, rule, limits, infinite, started, cache,
+                            evaluator = std::move(evaluator)](std::stop_token stop) {
       MctsResult  result;
       std::string error;
       try {
         UniformEvaluator uniform;
         const bool       use_tree = (limits.simulations == std::numeric_limits<std::uint64_t>::max());
-        if (evaluator) {
-          CachedEvaluator cached(*evaluator, 32 * 1024 * 1024);
-          result = mcts_search(board, rule, cached, limits, stop, use_tree ? &tree_ : nullptr);
+        if (cache) {
+          result = mcts_search(board, rule, *cache, limits, stop, use_tree ? &tree_ : nullptr);
         } else {
           result = mcts_search(board, rule, uniform, limits, stop, use_tree ? &tree_ : nullptr);
         }
@@ -161,7 +169,10 @@ namespace islay {
               << result.evaluations;
       if (result.reason == MctsStop::Terminal)
         message << "\ninfo string exact WDL win/draw/loss "
-                << (result.value > 0 ? "100/0/0" : result.value < 0 ? "0/0/100" : "0/100/0") << "%";
+                << (result.value > 0   ? "100/0/0"
+                    : result.value < 0 ? "0/0/100"
+                                       : "0/100/0")
+                << "%";
 
       if (result.action_count > 1) {
         std::vector<RootAction> sorted_actions(result.actions.begin(), result.actions.begin() + result.action_count);

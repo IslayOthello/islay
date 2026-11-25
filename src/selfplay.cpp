@@ -88,9 +88,12 @@ namespace islay {
       std::size_t cache_index;
       int         symmetry;
     };
-    std::vector<Board>      miss_boards;
-    std::vector<Miss>       misses;
-    std::vector<Evaluation> miss_outputs;
+    thread_local std::vector<Board>      miss_boards;
+    thread_local std::vector<Miss>       misses;
+    thread_local std::vector<Evaluation> miss_outputs;
+    miss_boards.clear();
+    misses.clear();
+    miss_outputs.clear();
     miss_boards.reserve(boards.size());
     misses.reserve(boards.size());
     for (std::size_t i = 0; i < boards.size() && !stop.stop_requested(); ++i) {
