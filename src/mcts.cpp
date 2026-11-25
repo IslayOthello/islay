@@ -160,10 +160,10 @@ namespace islay {
           board_(board), evaluator_(evaluator), limits_(limits), stop_(stop), tree_(tree) {}
 
       MctsResult run() {
-        const auto start  = MctsClock::now();
+        const auto start         = MctsClock::now();
         auto       last_progress = start;
-        const auto status = game_status(board_);
-        auto       moves  = status.moves;
+        const auto status        = game_status(board_);
+        auto       moves         = status.moves;
         while (moves)
           result_.actions[result_.action_count++].action = pop_lsb(moves);
         if (status.forced_pass)
@@ -248,6 +248,18 @@ namespace islay {
                 if (!is_timed_search || nodes_[0].child_count == 0)
                   return false;
                 if (nodes_[0].child_count == 1 && sim_count >= 1) {
+                  result_.reason = MctsStop::Deadline;
+                  return true;
+                }
+                bool all_terminal = true;
+                for (Index c = 0; c < nodes_[0].child_count; ++c) {
+                  const auto &child = nodes_[nodes_[0].first_child + c];
+                  if (child.state != State::Terminal || child.visits == 0) {
+                    all_terminal = false;
+                    break;
+                  }
+                }
+                if (all_terminal) {
                   result_.reason = MctsStop::Deadline;
                   return true;
                 }
@@ -416,8 +428,8 @@ namespace islay {
         ++result_.evaluations;
         if (interrupted())
           return false;
-        if (!std::isfinite(output.value) || output.value < -1 || output.value > 1 ||
-            !std::isfinite(output.margin) || output.margin < -1 || output.margin > 1 ||
+        if (!std::isfinite(output.value) || output.value < -1 || output.value > 1 || !std::isfinite(output.margin) ||
+            output.margin < -1 || output.margin > 1 ||
             !std::all_of(output.logits.begin(), output.logits.end(), [](float x) { return std::isfinite(x); }))
           throw std::runtime_error("MCTS evaluator returned invalid logits/value");
 
@@ -484,7 +496,7 @@ namespace islay {
         nodes_[index].child_count = static_cast<std::uint8_t>(n);
         nodes_[index].state       = State::Expanded;
         // Keep WDL as the primary search value; margin is a small calibration signal.
-        value                     = network_value(output);
+        value = network_value(output);
         return true;
       }
 
@@ -805,9 +817,33 @@ namespace islay {
           result_.actions[i] = {child.action, child.prior, child.visits,
                                 child.visits ? child.value_sum / static_cast<double>(child.visits) : 0};
         }
-        result_.best_move = nodes_[most_visited(0)].action;
-        Index index       = 0;
-        while (nodes_[index].state == State::Expanded && result_.pv_length < kMctsMaxPly) {
+        bool all_root_terminal = nodes_[0].child_count > 0;
+        for (Index c = 0; c < nodes_[0].child_count; ++c) {
+          const auto &child = nodes_[nodes_[0].first_child + c];
+          if (child.state != State::Terminal || child.visits == 0) {
+            all_root_terminal = false;
+            break;
+          }
+        }
+        auto best_root_child = most_visited(0);
+        if (all_root_terminal) {
+          best_root_child = nodes_[0].first_child;
+          double best_q   = nodes_[best_root_child].value_sum / static_cast<double>(nodes_[best_root_child].visits);
+          for (Index i = nodes_[0].first_child + 1; i < nodes_[0].first_child + nodes_[0].child_count; ++i) {
+            const auto  &c = nodes_[i];
+            const double q = c.value_sum / static_cast<double>(c.visits);
+            if (q > best_q + 1e-9 || (std::abs(q - best_q) <= 1e-9 && (c.visits > nodes_[best_root_child].visits ||
+                                                                       (c.visits == nodes_[best_root_child].visits &&
+                                                                        c.prior > nodes_[best_root_child].prior)))) {
+              best_root_child = i;
+              best_q          = q;
+            }
+          }
+        }
+        result_.best_move               = nodes_[best_root_child].action;
+        Index index                     = best_root_child;
+        result_.pv[result_.pv_length++] = nodes_[index].action;
+        while (nodes_[index].state == State::Expanded && result_.pv_length < kMctsMaxPly && nodes_[index].visits) {
           index                           = most_visited(index);
           result_.pv[result_.pv_length++] = nodes_[index].action;
           if (!nodes_[index].visits)
