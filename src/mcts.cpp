@@ -13,6 +13,7 @@ namespace islay {
 
   using Index = std::uint32_t;
   enum class State : std::uint8_t { Fresh, Expanded, Terminal };
+  enum class Proven : std::uint8_t { Unknown = 0, Win = 1, Loss = 2, Draw = 3 };
 
   // Each child is also its incoming edge; siblings occupy one contiguous range.
   struct Node {
@@ -23,7 +24,8 @@ namespace islay {
     std::uint8_t  action = NOMOVE;
     std::uint8_t  child_count{};
     float         terminal_value{};
-    State         state = State::Fresh;
+    State         state  = State::Fresh;
+    Proven        proven = Proven::Unknown;
   };
 
   // Transposition entry for sharing evaluations & search guidance across branches
@@ -251,6 +253,10 @@ namespace islay {
                   result_.reason = MctsStop::Deadline;
                   return true;
                 }
+                if (nodes_[0].proven != Proven::Unknown && sim_count >= 1) {
+                  result_.reason = MctsStop::Deadline;
+                  return true;
+                }
                 bool all_terminal = true;
                 for (Index c = 0; c < nodes_[0].child_count; ++c) {
                   const auto &child = nodes_[nodes_[0].first_child + c];
@@ -391,6 +397,44 @@ namespace islay {
         }
       }
 
+      static Proven proven_from_value(float v) noexcept {
+        return v > 0.0f ? Proven::Win : v < 0.0f ? Proven::Loss : Proven::Draw;
+      }
+
+      void update_proven(Index parent) noexcept {
+        auto &node = nodes_[parent];
+        if (node.state != State::Expanded || node.child_count == 0 || node.proven != Proven::Unknown)
+          return;
+        bool  all_solved  = true;
+        bool  has_draw    = false;
+        float best_win_v  = -2.0f;
+        float best_loss_v = -2.0f;
+        for (Index i = node.first_child; i < node.first_child + node.child_count; ++i) {
+          const auto &child = nodes_[i];
+          if (child.proven == Proven::Loss) {
+            node.proven = Proven::Win;
+            best_win_v  = std::max(best_win_v, -child.terminal_value);
+          } else if (child.proven == Proven::Unknown) {
+            all_solved = false;
+          } else if (child.proven == Proven::Draw) {
+            has_draw = true;
+          } else if (child.proven == Proven::Win) {
+            best_loss_v = std::max(best_loss_v, -child.terminal_value);
+          }
+        }
+        if (node.proven == Proven::Win) {
+          node.terminal_value = best_win_v > 0.0f ? best_win_v : 1.0f;
+        } else if (all_solved) {
+          if (has_draw) {
+            node.proven         = Proven::Draw;
+            node.terminal_value = 0.0f;
+          } else {
+            node.proven         = Proven::Loss;
+            node.terminal_value = best_loss_v > -2.0f ? best_loss_v : -1.0f;
+          }
+        }
+      }
+
       bool interrupted() {
         if (stop_.stop_requested()) {
           result_.reason = MctsStop::Cancelled;
@@ -407,6 +451,7 @@ namespace islay {
         if (status.terminal()) {
           nodes_[index].state          = State::Terminal;
           nodes_[index].terminal_value = static_cast<std::int8_t>(status.value);
+          nodes_[index].proven         = proven_from_value(nodes_[index].terminal_value);
           value                        = static_cast<float>(status.value);
           return true;
         }
@@ -415,6 +460,7 @@ namespace islay {
           const int margin             = solve_exact_margin(board, empties);
           nodes_[index].state          = State::Terminal;
           nodes_[index].terminal_value = margin_value(margin);
+          nodes_[index].proven         = proven_from_value(nodes_[index].terminal_value);
           value                        = nodes_[index].terminal_value;
           return true;
         }
@@ -504,14 +550,23 @@ namespace islay {
         const auto  &node = nodes_[parent];
         const double cpuct =
                 limits_.c_puct + std::log((static_cast<double>(node.visits) + kCpuctBase + 1.0) / kCpuctBase);
-        const double scale      = cpuct * std::sqrt(1.0 + static_cast<double>(node.visits));
-        const double parent_q   = node.visits > 0 ? (node.value_sum / static_cast<double>(node.visits)) : 0.0;
-        const double fpu_parent = parent == 0 ? parent_q : -parent_q;
-        Index        best       = node.first_child;
-        double       best_score = -std::numeric_limits<double>::infinity();
+        const double scale          = cpuct * std::sqrt(1.0 + static_cast<double>(node.visits));
+        const double parent_q       = node.visits > 0 ? (node.value_sum / static_cast<double>(node.visits)) : 0.0;
+        const double fpu_parent     = parent == 0 ? parent_q : -parent_q;
+        Index        best           = node.first_child;
+        double       best_score     = -std::numeric_limits<double>::infinity();
+        bool         has_non_losing = false;
+        for (Index i = node.first_child; i < node.first_child + node.child_count; ++i) {
+          if (nodes_[i].proven != Proven::Win) {
+            has_non_losing = true;
+            break;
+          }
+        }
         for (Index i = node.first_child; i < node.first_child + node.child_count; ++i) {
           const auto &child = nodes_[i];
-          double      score;
+          if (has_non_losing && child.proven == Proven::Win)
+            continue;
+          double score;
           if (child.visits == 0) {
             const double fpu_q =
                     fpu_parent - limits_.fpu_reduction * std::sqrt(std::max(0.0, static_cast<double>(child.prior)));
@@ -537,7 +592,7 @@ namespace islay {
         boards[0]                                = board_;
         Board board                              = board_;
         Index index                              = 0;
-        while (nodes_[index].state == State::Expanded) {
+        while (nodes_[index].state == State::Expanded && (index == 0 || nodes_[index].proven == Proven::Unknown)) {
           if (depth == kMctsMaxPly)
             throw std::logic_error("MCTS exceeded Othello path bound");
           index             = select(index);
@@ -547,7 +602,7 @@ namespace islay {
           boards[depth]     = board;
         }
         float value;
-        if (nodes_[index].state == State::Terminal) {
+        if (nodes_[index].state == State::Terminal || nodes_[index].proven != Proven::Unknown) {
           value = nodes_[index].terminal_value;
         } else if (!expand(index, board, game_status(board), value)) {
           return false;
@@ -557,6 +612,7 @@ namespace islay {
           auto &node = nodes_[path[i]];
           ++node.visits;
           node.value_sum += value;
+          update_proven(path[i]);
           // When an expanded node has accumulated reliable visits, record into MCTS TT
           if (node.state == State::Expanded && node.visits >= 4 && node.child_count > 0) {
             const Index best_child = most_visited(path[i]);
@@ -566,6 +622,7 @@ namespace islay {
         }
         ++nodes_[0].visits;
         nodes_[0].value_sum += value;
+        update_proven(0);
         if (nodes_[0].state == State::Expanded && nodes_[0].visits >= 4 && nodes_[0].child_count > 0) {
           const Index best_child = most_visited(0);
           const float q_val      = static_cast<float>(nodes_[0].value_sum / static_cast<double>(nodes_[0].visits));
@@ -604,7 +661,7 @@ namespace islay {
           Board board   = board_;
           Index index   = 0;
 
-          while (nodes_[index].state == State::Expanded) {
+          while (nodes_[index].state == State::Expanded && (index == 0 || nodes_[index].proven == Proven::Unknown)) {
             if (sim.depth == kMctsMaxPly)
               throw std::logic_error("MCTS exceeded Othello path bound");
             index                 = select(index);
@@ -621,7 +678,7 @@ namespace islay {
           sim.board      = board;
           sim.leaf_index = index;
 
-          if (nodes_[index].state == State::Terminal) {
+          if (nodes_[index].state == State::Terminal || nodes_[index].proven != Proven::Unknown) {
             sim.is_terminal = true;
             sim.value       = static_cast<float>(nodes_[index].terminal_value);
           } else {
@@ -630,6 +687,7 @@ namespace islay {
               const int margin             = solve_exact_margin(board, empties);
               nodes_[index].state          = State::Terminal;
               nodes_[index].terminal_value = margin_value(margin);
+              nodes_[index].proven         = proven_from_value(nodes_[index].terminal_value);
               sim.is_terminal              = true;
               sim.value                    = nodes_[index].terminal_value;
             } else {
@@ -637,18 +695,22 @@ namespace islay {
               if (status.terminal()) {
                 nodes_[index].state          = State::Terminal;
                 nodes_[index].terminal_value = static_cast<std::int8_t>(status.value);
+                nodes_[index].proven         = proven_from_value(nodes_[index].terminal_value);
                 sim.is_terminal              = true;
                 sim.value                    = static_cast<float>(status.value);
               } else {
-                int existing_eval = -1;
+                int  existing_eval = -1;
+                bool same_node     = false;
                 for (int prev = 0; prev < active_sims - 1; ++prev) {
-                  if (sims[prev].leaf_index == index && sims[prev].eval_idx >= 0) {
+                  if (sims[prev].eval_idx >= 0 && (sims[prev].leaf_index == index || sims[prev].board == board)) {
                     existing_eval = sims[prev].eval_idx;
+                    same_node     = (sims[prev].leaf_index == index);
                     break;
                   }
                 }
                 if (existing_eval >= 0) {
-                  sim.eval_idx = existing_eval;
+                  sim.eval_idx   = existing_eval;
+                  sim.needs_eval = !same_node;
                 } else {
                   const auto count = static_cast<std::size_t>(status.action_count());
                   if (count > nodes_.capacity() - nodes_.size()) {
@@ -773,6 +835,7 @@ namespace islay {
             auto &node = nodes_[sim.path[i]];
             ++node.visits;
             node.value_sum += val;
+            update_proven(sim.path[i]);
             if (node.state == State::Expanded && node.visits >= 4 && node.child_count > 0) {
               const Index best_child = most_visited(sim.path[i]);
               const float q_val      = static_cast<float>(node.value_sum / static_cast<double>(node.visits));
@@ -781,6 +844,7 @@ namespace islay {
           }
           ++nodes_[0].visits;
           nodes_[0].value_sum += val;
+          update_proven(0);
           if (nodes_[0].state == State::Expanded && nodes_[0].visits >= 4 && nodes_[0].child_count > 0) {
             const Index best_child = most_visited(0);
             const float q_val      = static_cast<float>(nodes_[0].value_sum / static_cast<double>(nodes_[0].visits));
@@ -826,7 +890,28 @@ namespace islay {
           }
         }
         auto best_root_child = most_visited(0);
-        if (all_root_terminal) {
+        if (nodes_[0].proven == Proven::Win) {
+          double best_v = -2.0;
+          for (Index i = nodes_[0].first_child; i < nodes_[0].first_child + nodes_[0].child_count; ++i) {
+            const auto &c = nodes_[i];
+            if (c.proven == Proven::Loss) {
+              const double v = -static_cast<double>(c.terminal_value);
+              if (v > best_v + 1e-9 || (std::abs(v - best_v) <= 1e-9 && (c.visits > nodes_[best_root_child].visits ||
+                                                                         (c.visits == nodes_[best_root_child].visits &&
+                                                                          c.prior > nodes_[best_root_child].prior)))) {
+                best_root_child = i;
+                best_v          = v;
+              }
+            }
+          }
+        } else if (nodes_[0].proven == Proven::Draw) {
+          for (Index i = nodes_[0].first_child; i < nodes_[0].first_child + nodes_[0].child_count; ++i) {
+            if (nodes_[i].proven == Proven::Draw) {
+              best_root_child = i;
+              break;
+            }
+          }
+        } else if (all_root_terminal) {
           best_root_child = nodes_[0].first_child;
           double best_q   = nodes_[best_root_child].value_sum / static_cast<double>(nodes_[best_root_child].visits);
           for (Index i = nodes_[0].first_child + 1; i < nodes_[0].first_child + nodes_[0].child_count; ++i) {

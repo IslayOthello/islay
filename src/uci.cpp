@@ -612,13 +612,15 @@ namespace islay {
           return;
         }
 
-        std::uint64_t games       = 10;
-        std::uint32_t sims        = 64;
-        std::uint32_t threads     = 1;
-        std::uint32_t batch_size  = 8;
-        std::uint64_t seed        = 20260909;
-        std::uint32_t cache_mib   = 16;
-        std::string   output_file = "data.bin";
+        std::uint64_t games            = 10;
+        std::uint32_t sims             = 64;
+        std::uint32_t fast_sims        = 0;
+        double        full_search_prob = 1.0;
+        std::uint32_t threads          = std::max(1u, std::thread::hardware_concurrency());
+        std::uint32_t batch_size       = 16;
+        std::uint64_t seed             = 20260909;
+        std::uint32_t cache_mib        = 64;
+        std::string   output_file      = "data.bin";
 
         std::string tok;
         while (is >> tok) {
@@ -630,6 +632,16 @@ namespace islay {
           } else if (tok == "sims" || tok == "-s") {
             if (!(is >> sims) || sims == 0) {
               out_ << "info error: invalid sims count\n";
+              return;
+            }
+          } else if (tok == "fast" || tok == "fast-sims") {
+            if (!(is >> fast_sims)) {
+              out_ << "info error: invalid fast-sims count\n";
+              return;
+            }
+          } else if (tok == "full-prob" || tok == "full-search-prob") {
+            if (!(is >> full_search_prob) || full_search_prob <= 0.0 || full_search_prob > 1.0) {
+              out_ << "info error: invalid full-prob (0 < p <= 1)\n";
               return;
             }
           } else if (tok == "threads" || tok == "-t") {
@@ -674,24 +686,36 @@ namespace islay {
           }
         }
 
+        if (fast_sims > sims) {
+          out_ << "info error: fast-sims cannot exceed sims\n";
+          return;
+        }
+
         SelfplayConfig config;
-        config.simulations = sims;
-        config.batch_size  = batch_size;
-        config.seed        = seed;
-        config.tree_bytes  = static_cast<std::size_t>(options_.mcts_hash_mib) * 1024 * 1024;
+        config.simulations      = sims;
+        config.fast_simulations = fast_sims;
+        config.full_search_prob = full_search_prob;
+        config.batch_size       = batch_size;
+        config.seed             = seed;
+        config.tree_bytes       = static_cast<std::size_t>(options_.mcts_hash_mib) * 1024 * 1024;
+
+        const bool per_thread_onnx = (neural_ != nullptr && !options_.eval_file.empty() &&
+                                      dynamic_cast<const NeuralEvaluator *>(neural_.get()) != nullptr);
 
         std::shared_ptr<Evaluator> eval_backend;
         if (neural_) {
           eval_backend = neural_;
-          out_ << "info string datagen using trained evaluator: " << neural_->description() << "\n";
+          out_ << "info string datagen using trained evaluator: " << neural_->description()
+               << (per_thread_onnx ? " (per-thread onnx-cpu)" : "") << "\n";
         } else {
           auto gen0_net = std::make_shared<NativeNeuralNet>();
           eval_backend  = std::make_shared<NativeNeuralEvaluator>(gen0_net, true);
           out_ << "info string datagen using gen-0 evaluator (random initialization)\n";
         }
 
-        out_ << "info string datagen starting: games=" << games << " sims=" << sims << " threads=" << threads
-             << " batch=" << batch_size << " cache=" << cache_mib << " MiB output=" << output_file << "\n";
+        out_ << "info string datagen starting: games=" << games << " sims=" << sims << " fast_sims=" << fast_sims
+             << " full_prob=" << full_search_prob << " threads=" << threads << " batch=" << batch_size
+             << " cache=" << cache_mib << " MiB output=" << output_file << "\n";
         flush_output();
 
         std::ofstream out_file(output_file, std::ios::binary | std::ios::trunc);
@@ -716,10 +740,21 @@ namespace islay {
 
         std::vector<std::thread> workers;
         workers.reserve(threads);
+        SharedEvalCache shared_cache(static_cast<std::size_t>(cache_mib) * 1024 * 1024);
 
         for (std::uint32_t t = 0; t < threads; ++t) {
           workers.emplace_back([&]() {
-            CachedEvaluator cached(*eval_backend, static_cast<std::size_t>(cache_mib) * 1024 * 1024);
+            std::unique_ptr<NeuralEvaluator> local_onnx;
+            Evaluator                       *thread_backend = eval_backend.get();
+            if (per_thread_onnx) {
+              try {
+                local_onnx     = std::make_unique<NeuralEvaluator>(options_.eval_file, true, false);
+                thread_backend = local_onnx.get();
+              } catch (...) {
+                thread_backend = eval_backend.get();
+              }
+            }
+            SharedCachedEvaluator cached(*thread_backend, shared_cache);
             while (true) {
               const std::uint64_t g = game_counter.fetch_add(1);
               if (g >= games)
@@ -773,8 +808,6 @@ namespace islay {
                   out_file.flush();
               }
             }
-            cache_hits.fetch_add(cached.hits);
-            cache_misses.fetch_add(cached.misses);
           });
         }
 
@@ -782,21 +815,24 @@ namespace islay {
           w.join();
         out_file.flush();
 
+        cache_hits.store(shared_cache.hits.load(std::memory_order_relaxed));
+        cache_misses.store(shared_cache.misses.load(std::memory_order_relaxed));
+
         const double elapsed_us = us_since(start_time);
         const double elapsed_s  = elapsed_us / 1e6;
         const double gps        = elapsed_us > 0 ? next_game_to_write * 1e6 / elapsed_us : 0.0;
         const double avg_plies =
                 next_game_to_write > 0 ? static_cast<double>(total_samples.load()) / next_game_to_write : 0.0;
-        const auto hits   = cache_hits.load();
-        const auto misses = cache_misses.load();
-        const auto probes = hits + misses;
+        const auto   hits     = cache_hits.load();
+        const auto   misses   = cache_misses.load();
+        const auto   probes   = hits + misses;
         const double hit_rate = probes ? 100.0 * static_cast<double>(hits) / static_cast<double>(probes) : 0.0;
 
         out_ << "info string datagen complete: " << next_game_to_write << "/" << games << " games (100.0%) | "
              << grouped_count(std::to_string(total_samples.load())) << " samples (avg " << std::fixed
              << std::setprecision(1) << avg_plies << " moves/game) | " << std::setprecision(1) << gps << " games/s | "
-             << "cache: " << hits << " hits, " << misses << " misses (" << hit_rate << "%) | time: "
-             << format_duration(elapsed_s) << " -> " << output_file << "\n";
+             << "cache: " << hits << " hits, " << misses << " misses (" << hit_rate
+             << "%) | time: " << format_duration(elapsed_s) << " -> " << output_file << "\n";
       }
 
       void cmd_train(std::istringstream &is) {
@@ -816,7 +852,7 @@ namespace islay {
         config.selfplay.simulations    = 64;
         config.selfplay.seed           = 20260909;
 
-        bool        steps_specified = false;
+        bool        steps_specified  = false;
         bool        epochs_specified = false;
         std::string tok;
         while (is >> tok) {
@@ -1011,25 +1047,28 @@ namespace islay {
           }
         }
 
-        MctsResult search_result{};
-        const bool has_search_result = search_.last_result(board_, search_result);
-        const double mover_val       = eval.value;
-        const double mover_score     = (mover_val + 1.0) * 50.0;
-        const double black_val       = (stm_ == Color::Black) ? mover_val : -mover_val;
-        const double black_score     = (black_val + 1.0) * 50.0;
-        const double white_score     = 100.0 - black_score;
-        const GameStatus status = game_status(board_);
-        int exact_outcome = status.terminal() ? status.value : 2;
+        MctsResult       search_result{};
+        const bool       has_search_result = search_.last_result(board_, search_result);
+        const double     mover_val         = eval.value;
+        const double     mover_score       = (mover_val + 1.0) * 50.0;
+        const double     black_val         = (stm_ == Color::Black) ? mover_val : -mover_val;
+        const double     black_score       = (black_val + 1.0) * 50.0;
+        const double     white_score       = 100.0 - black_score;
+        const GameStatus status            = game_status(board_);
+        int              exact_outcome     = status.terminal() ? status.value : 2;
         if (!status.terminal() && 64 - board_.count() <= kEndgameMaxEmpties)
           exact_outcome = solve_exact_wld(board_, 64 - board_.count());
         out_ << "Evaluator: " << (neural_ ? neural_->description() : "uniform (no network loaded)") << '\n';
-        out_ << "WDL value (mover): " << std::showpos << std::fixed << std::setprecision(4) << mover_val << std::noshowpos
-             << " | Expected score: " << std::fixed << std::setprecision(2) << mover_score << "%\n";
+        out_ << "WDL value (mover): " << std::showpos << std::fixed << std::setprecision(4) << mover_val
+             << std::noshowpos << " | Expected score: " << std::fixed << std::setprecision(2) << mover_score << "%\n";
         if (exact_outcome == 2) {
           out_ << "Draw probability: unavailable (scalar WDL head)\n";
         } else {
           out_ << "Exact W/D/L (mover): "
-               << (exact_outcome > 0 ? "100/0/0" : exact_outcome < 0 ? "0/0/100" : "0/100/0") << "%\n";
+               << (exact_outcome > 0   ? "100/0/0"
+                   : exact_outcome < 0 ? "0/0/100"
+                                       : "0/100/0")
+               << "%\n";
         }
         out_ << "Disc margin (mover): " << std::showpos << std::fixed << std::setprecision(4) << eval.margin
              << std::noshowpos << '\n';
@@ -1084,8 +1123,8 @@ namespace islay {
           }
         }
 
-        const GameStatus                status = game_status(board_);
-        int exact_outcome = status.terminal() ? status.value : 2;
+        const GameStatus status        = game_status(board_);
+        int              exact_outcome = status.terminal() ? status.value : 2;
         if (!status.terminal() && 64 - board_.count() <= kEndgameMaxEmpties)
           exact_outcome = solve_exact_wld(board_, 64 - board_.count());
         std::array<Square, kPolicySize> actions;
@@ -1096,19 +1135,19 @@ namespace islay {
         if (status.forced_pass)
           actions[n++] = PASS;
 
-        MctsResult search_result{};
-        const bool has_search_result = search_.last_result(board_, search_result);
-        std::array<double, kPolicySize> probs{};
+        MctsResult                             search_result{};
+        const bool                             has_search_result = search_.last_result(board_, search_result);
+        std::array<double, kPolicySize>        probs{};
         std::array<std::uint64_t, kPolicySize> visits{};
-        std::array<double, kPolicySize> q_values{};
-        std::array<float, kPolicySize> search_priors{};
-        std::uint64_t total_visits = 0;
-        double total_prior = 0.0;
+        std::array<double, kPolicySize>        q_values{};
+        std::array<float, kPolicySize>         search_priors{};
+        std::uint64_t                          total_visits = 0;
+        double                                 total_prior  = 0.0;
         if (has_search_result) {
           for (int i = 0; i < search_result.action_count; ++i) {
-            const auto &action = search_result.actions[i];
-            visits[action.action] = action.visits;
-            q_values[action.action] = action.value;
+            const auto &action           = search_result.actions[i];
+            visits[action.action]        = action.visits;
+            q_values[action.action]      = action.value;
             search_priors[action.action] = action.prior;
             total_visits += action.visits;
             total_prior += action.prior;
@@ -1188,13 +1227,16 @@ namespace islay {
         out_ << "Side to move: " << (stm_ == Color::Black ? "Black (X)" : "White (O)")
              << " | Discs: X=" << popcount(black) << " O=" << popcount(white)
              << " | Legal moves: " << popcount(status.moves) << '\n';
-        out_ << "WDL value (mover): " << std::showpos << std::fixed << std::setprecision(4) << mover_val << std::noshowpos
-             << " | Expected score: " << std::fixed << std::setprecision(2) << mover_score << "%\n";
+        out_ << "WDL value (mover): " << std::showpos << std::fixed << std::setprecision(4) << mover_val
+             << std::noshowpos << " | Expected score: " << std::fixed << std::setprecision(2) << mover_score << "%\n";
         if (exact_outcome == 2) {
           out_ << "Draw probability: unavailable (scalar WDL head)\n";
         } else {
           out_ << "Exact W/D/L (mover): "
-               << (exact_outcome > 0 ? "100/0/0" : exact_outcome < 0 ? "0/0/100" : "0/100/0") << "%\n";
+               << (exact_outcome > 0   ? "100/0/0"
+                   : exact_outcome < 0 ? "0/0/100"
+                                       : "0/100/0")
+               << "%\n";
         }
         out_ << "Disc margin (mover): " << std::showpos << std::fixed << std::setprecision(4) << eval.margin
              << std::noshowpos << '\n';
@@ -1225,12 +1267,12 @@ namespace islay {
                << eval.logits[PASS] << std::noshowpos << ")\n";
         } else if (n > 0) {
           struct ActionPolicy {
-            Square action;
-            double prob;
-            float  logit;
+            Square        action;
+            double        prob;
+            float         logit;
             std::uint64_t visits;
-            double q;
-            float prior;
+            double        q;
+            float         prior;
           };
           std::vector<ActionPolicy> sorted;
           sorted.reserve(n);

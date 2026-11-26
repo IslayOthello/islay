@@ -13,44 +13,41 @@ if [[ ! -f "build/islay" && ! -f "_build/islay" && ! -f "islay" ]]; then
   cmake --build build -j
 fi
 
-# Ensure native macOS desktop app is compiled if on Darwin
-if [[ "$(uname)" == "Darwin" && ! -f "gui/bin/islay_gui" ]]; then
-  echo "==> Compiling native desktop GUI application..."
-  mkdir -p gui/bin
-  clang -O2 -fobjc-arc -framework Cocoa -framework WebKit gui/src/app.m -o gui/bin/islay_gui
-fi
-
-MODE="${1:-default}"
+MODE="${1:-gtk}"
 
 if [[ "$MODE" == "--love" ]]; then
   if command -v love >/dev/null 2>&1; then
-    echo "==> Starting Islay GUI with LÖVE 2D (White Theme)..."
+    echo "==> Starting Islay GUI with LÖVE 2D..."
     exec love gui
   elif [[ -f "/Applications/love.app/Contents/MacOS/love" ]]; then
-    echo "==> Starting Islay GUI with /Applications/love.app..."
     exec /Applications/love.app/Contents/MacOS/love gui
   else
-    echo "Error: 'love' not found. Launching native desktop app instead."
-    MODE="default"
+    echo "Error: 'love' not found."
+    exit 1
   fi
-fi
-
-if [[ "$MODE" == "--web" ]]; then
+elif [[ "$MODE" == "--web" ]]; then
   echo "==> Starting Islay Desktop Web GUI..."
   exec python3 gui/server.py
+elif [[ "$MODE" == "--native" ]]; then
+  if [[ "$(uname)" == "Darwin" && ! -f "gui/bin/islay_gui" ]]; then
+    mkdir -p gui/bin
+    clang -O2 -fobjc-arc -framework Cocoa -framework WebKit gui/src/app.m -o gui/bin/islay_gui
+  fi
+  exec ./gui/bin/islay_gui
 fi
 
-# Default launcher
-if [[ "$(uname)" == "Darwin" && -f "gui/bin/islay_gui" ]]; then
-  echo "==> Starting Islay Professional Desktop GUI (WZebra Edition, White Theme)..."
-  exec ./gui/bin/islay_gui
-elif command -v python3 >/dev/null 2>&1; then
-  echo "==> Starting Islay Desktop GUI via local bridge..."
-  exec python3 gui/server.py
-elif command -v love >/dev/null 2>&1; then
-  echo "==> Starting Islay GUI with LÖVE 2D..."
-  exec love gui
-else
-  echo "Error: Neither native GUI, python3, nor love was found."
-  exit 1
+# Default: Pure Lua + GTK3 Desktop GUI (WZebra + AlphaGo MCTS)
+if command -v luajit >/dev/null 2>&1; then
+  if command -v luarocks >/dev/null 2>&1; then
+    eval "$(luarocks --lua-version=5.1 path)"
+  fi
+  if [[ -d "/opt/homebrew/lib/girepository-1.0" ]]; then
+    export DYLD_LIBRARY_PATH="/opt/homebrew/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+    export GI_TYPELIB_PATH="/opt/homebrew/lib/girepository-1.0${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"
+  fi
+  echo "==> Starting Islay Pure Lua GTK3 Studio (WZebra + AlphaGo MCTS)..."
+  exec luajit gui/gtk_app.lua
 fi
+
+echo "Error: luajit not found."
+exit 1

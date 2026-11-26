@@ -35,6 +35,8 @@ function board:reset()
   self.history = {}
   self.current_ply = 0
   self.last_move = nil
+  self.initial_fen = nil
+  self.initial_stm = nil
   self.animating_flips = {}
   self.game_over = false
   self.winner = nil
@@ -291,9 +293,21 @@ function board:goto_ply(target_ply)
 
   local saved_history = self.history
   local saved_rule = self.rule
+  local saved_fen = self.initial_fen
+  local saved_stm = self.initial_stm
   self:reset()
   self.rule = saved_rule
   self.history = saved_history
+  if saved_fen then
+    local rep = bitboard.Board.from_fen(saved_fen, saved_stm)
+    if rep then
+      self.initial_fen = saved_fen
+      self.initial_stm = saved_stm
+      self.turn = (saved_stm == "O" or saved_stm == "W") and board.WHITE or board.BLACK
+      self.rep = rep
+      self.grid = self.rep:to_grid(self.turn)
+    end
+  end
 
   for i = 1, target_ply do
     local m = self.history[i]
@@ -403,6 +417,13 @@ function board:rebuild_rep_from_grid()
   else
     self.rep = bitboard.new_board(white, black)
   end
+  self.history = {}
+  self.current_ply = 0
+  self.last_move = nil
+  self.forced_pass = false
+  self.game_over = false
+  self.winner = nil
+  self.initial_fen, self.initial_stm = self:to_fen()
   self:check_game_state()
 end
 
@@ -428,6 +449,7 @@ function board:clear_board()
   self.game_over = false
   self.winner = nil
   self.forced_pass = false
+  self.initial_fen, self.initial_stm = self:to_fen()
 end
 
 function board:invert_board()
@@ -468,6 +490,7 @@ function board:load_fen(fen_str, stm)
   self.current_ply = 0
   self.last_move = nil
   self.forced_pass = false
+  self.initial_fen, self.initial_stm = self:to_fen()
   self:check_game_state()
   return true
 end

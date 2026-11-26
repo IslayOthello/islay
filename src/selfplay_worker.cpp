@@ -165,6 +165,7 @@ int main(int argc, char **argv) {
     std::map<std::string, std::string> options{
             {"--shm-fd", ""},    {"--control-fd", ""},          {"--workers", ""},
             {"--slot", ""},      {"--seed", "20260909"},        {"--simulations", "128"},
+            {"--fast-simulations", "0"}, {"--full-search-prob", "1.0"},
             {"--tree-mib", "1"}, {"--cache-mib", "1"},          {"--epsilon", "0.25"},
             {"--alpha", "0.3"},  {"--temperature-plies", "16"}, {"--timeout-ms", "30000"}};
     std::map<std::string, bool> seen;
@@ -177,6 +178,8 @@ int main(int argc, char **argv) {
     islay::SelfplayConfig config;
     config.seed              = integer(options["--seed"], 0, UINT64_MAX);
     config.simulations       = integer(options["--simulations"], 1, 1000000);
+    config.fast_simulations  = integer(options["--fast-simulations"], 0, 1000000);
+    config.full_search_prob  = real(options["--full-search-prob"]);
     config.tree_bytes        = integer(options["--tree-mib"], 1, 4096) * 1024 * 1024;
     config.epsilon           = real(options["--epsilon"]);
     config.alpha             = real(options["--alpha"]);
@@ -190,6 +193,7 @@ int main(int argc, char **argv) {
       throw std::invalid_argument("worker descriptors must differ");
     SharedEvaluator evaluator(memory, control, workers, slot, integer(options["--timeout-ms"], 100, 120000));
     close(memory); // The mapping owns the shared pages for the remainder of this process.
+    islay::CachedEvaluator cache(evaluator, cache_bytes);
     evaluator.send('V');
     char command;
     while (evaluator.receive(&command, 1, true)) {
@@ -199,9 +203,7 @@ int main(int argc, char **argv) {
         throw std::runtime_error("worker expected game command");
       std::uint64_t id;
       evaluator.receive(&id, sizeof(id));
-      // Reset at game boundaries: a resumed cohort must not inherit prior-game cache entries.
-      islay::CachedEvaluator cache(evaluator, cache_bytes);
-      const auto             records = islay::selfplay_game(id, cache, config);
+      const auto records = islay::selfplay_game(id, cache, config);
       evaluator.publish(id, config, records, cache);
     }
     close(control);

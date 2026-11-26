@@ -152,7 +152,8 @@ pin the loaded C++ dynamic libraries. Node-mode exact replay was tested on the s
 modify UCI defaults, replace any user's checkpoint, or update an external champion registry.
 After inspecting a successful trial, the selected snapshot can explicitly feed the next
 [self-play](SELFPLAY.md) generation, optionally using [P7 shared-model batches](BATCHED_SELFPLAY.md).
-Automated training scheduling remains separate work; the arena itself still uses native ONNX CPU UCI search.
+Automated training scheduling remains separate work; the arena uses the native ONNX UCI
+backend available in that build (CoreML on supported macOS builds, CPU otherwise).
 
 ## Validation and throughput
 

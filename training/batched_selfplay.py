@@ -19,10 +19,12 @@ from selfplay import sync_directory, verify_shard, write_json
 
 
 def run(args):
-    config = {k: getattr(args, k) for k in ("workers", "backend", "seed", "simulations", "tree_mib", "cache_mib",
-                                           "epsilon", "alpha", "temperature_plies", "timeout_ms")}
+    config = {k: getattr(args, k) for k in ("workers", "backend", "seed", "simulations", "fast_simulations",
+                                           "full_search_prob", "tree_mib", "cache_mib",
+                                           "epsilon", "alpha", "temperature_plies", "timeout_ms", "fp16")}
     if (sys.byteorder != "little" or not 1 <= args.workers <= 128 or not 0 < args.games <= 1000000000
             or args.games % args.workers or not 1 <= args.simulations <= 1000000
+            or not 0 <= args.fast_simulations <= args.simulations or not 0 < args.full_search_prob <= 1.0
             or not 0 <= args.seed < 1 << 64 or not 1 <= args.tree_mib <= 4096 or not 0 <= args.cache_mib <= 4096
             or not 0 <= args.epsilon <= 1 or not 0.01 <= args.alpha <= 100
             or not 0 <= args.temperature_plies <= 128 or not 100 <= args.timeout_ms <= 120000 or args.max_mib < 1
@@ -40,7 +42,7 @@ def run(args):
     with open(root / ".lock", "a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         # Validate model/ONNX identity and numeric parity before generating any training data.
-        backend = Backend(args.checkpoint, args.model, args.backend, args.workers)
+        backend = Backend(args.checkpoint, args.model, args.backend, args.workers, fp16=args.fp16)
         if any(sha256(path) != expected for path, expected in source_hashes.items()):
             raise ValueError("generation inputs changed while loading model")
         directory = Path(__file__).parent
@@ -128,10 +130,13 @@ def main():
     for name in ("worker", "verifier", "model", "checkpoint", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--backend", choices=("ort-cpu", "torch-cpu", "torch-mps"), default="ort-cpu")
+    parser.add_argument("--fp16", action="store_true", help="Use FP16 inference on torch-mps for higher throughput")
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--games", type=int, default=128, help="total whole-cohort target, including committed games")
     parser.add_argument("--seed", type=int, default=20260909)
     parser.add_argument("--simulations", type=int, default=128)
+    parser.add_argument("--fast-simulations", type=int, default=0, help="KataGo playout cap randomization fast sims (0=off)")
+    parser.add_argument("--full-search-prob", type=float, default=1.0, help="Probability of full search when fast-simulations > 0")
     parser.add_argument("--tree-mib", type=int, default=1)
     parser.add_argument("--cache-mib", type=int, default=1)
     parser.add_argument("--epsilon", type=float, default=0.25)

@@ -106,7 +106,7 @@ namespace islay {
         for (const auto &action: actions)
           total_visits += action.visits;
         message << "\ninfo string search policy:";
-        for (std::size_t i = 0; i < std::min<std::size_t>(actions.size(), 6); ++i) {
+        for (std::size_t i = 0; i < actions.size(); ++i) {
           const auto  &action    = actions[i];
           const double visit_pct = total_visits ? 100.0 * action.visits / total_visits : 0.0;
           message << " " << square_to_string(action.action) << "=" << std::fixed << std::setprecision(1) << visit_pct
@@ -147,8 +147,14 @@ namespace islay {
         result.best_move  = status.moves ? lsb(status.moves) : status.forced_pass ? PASS : NOMOVE;
       }
       // An infinite search may hit the arena cap or terminal before stop arrives.
-      // Park without spinning and retain the result until stop (or cancellation).
+      // Emit the final result to progress listeners, then park without spinning until stop.
       if (infinite) {
+        if (limits.progress && !stop.stop_requested()) {
+          try {
+            limits.progress(result);
+          } catch (...) {
+          }
+        }
         std::unique_lock lock(wait_mutex_);
         stopped_.wait(lock, stop, [] { return false; });
       }
@@ -182,8 +188,7 @@ namespace islay {
         for (const auto &act: sorted_actions)
           total_visits += act.visits;
         message << "\ninfo string candidate moves:";
-        const int show_count = std::min<int>(result.action_count, 6);
-        for (int i = 0; i < show_count; ++i) {
+        for (int i = 0; i < result.action_count; ++i) {
           const auto  &act     = sorted_actions[i];
           const double pct     = total_visits > 0 ? (100.0 * act.visits / total_visits) : 0.0;
           const double prior_p = act.prior * 100.0;

@@ -48,7 +48,8 @@ namespace islay {
     void check_config(const SelfplayConfig &c) {
       if (!c.simulations || c.simulations > 1000000 || c.batch_size < 1 || c.batch_size > 64 || c.tree_bytes < 4096 ||
           !std::isfinite(c.epsilon) || c.epsilon < 0 || c.epsilon > 1 || !std::isfinite(c.alpha) || c.alpha < 0.01 ||
-          c.alpha > 100 || c.temperature_plies > 128)
+          c.alpha > 100 || c.temperature_plies > 128 || c.fast_simulations > c.simulations ||
+          !std::isfinite(c.full_search_prob) || c.full_search_prob <= 0.0 || c.full_search_prob > 1.0)
         throw std::invalid_argument("invalid self-play config");
     }
 
@@ -140,6 +141,96 @@ namespace islay {
     }
   }
 
+  SharedEvalCache::SharedEvalCache(std::size_t bytes) {
+    const auto count = bytes / sizeof(Entry);
+    if (count)
+      entries_.resize(std::bit_floor(count));
+  }
+
+  std::size_t SharedEvalCache::bytes() const noexcept { return entries_.size() * sizeof(Entry); }
+
+  bool SharedEvalCache::lookup(const Board &canon, Evaluation &out) const {
+    if (entries_.empty())
+      return false;
+    const std::size_t     idx   = hash_board(canon.player, canon.opponent) & (entries_.size() - 1);
+    const std::size_t     shard = idx & (kShards - 1);
+    const std::lock_guard lock(mutexes_[shard]);
+    const Entry          &entry = entries_[idx];
+    if (entry.valid && entry.board == canon) {
+      out = entry.output;
+      return true;
+    }
+    return false;
+  }
+
+  void SharedEvalCache::insert(const Board &canon, const Evaluation &out) {
+    if (entries_.empty())
+      return;
+    const std::size_t     idx   = hash_board(canon.player, canon.opponent) & (entries_.size() - 1);
+    const std::size_t     shard = idx & (kShards - 1);
+    const std::lock_guard lock(mutexes_[shard]);
+    entries_[idx] = {canon, out, true};
+  }
+
+  void SharedCachedEvaluator::evaluate(std::span<const Board> boards, std::span<Evaluation> outputs,
+                                       std::stop_token stop) {
+    if (boards.size() != outputs.size())
+      throw std::invalid_argument("cache batch mismatch");
+    struct Miss {
+      std::size_t output_index;
+      int         symmetry;
+    };
+    thread_local std::vector<Board>      miss_boards;
+    thread_local std::vector<Miss>       misses;
+    thread_local std::vector<Evaluation> miss_outputs;
+    miss_boards.clear();
+    misses.clear();
+    miss_outputs.clear();
+    miss_boards.reserve(boards.size());
+    misses.reserve(boards.size());
+    std::uint64_t local_hits = 0;
+    for (std::size_t i = 0; i < boards.size() && !stop.stop_requested(); ++i) {
+      const auto [canon, sym] = boards[i].canonical_symmetry();
+      Evaluation cached_out;
+      if (cache_.lookup(canon, cached_out)) {
+        if (sym == 0) {
+          outputs[i] = cached_out;
+        } else {
+          outputs[i] = cached_out;
+          for (int a = 0; a < kPolicySize; ++a)
+            outputs[i].logits[a] = cached_out.logits[symmetry_action(a, sym)];
+        }
+        ++local_hits;
+      } else {
+        miss_boards.push_back(canon);
+        misses.push_back({i, sym});
+      }
+    }
+    if (local_hits)
+      cache_.hits.fetch_add(local_hits, std::memory_order_relaxed);
+    if (miss_boards.empty() || stop.stop_requested())
+      return;
+    miss_outputs.resize(miss_boards.size());
+    backend_.evaluate(miss_boards, miss_outputs, stop);
+    if (stop.stop_requested())
+      return;
+    for (std::size_t i = 0; i < misses.size(); ++i) {
+      const auto &miss  = misses[i];
+      auto       &value = miss_outputs[i];
+      if (!std::isfinite(value.value) || std::abs(value.value) > 1 || !std::isfinite(value.margin) ||
+          std::abs(value.margin) > 1 ||
+          !std::all_of(value.logits.begin(), value.logits.end(), [](float x) { return std::isfinite(x); }))
+        throw std::runtime_error("invalid cached neural output");
+      cache_.insert(miss_boards[i], value);
+      outputs[miss.output_index] = value;
+      if (miss.symmetry != 0) {
+        for (int a = 0; a < kPolicySize; ++a)
+          outputs[miss.output_index].logits[a] = value.logits[symmetry_action(a, miss.symmetry)];
+      }
+    }
+    cache_.misses.fetch_add(misses.size(), std::memory_order_relaxed);
+  }
+
   std::uint64_t selfplay_seed(std::uint64_t master, std::uint64_t game_id) noexcept {
     return mix(master ^ mix(game_id + 0x9e3779b97f4a7c15ULL));
   }
@@ -171,14 +262,17 @@ namespace islay {
         throw std::runtime_error("invalid Dirichlet draw");
       for (int a = 0; a < kPolicySize; ++a)
         exploration.noise[a] = static_cast<float>(noise[a] / total);
+      const bool use_fast = (config.fast_simulations > 0 && !is_opening && rng.uniform() >= config.full_search_prob);
+      const std::uint32_t move_sims = use_fast ? config.fast_simulations : config.simulations;
+
       MctsLimits limits;
-      limits.simulations = config.simulations;
+      limits.simulations = move_sims;
       limits.batch_size  = config.batch_size;
       limits.tree_bytes  = config.tree_bytes;
       limits.exploration = &exploration;
       limits.c_puct      = is_opening ? 2.5 : 1.5;
       const auto result  = mcts_search(board, Rule::Othello, evaluator, limits);
-      if (result.reason != MctsStop::SimulationLimit || result.simulations != config.simulations)
+      if (result.reason != MctsStop::SimulationLimit || result.simulations != move_sims)
         throw std::runtime_error("incomplete self-play search; increase tree budget");
       ReplayRecord r;
       r.game_id     = id;
@@ -234,7 +328,7 @@ namespace islay {
             r.action = std::max_element(r.visits.begin(), r.visits.end()) - r.visits.begin();
           }
         } else {
-          const auto    ticket     = static_cast<std::uint64_t>(rng.uniform() * config.simulations);
+          const auto    ticket     = static_cast<std::uint64_t>(rng.uniform() * move_sims);
           std::uint64_t cumulative = 0;
           for (int a = 0; a < kPolicySize; ++a) {
             cumulative += r.visits[a];
@@ -283,7 +377,9 @@ namespace islay {
         visits += r.visits[a];
         priors += r.priors[a];
       }
-      if (visits != config.simulations || std::abs(priors - 1) > 1e-5 || !r.visits[r.action] ||
+      const bool valid_visits =
+              (visits == config.simulations) || (config.fast_simulations > 0 && visits == config.fast_simulations);
+      if (!valid_visits || std::abs(priors - 1) > 1e-5 || !r.visits[r.action] ||
           (!r.temperature && r.action != std::max_element(r.visits.begin(), r.visits.end()) - r.visits.begin()))
         throw std::runtime_error("replay visits/target mismatch");
       if (!try_play(board, r.action, board))
@@ -400,6 +496,16 @@ namespace islay {
       cache.evaluate(std::span(&board, 1), std::span(&output, 1), cancelled.get_token());
       if (output.value != 7)
         return false;
+      SelfplayConfig pcr_config;
+      pcr_config.simulations      = 8;
+      pcr_config.fast_simulations = 2;
+      pcr_config.full_search_prob = 0.25;
+      pcr_config.tree_bytes       = 65536;
+      const auto pcr_game         = selfplay_game(7, fake, pcr_config);
+      if (pcr_game.empty())
+        return false;
+      validate_replay_game(pcr_game, pcr_config);
+
       SelfplayConfig config;
       config.simulations = 8;
       config.tree_bytes  = 65536;

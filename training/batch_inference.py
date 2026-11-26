@@ -20,13 +20,15 @@ def ort_session(model):
 
 
 class Backend:
-    def __init__(self, checkpoint, model, kind, batch):
+    def __init__(self, checkpoint, model, kind, batch, fp16=False):
         if kind not in ("ort-cpu", "torch-cpu", "torch-mps") or not 1 <= batch <= 128:
             raise ValueError("invalid inference backend/batch")
+        if fp16 and kind != "torch-mps":
+            raise ValueError("fp16 inference is only supported with torch-mps")
         if checkpoint.stat().st_size > 32 * 1048576 or model.stat().st_size > 64 * 1048576:
             raise ValueError("oversized inference assets")
         started = time.perf_counter_ns()
-        self.kind, self.batch = kind, batch
+        self.kind, self.batch, self.fp16 = kind, batch, bool(fp16)
         self.device = "mps" if kind == "torch-mps" else "cpu"
         torch.set_num_threads(1)
         torch.use_deterministic_algorithms(True)
@@ -44,6 +46,8 @@ class Backend:
                 or [i.name for i in reference.get_outputs()] != ["policy_logits", "wdl", "margin"]):
             raise ValueError("invalid ONNX inference interface")
         self.network = network.to(self.device).eval() if kind != "ort-cpu" else None
+        if self.network is not None and self.fp16:
+            self.network = self.network.half()
         self.session = reference if kind == "ort-cpu" else None
         # Deterministic, model-independent boards including forced pass/terminal and all cells.
         boards = [(2, 1), (1, 2), (0, 0), ((1 << 64) - 1, 0)]
@@ -66,10 +70,11 @@ class Backend:
             else:
                 actual = self.forward(planes)
             expected_output = np.concatenate((expected_p, expected_wdl, expected_margin), axis=1)
-            np.testing.assert_allclose(actual, expected_output, rtol=1e-4, atol=2e-5)
+            rtol, atol = (2e-2, 5e-3) if self.fp16 else (1e-4, 2e-5)
+            np.testing.assert_allclose(actual, expected_output, rtol=rtol, atol=atol)
             error = max(error, float(np.abs(actual - expected_output).max()))
         self.identity = {"backend": kind, "batch": batch, "torch": str(torch.__version__),
-                         "ort": ort.__version__, "numpy": np.__version__, "fp32": True,
+                         "ort": ort.__version__, "numpy": np.__version__, "fp32": not self.fp16, "fp16": self.fp16,
                          "checkpoint_sha256": expected["islay.checkpoint_sha256"], "training_steps": steps}
         self.startup = {"load_parity_us": (time.perf_counter_ns() - started) / 1000, "max_parity_error": error}
 
@@ -80,8 +85,9 @@ class Backend:
             p, wdl, margin = self.session.run(None, {"board": planes})
         else:
             with torch.inference_mode():
-                p, wdl, margin = self.network(torch.from_numpy(planes).to(self.device))
-                p, wdl, margin = p.cpu().numpy(), wdl.cpu().numpy(), margin.cpu().numpy()
+                inp = torch.from_numpy(planes).to(self.device, dtype=torch.float16 if self.fp16 else torch.float32)
+                p, wdl, margin = self.network(inp)
+                p, wdl, margin = p.float().cpu().numpy(), wdl.float().cpu().numpy(), margin.float().cpu().numpy()
         if p.shape != (self.batch, 65) or wdl.shape != (self.batch, 1) or margin.shape != (self.batch, 1):
             raise ValueError("inference output shape mismatch")
         result = np.concatenate((p, wdl, margin), axis=1)

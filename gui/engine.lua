@@ -22,6 +22,7 @@ if has_ffi then
       ssize_t write(int fd, const void *buf, size_t count);
       int kill(int pid, int sig);
       int waitpid(int pid, int *status, int options);
+      int access(const char *pathname, int mode);
     ]]
   end)
 end
@@ -40,8 +41,30 @@ local function find_binary(preferred)
   for _, path in ipairs(candidates) do
     local f = io.open(path, "rb")
     if f then
+      local byte = f:read(1)
       f:close()
-      return path
+      if byte and (not has_ffi or ffi.C.access(path, 1) == 0) then
+        return path
+      end
+    end
+  end
+  return nil
+end
+
+local function find_eval_file()
+  local candidates = {
+    "./wdl-gen5.onnx", "../wdl-gen5.onnx",
+    "./wdl-gen4.onnx", "../wdl-gen4.onnx",
+    "./wdl-gen3.onnx", "../wdl-gen3.onnx",
+    "./wdl-gen2.onnx", "../wdl-gen2.onnx",
+    "./wdl-gen1.onnx", "../wdl-gen1.onnx",
+  }
+  for _, path in ipairs(candidates) do
+    local f = io.open(path, "rb")
+    if f then
+      local byte = f:read(1)
+      f:close()
+      if byte then return path end
     end
   end
   return nil
@@ -56,6 +79,7 @@ function engine.new(binary_path)
   self.out_fd = nil
   self.pfd = nil
   self.read_buffer = ""
+  self.pending_searches = 0
 
   self.stats = {
     nodes = 0,
@@ -66,7 +90,9 @@ function engine.new(binary_path)
     evaluations = 0,
     reason = "",
     bestmove = nil,
-    evaluator = "uniform"
+    evaluator = "uniform",
+    exact_wdl = nil,
+    candidates = {} -- list of { move, visits, pct, value, prior }
   }
 
   self.perft_results = {
@@ -137,10 +163,17 @@ function engine:start()
   self.pfd[0].events = 1 -- POLLIN
 
   self.read_buffer = ""
+  self.pending_searches = 0
   self.state = "initializing"
 
   -- Send initialization handshake
   self:send("uci")
+  self:set_mcts_hash(512)
+  self:set_mcts_batch(16)
+  local eval_path = find_eval_file()
+  if eval_path then
+    self:set_eval_file(eval_path)
+  end
   self:send("isready")
   return true
 end
@@ -157,11 +190,24 @@ function engine:set_rule(rule)
 end
 
 function engine:set_eval_file(path)
-  self:send("setoption name EvalFile value " .. (path or ""))
+  self.eval_file = path or ""
+  self:send("setoption name EvalFile value " .. (path and path ~= "" and path or "<empty>"))
 end
 
 function engine:set_mcts_hash(mib)
-  self:send("setoption name MctsHash value " .. tostring(mib or 64))
+  self:send("setoption name MctsHash value " .. tostring(mib or 512))
+end
+
+function engine:set_mcts_batch(batch)
+  self:send("setoption name MctsBatch value " .. tostring(batch or 16))
+end
+
+function engine:set_q_aware_stop(enabled)
+  self:send("setoption name MctsQAwareStop value " .. (enabled and "true" or "false"))
+end
+
+function engine:set_perft_hash(mib)
+  self:send("setoption name PerftHash value " .. tostring(mib or 512))
 end
 
 function engine:sync_position(moves_str, fen_str, stm)
@@ -184,6 +230,10 @@ function engine:search_nodes(nodes)
   if not self:is_connected() then return false end
   self.stats.bestmove = nil
   self.stats.reason = ""
+  self.stats.exact_wdl = nil
+  self.stats.value = nil
+  self.stats.candidates = {}
+  self.pending_searches = (self.pending_searches or 0) + 1
   self.state = "searching"
   return self:send("go nodes " .. tostring(nodes or 1000))
 end
@@ -192,8 +242,24 @@ function engine:search_movetime(ms)
   if not self:is_connected() then return false end
   self.stats.bestmove = nil
   self.stats.reason = ""
+  self.stats.exact_wdl = nil
+  self.stats.value = nil
+  self.stats.candidates = {}
+  self.pending_searches = (self.pending_searches or 0) + 1
   self.state = "searching"
   return self:send("go movetime " .. tostring(ms or 500))
+end
+
+function engine:search_infinite()
+  if not self:is_connected() then return false end
+  self.stats.bestmove = nil
+  self.stats.reason = ""
+  self.stats.exact_wdl = nil
+  self.stats.value = nil
+  self.stats.candidates = {}
+  self.pending_searches = (self.pending_searches or 0) + 1
+  self.state = "searching"
+  return self:send("go infinite")
 end
 
 function engine:perft(depth)
@@ -266,7 +332,9 @@ end
 
 function engine:handle_line(line)
   if line == "readyok" then
-    self.state = "ready"
+    if (self.pending_searches or 0) == 0 then
+      self.state = "ready"
+    end
     if self.on_ready then self.on_ready() end
 
   elseif line:find("^info error:") then
@@ -275,8 +343,21 @@ function engine:handle_line(line)
 
   elseif line:find("^info string evaluator") then
     self.stats.evaluator = line:match("^info string evaluator%s*(.+)") or "uniform"
+    if self.on_info then self.on_info(self.stats) end
+
+  elseif line:find("^info string option EvalFile =") then
+    local val = line:match("^info string option EvalFile =%s*(.+)") or ""
+    if val == "" or val == "<empty>" then
+      self.eval_file = ""
+      self.stats.evaluator = "uniform"
+    else
+      self.eval_file = val
+      self.stats.evaluator = val:match("([^/\\]+)$") or val
+    end
+    if self.on_info then self.on_info(self.stats) end
 
   elseif line:find("^info nodes") then
+    if (self.pending_searches or 0) > 1 then return end
     -- Parse: info nodes <N> nps <NPS> time <MS> [pv <moves>]
     local nodes = line:match("nodes%s+(%d+)")
     local nps = line:match("nps%s+(%d+)")
@@ -284,23 +365,82 @@ function engine:handle_line(line)
     local pv = line:match("pv%s+(.+)")
 
     if nodes then self.stats.nodes = tonumber(nodes) end
-    if nps then self.stats.nps = tonumber(nps) end
+    if nps then
+      self.stats.nps = tonumber(nps)
+    elseif nodes and t and tonumber(t) > 0 then
+      self.stats.nps = math.floor(tonumber(nodes) * 1000 / tonumber(t))
+    end
     if t then self.stats.time = tonumber(t) end
     if pv then self.stats.pv = pv end
     if self.on_info then self.on_info(self.stats) end
 
+  elseif line:find("^info string search progress Q") then
+    if (self.pending_searches or 0) > 1 then return end
+    local val = line:match("Q%s+([%+%-%d%.]+)")
+    if val then self.stats.value = tonumber(val) or 0 end
+    if self.on_info then self.on_info(self.stats) end
+
+  elseif line:find("^info string search policy:") then
+    if (self.pending_searches or 0) > 1 then return end
+    -- Parse: info string search policy: d3=45.2%/N452/Q+0.123 ...
+    local cands = {}
+    for mv, pct, vis, q in line:gmatch("([a-h][1-8])=([%d%.]+)%%/N(%d+)/Q([%+%-%d%.]+)") do
+      table.insert(cands, {
+        move = mv,
+        pct = tonumber(pct) or 0,
+        visits = tonumber(vis) or 0,
+        value = tonumber(q) or 0,
+        prior = 0
+      })
+    end
+    if #cands > 0 then
+      self.stats.candidates = cands
+      if self.on_info then self.on_info(self.stats) end
+    end
+
+  elseif line:find("^info string candidate moves:") then
+    if (self.pending_searches or 0) > 1 then return end
+    self.stats.candidates = {}
+
+  elseif line:find("^info string%s+#%d+") then
+    if (self.pending_searches or 0) > 1 then return end
+    -- Parse: info string   #1 d3: N=   452 (45.2%) Q=+0.123 P= 38.4%
+    local mv, vis, pct, q, prior = line:match("#%d+%s+(%S+):%s+N=%s*(%d+)%s+%(%s*([%d%.]+)%%%)%s+Q=([%+%-%d%.]+)%s+P=%s*([%d%.]+)%%")
+    if mv then
+      table.insert(self.stats.candidates, {
+        move = mv,
+        visits = tonumber(vis) or 0,
+        pct = tonumber(pct) or 0,
+        value = tonumber(q) or 0,
+        prior = tonumber(prior) or 0
+      })
+      if self.on_info then self.on_info(self.stats) end
+    end
+
+  elseif line:find("^info string exact WDL win/draw/loss") then
+    if (self.pending_searches or 0) > 1 then return end
+    self.stats.exact_wdl = line:match("win/draw/loss%s+(%S+)")
+    if self.on_info then self.on_info(self.stats) end
+
   elseif line:find("^info string search") then
-    -- Parse: info string search <reason> value <V> evaluations <E>
+    if (self.pending_searches or 0) > 1 then return end
+    -- Parse: info string search <reason> Q <V> ... evaluations <E>
     local reason = line:match("search%s+(%S+)")
-    local val = line:match("value%s+([%-%d%.]+)")
+    local val = line:match("Q%s+([%+%-%d%.]+)") or line:match("value%s+([%+%-%d%.]+)")
     local ev = line:match("evaluations%s+(%d+)")
 
     if reason then self.stats.reason = reason end
-    if val then self.stats.value = tonumber(val) end
+    if val then self.stats.value = tonumber(val) or 0 end
     if ev then self.stats.evaluations = tonumber(ev) end
     if self.on_info then self.on_info(self.stats) end
 
   elseif line:find("^bestmove") then
+    self.pending_searches = math.max(0, (self.pending_searches or 1) - 1)
+    if self.pending_searches > 0 then
+      -- Stale bestmove from an earlier stopped search; keep waiting for active search
+      self.stats.candidates = {}
+      return
+    end
     local bm = line:match("^bestmove%s+(%S+)")
     self.stats.bestmove = bm
     self.state = "ready"

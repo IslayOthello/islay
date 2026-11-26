@@ -51,7 +51,7 @@ namespace islay {
     Ort::Session       session{nullptr};
     Ort::MemoryInfo    memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
-    Impl(const std::string &path, bool optimize) {
+    Impl(const std::string &path, bool optimize, bool allow_coreml) {
       std::ifstream file(path, std::ios::binary | std::ios::ate);
       if (!file)
         throw std::runtime_error("cannot open EvalFile");
@@ -70,11 +70,15 @@ namespace islay {
       options.AddConfigEntry("session.intra_op.allow_spinning", "0");
       options.AddConfigEntry("session.inter_op.allow_spinning", "0");
 #if defined(ISLAY_COREML_ENABLED)
-      const auto providers = Ort::GetAvailableProviders();
-      if (std::find(providers.begin(), providers.end(), "CoreMLExecutionProvider") != providers.end()) {
-        options.AppendExecutionProvider("CoreML", {{"MLComputeUnits", "CPUAndGPU"}});
-        backend = "onnx-coreml";
+      if (allow_coreml) {
+        const auto providers = Ort::GetAvailableProviders();
+        if (std::find(providers.begin(), providers.end(), "CoreMLExecutionProvider") != providers.end()) {
+          options.AppendExecutionProvider("CoreML", {{"MLComputeUnits", "CPUAndGPU"}});
+          backend = "onnx-coreml";
+        }
       }
+#else
+      (void)allow_coreml;
 #endif
       session = Ort::Session(env, data.data(), data.size(), options);
       if (session.GetInputCount() != 1 || session.GetOutputCount() != 3)
@@ -120,9 +124,10 @@ namespace islay {
   }
   const char *neural_runtime_version() noexcept { return OrtGetApiBase()->GetVersionString(); }
 
-  NeuralEvaluator::NeuralEvaluator(const std::string &path, bool optimize) :
-      impl_(std::make_unique<Impl>(path, optimize)) {
-    if (impl_->metadata("islay.arch") != "b8c64-v2" || impl_->metadata("islay.encoding") != "relative-2x8x8-a1-v1" ||
+  NeuralEvaluator::NeuralEvaluator(const std::string &path, bool optimize, bool allow_coreml) :
+      impl_(std::make_unique<Impl>(path, optimize, allow_coreml)) {
+    if (impl_->metadata("islay.arch") != "b8c64-v2" ||
+        impl_->metadata("islay.encoding") != "relative-2x8x8-a1-v1" ||
         impl_->metadata("islay.policy") != "a1-h8-pass65-v1" ||
         impl_->metadata("islay.value") != "relative-wdl-margin-v2")
       throw std::runtime_error("unsupported neural architecture or encoding");

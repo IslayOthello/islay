@@ -18,7 +18,7 @@ namespace islay {
   // Metadata declares a checkpoint identity, not an authenticity guarantee.
   class NeuralEvaluator final : public Evaluator {
   public:
-    explicit NeuralEvaluator(const std::string &path, bool optimize = true);
+    explicit NeuralEvaluator(const std::string &path, bool optimize = true, bool allow_coreml = true);
     ~NeuralEvaluator() override;
     void evaluate(std::span<const Board> boards, std::span<Evaluation> outputs, std::stop_token stop) override;
     [[nodiscard]] std::string description() const override { return description_; }

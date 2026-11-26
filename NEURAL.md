@@ -96,7 +96,9 @@ each search advertises the backend, checkpoint identity and step count, explicit
 zero-step initialization. `<empty>` clears the model. Reload is transactional and synchronous:
 failure keeps the old evaluator; setting the same filename loads it again. See [UCI.md](UCI.md).
 
-The CPU session is retained across searches; the input buffer is reused, with no neural cache.
+The ONNX session is retained across searches; the input buffer is reused, with no neural cache.
+On macOS the UCI engine selects CoreML CPU/GPU compute units when the provider is present;
+other ONNX-enabled targets keep the CPU provider for reproducible self-play.
 Intra/inter-op threads are explicitly one, execution sequential and spinning disabled,
 following [ORT threading controls](https://onnxruntime.ai/docs/performance/tune-performance/threading.html).
 The search worker owns each call; there is no simultaneous evaluation on that session.

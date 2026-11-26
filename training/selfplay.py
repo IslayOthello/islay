@@ -46,9 +46,13 @@ def read_exact(stream, size):
 
 
 def config_args(meta):
-    return ["--seed", str(meta["seed"]), "--simulations", str(meta["simulations"]),
+    args = ["--seed", str(meta["seed"]), "--simulations", str(meta["simulations"]),
             "--tree-mib", str(meta["tree_mib"]), "--epsilon", str(meta["epsilon"]),
             "--alpha", str(meta["alpha"]), "--temperature-plies", str(meta["temperature_plies"])]
+    if meta.get("fast_simulations", 0) > 0:
+        args.extend(["--fast-simulations", str(meta["fast_simulations"]),
+                     "--full-search-prob", str(meta.get("full_search_prob", 1.0))])
+    return args
 
 
 def verify_shard(binary, path, meta, start, games):
@@ -72,6 +76,7 @@ def run(args):
             "rule": "Othello", "encoding": "relative-2x8x8-a1-v1",
             "architecture": "b8c64-v2", "policy": "visits-tau1-prefix-tau0-lowest-v1",
             "rng": "splitmix64-boxmuller-marsaglia-v1", "seed": args.seed, "simulations": args.simulations,
+            "fast_simulations": args.fast_simulations, "full_search_prob": args.full_search_prob,
             "tree_mib": args.tree_mib, "epsilon": args.epsilon, "alpha": args.alpha,
             "temperature_plies": args.temperature_plies, "c_puct": 1.5, "model_sha256": sha256(model),
             "engine_sha256": sha256(binary), "platform": platform.platform(),
@@ -186,6 +191,8 @@ def main():
     parser.add_argument("--games", type=int, default=100, help="total target, including already committed games")
     parser.add_argument("--seed", type=int, default=20260909)
     parser.add_argument("--simulations", type=int, default=128)
+    parser.add_argument("--fast-simulations", type=int, default=0, help="KataGo playout cap randomization fast sims (0=off)")
+    parser.add_argument("--full-search-prob", type=float, default=1.0, help="Probability of full search when fast-simulations > 0")
     parser.add_argument("--tree-mib", type=int, default=8)
     parser.add_argument("--cache-mib", type=int, default=16)
     parser.add_argument("--epsilon", type=float, default=0.25)
@@ -195,6 +202,7 @@ def main():
     parser.add_argument("--max-mib", type=int, default=256)
     args = parser.parse_args()
     if (not 1 <= args.games <= 1000000000 or not 0 <= args.seed < 1 << 64 or not 1 <= args.simulations <= 1000000
+            or not 0 <= args.fast_simulations <= args.simulations or not 0 < args.full_search_prob <= 1.0
             or not 1 <= args.tree_mib <= 4096 or not 0 <= args.cache_mib <= 4096
             or not 0 <= args.epsilon <= 1 or not 0.01 <= args.alpha <= 100
             or not 0 <= args.temperature_plies <= 128 or not 1 <= args.shard_games <= 1024 or args.max_mib < 1):

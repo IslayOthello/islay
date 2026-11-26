@@ -46,7 +46,8 @@ int main(int argc, char **argv) {
     }
     std::map<std::string, std::string> options{
             {"--games", "1"},         {"--start", "0"},    {"--seed", "20260909"},
-            {"--simulations", "128"}, {"--tree-mib", "8"}, {"--cache-mib", "16"},
+            {"--simulations", "128"}, {"--fast-simulations", "0"}, {"--full-search-prob", "1.0"},
+            {"--batch-size", "1"},    {"--tree-mib", "8"}, {"--cache-mib", "16"},
             {"--epsilon", "0.25"},    {"--alpha", "0.3"},  {"--temperature-plies", "16"},
             {"--model", ""},          {"--verify", ""}};
     std::map<std::string, bool> seen;
@@ -59,6 +60,9 @@ int main(int argc, char **argv) {
     islay::SelfplayConfig config;
     config.seed              = integer(options["--seed"], 0, UINT64_MAX);
     config.simulations       = integer(options["--simulations"], 1, 1000000);
+    config.fast_simulations  = integer(options["--fast-simulations"], 0, 1000000);
+    config.full_search_prob  = real(options["--full-search-prob"]);
+    config.batch_size        = integer(options["--batch-size"], 1, 64);
     config.tree_bytes        = integer(options["--tree-mib"], 1, 4096) * 1024 * 1024;
     config.epsilon           = real(options["--epsilon"]);
     config.alpha             = real(options["--alpha"]);

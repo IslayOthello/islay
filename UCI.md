@@ -4,7 +4,7 @@ This document describes the UCI-style Othello/Reversi interface implemented by
 `islay 0.1.0`. The engine supports position setup, perft and experimental
 single-worker Othello PUCT search. Search defaults to an explicitly advertised
 uniform policy/zero-value evaluator. Optional ONNX inference loads the shared
-8x64 policy/value network through `EvalFile`; no trained weights are supplied.
+8x64 policy/WDL/margin network through `EvalFile`; no trained weights are supplied.
 Fischer clock (`wtime`/`btime`/`winc`/`binc`/`movestogo`) is supported alongside `movetime`, `nodes`, and `infinite`. See [NEURAL.md](NEURAL.md) for model setup.
 
 ## Transport
@@ -61,6 +61,8 @@ id author islay
 option name Rule type combo default Othello var Othello var Reversi
 option name EvalFile type string default <empty>
 option name MctsHash type spin default 64 min 1 max 4096
+option name MctsBatch type spin default 1 min 1 max 16
+option name MctsQAwareStop type check default false
 option name PerftHash type spin default 512 min 1 max 65536
 uciok
 ```
@@ -90,7 +92,7 @@ End-of-file has the same effect. To obtain a result before exiting, send `stop` 
 Synchronous self-play data generation command for neural network training:
 
 ```text
-datagen [games <N>] [sims <S>] [output <path>] [threads <T>] [seed <S>] [cache <MiB>]
+datagen [games <N>] [sims <S>] [fast <F>] [full-prob <P>] [batch <N>] [output <path>] [threads <T>] [seed <S>] [cache <MiB>]
 ```
 
 | Parameter | Type | Default | Description |
@@ -98,11 +100,12 @@ datagen [games <N>] [sims <S>] [output <path>] [threads <T>] [seed <S>] [cache <
 | `games` | integer | `10` | Number of self-play games to generate |
 | `sims` | integer | `64` | MCTS simulations per move |
 | `output` | string | `data.bin` | Output path for binary replay records (560 bytes/sample) |
+| `batch` | integer | `8` | MCTS leaves evaluated together (`1` to `64`); use `1` for the previous sequential search |
 | `threads` | integer | `1` | Number of parallel worker threads |
 | `seed` | integer | `20260909` | Base seed for Dirichlet exploration and action sampling |
 | `cache` | integer | `16` | Per-worker evaluator cache size in MiB (`1` to `4096`) |
 
-Positional games count is also accepted (e.g. `datagen 50`). If a neural network is loaded (`EvalFile`), `datagen` uses that model. If no model is loaded (`EvalFile` is `<empty>`), `datagen` runs generation 0 with a randomly initialized native network. Games in the output file are guaranteed to be contiguous and verified.
+Positional games count is also accepted (e.g. `datagen 50`). If a neural network is loaded (`EvalFile`), `datagen` uses that model. If no model is loaded (`EvalFile` is `<empty>`), `datagen` runs generation 0 with a randomly initialized native network. Batched MCTS reduces inference calls but changes leaf selection versus `batch 1`; set `batch 1` to preserve the sequential search behavior. Games in the output file are guaranteed to be contiguous and verified.
 
 During execution, real-time progress lines are emitted in standard UCI `info string` format:
 ```text
@@ -154,10 +157,12 @@ eval
 
 Displays:
 - The 8×8 ASCII board diagram with legal move candidates marked (`*`).
-- Active evaluator identifier (e.g. `native-simd b8c64-v1 training_steps 300` or `uniform (no network loaded)`).
+- Active evaluator identifier (e.g. `native-simd b8c64-v2 training_steps 300` or `uniform (no network loaded)`).
 - Side to move, disc counts, and number of legal moves.
-- Mover value $V \in [-1, 1]$ and corresponding winrate percentage ($50 \times (V + 1)\%$).
-- Explicit Black and White perspective values and winrates.
+- Mover scalar WDL value and expected score percentage; a separate draw probability is unavailable from this scalar head.
+- Search Q from the latest search on the same position, when available.
+- Exact W/D/L percentages for terminal or solver-resolved positions.
+- Explicit Black and White perspective values and expected scores.
 - Endgame solver outcome if empties $\le 10$ or terminal outcome if game over.
 
 ### policy
@@ -171,8 +176,9 @@ policy
 Displays:
 - An 8×8 ASCII grid where each legal square displays its policy probability percentage (e.g. ` 25.1% `, `  0.5% `, ` <0.1% `), while discs are shown as `X` (Black), `O` (White), and empty non-legal squares as `.`.
 - Side to move, disc counts, and evaluator description.
-- Evaluated position value and winrate percentage.
-- Sorted ranking table of all legal moves with rank, coordinate, percentage, and raw network logit.
+- Mover scalar WDL value, expected score, disc margin, and latest same-position search Q when available.
+- The grid and ranking use search visit percentages after a search on the same position; otherwise they use network priors.
+- Sorted ranking table of all legal moves with rank, coordinate, percentage, and raw network logit; search results also show visits, Q, and prior.
 - Forced pass or terminal outcome indicator when applicable.
 
 ## Options
@@ -186,10 +192,14 @@ setoption name <name> value <value>
 | Rule | combo | Othello | Othello, Reversi |
 | EvalFile | string | `<empty>` | Compatible ONNX model path or native binary weights file (`.bin`); `<empty>` restores uniform evaluation |
 | MctsHash | spin | 64 | Tree arena MiB, 1 to 4096; independent of PerftHash |
+| MctsBatch | spin | 1 | MCTS leaf evaluations per batch, 1 to 16; larger values use virtual loss and may change playing strength |
+| MctsQAwareStop | check | false | Only early-stop timed search when the visit leader also leads runner-up Q by at least 0.05 |
 | PerftHash | spin | 512 | Integer MiB from 1 to 65536 |
 
 Changing an option clears the cache. Changing `PerftHash` resizes it.
 Allocation is rounded down to a power-of-two number of entries.
+When enabled, `MctsQAwareStop` keeps searching if the root visit leader's Q is still within 0.05
+of the second-most-visited move, even after the existing 4:1 visit threshold is reached.
 
 ```text
 setoption name Rule value Reversi
@@ -202,7 +212,7 @@ Unknown options and invalid values produce:
 info error: unknown option or invalid value: '<name>' = '<value>'
 ```
 
-`EvalFile` now means the versioned ONNX policy/value model, not the former NNUE/pattern
+`EvalFile` now means the versioned ONNX policy/WDL/margin model, not the former NNUE/pattern
 weights. Loading is synchronous: it validates names, FP32 shapes, metadata and a warm-up
 inference before replacing the previous evaluator. Even setting the same path reloads it.
 Paths can contain spaces; do not quote them. An empty value also restores uniform evaluation.
@@ -321,15 +331,21 @@ info string evaluator uniform (P2 scaffold; no trained network)
 With a loaded model it instead emits:
 
 ```text
-info string evaluator onnx-cpu b8c64-v1 checkpoint <sha256> training_steps <steps>
+info string evaluator onnx-coreml b8c64-v2 checkpoint <sha256> training_steps <steps>
 ```
+
+On macOS, ONNX Runtime uses CoreML with CPU/GPU compute units when that provider is
+available; unsupported graph nodes fall back to CPU. Other builds report `onnx-cpu`.
 
 Zero-step checkpoints append `(untrained initialization)`. The hash and step count are
 declared export metadata, not proof of model authenticity or playing strength.
 Each worker uses the loaded session snapshot; changing `EvalFile` cancels/joins it first.
 
+All PUCT search forms above (`nodes`, `movetime`, Fischer clock, combined limits, and `infinite`)
+use the same progress output. Searches lasting at least 500 ms report the current root Q and top
+visit-policy moves periodically. `go perft` is a separate counting command and does not emit policy.
 On completion, one block contains `info nodes <N> nps <NPS> time <MS> [pv <moves>]`,
-`info string search <reason> value <V> (winrate <pct>%) evaluations <E>`, candidate move breakdown (`info string candidate moves: ...`), and `bestmove <move>`.
+`info string search <reason> Q <Q> evaluations <E>`, candidate move breakdown (`info string candidate moves: ...`), and `bestmove <move>`.
 Moves use coordinates or `pass`; a terminal root returns `bestmove 0000` with zero simulations.
 Reasons are `nodes`, `time`, `stop`, `memory`, `terminal`, or `error`. The reason describes
 why traversal ended, even if an infinite search subsequently waited for `stop`.
@@ -338,9 +354,13 @@ why traversal ended, even if an infinite search subsequently waited for `stop`.
 - `nps` is simulations/second, rounded to an integer from microsecond-resolution steady-clock
   elapsed time. `time` is integer milliseconds. Both include worker startup/cleanup and, for
   infinite searches, time waiting for `stop`. Machine-readable fields never contain commas.
-- `value` is mover-relative expected outcome in [-1,1], not centipawns or win probability.
-- Only final search info is emitted, not periodic progress. UCI search has no root noise;
-  exploration is confined to the separate offline [self-play executable](SELFPLAY.md).
+- `value` is the mover-relative scalar WDL expected outcome in [-1,1]; expected score is `(1 + value) / 2`.
+- The value head is scalar, not three W/D/L probabilities, so draw rate is unavailable except for exact terminal/endgame results.
+- Neural models also predict a mover-relative normalized disc margin in [-1,1]; MCTS uses it only as a small calibration blend.
+- For every PUCT search form, progress info is emitted at most every 500 ms, including the current
+  root Q and top visit policy. Searches that finish sooner only have their final summary.
+  UCI search has no root noise; exploration is confined to the separate offline
+  [self-play executable](SELFPLAY.md).
 - Finite searches return early if the arena fills. Infinite searches park without spinning when
   memory or terminal ends traversal, and publish only when stopped. They do not allocate past the cap.
 - Search failures emit an explicit diagnostic and a legal fallback (or `0000` if terminal).
@@ -369,7 +389,7 @@ UCI `EvalFile` loading and single-worker search are unchanged.
 | Command | Behavior |
 |---|---|
 | d / display / board | Print the current board, side to move, disc counts, and legal moves |
-| backend | Print the compiled move-generation and neural backends (`onnx-cpu` or `disabled`) |
+| backend | Print the compiled move-generation and neural backends (`onnx-coreml`, `onnx-cpu` or `disabled`) |
 | bench [depth] | Uncached start-position perft from depth 1 through depth (default 11), under the selected rule; fractional `time(s)` and integer NPS |
 | test / selftest | Run movegen, Othello game adapter, PUCT core/controller, neural encoding, self-play/replay, known perft, cache, symmetry, and rule checks |
 
