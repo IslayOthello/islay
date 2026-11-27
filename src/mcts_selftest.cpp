@@ -380,6 +380,9 @@ namespace islay {
 
       // Batched MCTS verification
       {
+        if (Options{}.mcts_batch != 8)
+          return false;
+
         TestEvaluator batch_eval;
         MctsLimits    batch_limits;
         batch_limits.simulations = 64;
@@ -388,6 +391,15 @@ namespace islay {
 
         const auto batch_res = mcts_search(start, Rule::Othello, batch_eval, batch_limits);
         if (!valid_result(start, batch_res, batch_limits) || batch_res.simulations != 64 || batch_eval.calls == 0)
+          return false;
+
+        // Batched MemoryLimit reverts unexpanded sim virtual loss cleanly
+        MctsLimits mem_limits = batch_limits;
+        mem_limits.batch_size = 8;
+        mem_limits.tree_bytes = 4096;
+        const auto mem_res    = mcts_search(start, Rule::Othello, batch_eval, mem_limits);
+        if (!valid_result(start, mem_res, mem_limits) || mem_res.reason != MctsStop::MemoryLimit ||
+            mem_res.simulations >= 64)
           return false;
 
         // Verify invalid batch size rejected

@@ -66,7 +66,7 @@ namespace islay {
                        }},
             OptionSpec{"MctsBatch",
                        "spin",
-                       "1",
+                       "8",
                        {},
                        1,
                        16,

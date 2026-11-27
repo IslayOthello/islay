@@ -32,8 +32,8 @@ local app = {
   engine_opts = {
     eval_file = "",
     mcts_hash = 512,
-    mcts_batch = 16,
-    q_aware_stop = false,
+    mcts_batch = 8,
+    q_aware_stop = true,
     perft_hash = 512,
     auto_eval_nodes = 800,
     observer_pace_ms = 600,
@@ -531,7 +531,7 @@ function app.apply_engine_options(opts)
   app.engine.stats.nodes = 0
   app.engine_opts.eval_file = opts.eval_file or ""
   app.engine_opts.mcts_hash = tonumber(opts.mcts_hash) or 512
-  app.engine_opts.mcts_batch = tonumber(opts.mcts_batch) or 16
+  app.engine_opts.mcts_batch = tonumber(opts.mcts_batch) or 8
   app.engine_opts.q_aware_stop = (opts.q_aware_stop == true)
   app.engine_opts.perft_hash = tonumber(opts.perft_hash) or 512
   app.engine_opts.auto_eval_nodes = tonumber(opts.auto_eval_nodes) or 800
@@ -623,7 +623,7 @@ function app.open_engine_settings()
   -- Row 2: MctsBatch
   add_lbl(2, "MCTS Batch Size:")
   local sp_batch = Gtk.SpinButton.new_with_range(1, 16, 1)
-  sp_batch:set_value(app.engine_opts.mcts_batch or 16)
+  sp_batch:set_value(app.engine_opts.mcts_batch or 8)
   grid:attach(sp_batch, 1, 2, 1, 1)
 
   -- Row 3: MctsQAwareStop

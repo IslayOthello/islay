@@ -645,7 +645,8 @@ namespace islay {
 
       bool simulate_batch(int b_size) {
         std::array<PendingSim, 64> sims;
-        int                        active_sims = 0;
+        int                        active_sims   = 0;
+        std::size_t                pending_nodes = nodes_.size();
 
         std::vector<Board> eval_boards;
         eval_boards.reserve(static_cast<std::size_t>(b_size));
@@ -704,19 +705,31 @@ namespace islay {
                 for (int prev = 0; prev < active_sims - 1; ++prev) {
                   if (sims[prev].eval_idx >= 0 && (sims[prev].leaf_index == index || sims[prev].board == board)) {
                     existing_eval = sims[prev].eval_idx;
-                    same_node     = (sims[prev].leaf_index == index);
+                    if (sims[prev].leaf_index == index) {
+                      same_node = true;
+                      break;
+                    }
+                  }
+                }
+                const bool need_expand = (existing_eval < 0) || !same_node;
+                if (need_expand) {
+                  const auto count = static_cast<std::size_t>(status.action_count());
+                  if (count > nodes_.capacity() - pending_nodes) {
+                    for (int i = sim.depth; i > 0; --i) {
+                      auto &node = nodes_[sim.path[i]];
+                      --node.visits;
+                      node.value_sum += 1.0;
+                    }
+                    --active_sims;
+                    result_.reason = MctsStop::MemoryLimit;
                     break;
                   }
+                  pending_nodes += count;
                 }
                 if (existing_eval >= 0) {
                   sim.eval_idx   = existing_eval;
                   sim.needs_eval = !same_node;
                 } else {
-                  const auto count = static_cast<std::size_t>(status.action_count());
-                  if (count > nodes_.capacity() - nodes_.size()) {
-                    result_.reason = MctsStop::MemoryLimit;
-                    break;
-                  }
                   sim.needs_eval = true;
                   sim.eval_idx   = static_cast<int>(eval_boards.size());
                   eval_boards.push_back(board);
