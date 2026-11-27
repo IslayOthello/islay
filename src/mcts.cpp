@@ -447,6 +447,16 @@ namespace islay {
         return false;
       }
 
+      float solve_endgame_leaf(Index index, const Board &board, int empties) noexcept {
+        const float leaf_val         = (empties <= limits_.endgame_margin_empties)
+                                               ? margin_value(solve_exact_margin(board, empties))
+                                               : static_cast<float>(solve_exact_wld(board, empties));
+        nodes_[index].state          = State::Terminal;
+        nodes_[index].terminal_value = leaf_val;
+        nodes_[index].proven         = proven_from_value(leaf_val);
+        return leaf_val;
+      }
+
       bool expand(Index index, const Board &board, const GameStatus &status, float &value) {
         if (status.terminal()) {
           nodes_[index].state          = State::Terminal;
@@ -457,11 +467,7 @@ namespace islay {
         }
         const int empties = 64 - board.count();
         if (index != 0 && empties <= limits_.endgame_solver_empties) {
-          const int margin             = solve_exact_margin(board, empties);
-          nodes_[index].state          = State::Terminal;
-          nodes_[index].terminal_value = margin_value(margin);
-          nodes_[index].proven         = proven_from_value(nodes_[index].terminal_value);
-          value                        = nodes_[index].terminal_value;
+          value = solve_endgame_leaf(index, board, empties);
           return true;
         }
         const auto count = static_cast<std::size_t>(status.action_count());
@@ -685,12 +691,8 @@ namespace islay {
           } else {
             const int empties = 64 - board.count();
             if (index != 0 && empties <= limits_.endgame_solver_empties) {
-              const int margin             = solve_exact_margin(board, empties);
-              nodes_[index].state          = State::Terminal;
-              nodes_[index].terminal_value = margin_value(margin);
-              nodes_[index].proven         = proven_from_value(nodes_[index].terminal_value);
-              sim.is_terminal              = true;
-              sim.value                    = nodes_[index].terminal_value;
+              sim.is_terminal = true;
+              sim.value       = solve_endgame_leaf(index, board, empties);
             } else {
               const auto status = game_status(board);
               if (status.terminal()) {
@@ -955,7 +957,8 @@ namespace islay {
                          std::stop_token stop, MctsTree *tree) {
     if (rule != Rule::Othello || (board.player & board.opponent) || !std::isfinite(limits.c_puct) ||
         limits.c_puct < 0 || limits.c_puct > 1e6 || limits.endgame_solver_empties < 0 ||
-        limits.endgame_solver_empties > 64 || limits.batch_size < 1 || limits.batch_size > 64)
+        limits.endgame_solver_empties > 64 || limits.endgame_margin_empties < 0 || limits.endgame_margin_empties > 64 ||
+        limits.batch_size < 1 || limits.batch_size > 64)
       throw std::invalid_argument("MCTS requires Othello, disjoint discs, valid endgame empties, batch_size in [1, 64] "
                                   "and c_puct in [0, 1000000]");
     if (limits.exploration) {

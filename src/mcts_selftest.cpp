@@ -467,8 +467,22 @@ namespace islay {
 
       // Q-aware early stop defaults on, and proven-loss roots pick the smallest proven loss margin
       {
-        if (!MctsLimits{}.q_aware_early_stop || !Options{}.mcts_q_aware_stop)
+        if (!MctsLimits{}.q_aware_early_stop || !Options{}.mcts_q_aware_stop ||
+            MctsLimits{}.endgame_solver_empties != 16 || MctsLimits{}.endgame_margin_empties != 12)
           return false;
+
+        for (int bad_margin: {-1, 65}) {
+          auto bad                   = limits;
+          bad.endgame_margin_empties = bad_margin;
+          bool rejected              = false;
+          try {
+            (void) mcts_search(start, Rule::Othello, evaluator, bad);
+          } catch (const std::invalid_argument &) {
+            rejected = true;
+          }
+          if (!rejected)
+            return false;
+        }
 
         const Board   forced_loss{0x03051b31103c02beULL, 0xf8f2e4ceefc3fd00ULL};
         TestEvaluator loss_eval;
@@ -480,6 +494,16 @@ namespace islay {
         loss_limits.simulations            = 32;
         const auto loss_res                = mcts_search(forced_loss, Rule::Othello, loss_eval, loss_limits);
         if (!valid_result(forced_loss, loss_res, loss_limits) || loss_res.best_move != 0)
+          return false;
+
+        // Hybrid solver: at empties in (endgame_margin_empties, endgame_solver_empties], WLD returns +-1.0
+        MctsLimits wld_limits;
+        wld_limits.endgame_solver_empties = 3;
+        wld_limits.endgame_margin_empties = 2;
+        wld_limits.tactical_bias          = false;
+        wld_limits.simulations            = 16;
+        const auto wld_res                = mcts_search(forced_loss, Rule::Othello, loss_eval, wld_limits);
+        if (!valid_result(forced_loss, wld_res, wld_limits) || !close(wld_res.value, -1.0))
           return false;
       }
 
