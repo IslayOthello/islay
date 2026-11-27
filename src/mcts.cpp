@@ -889,12 +889,12 @@ namespace islay {
             break;
           }
         }
-        auto best_root_child = most_visited(0);
-        if (nodes_[0].proven == Proven::Win) {
+        auto best_root_child   = most_visited(0);
+        auto pick_proven_child = [&](Proven child_proven) {
           double best_v = -2.0;
           for (Index i = nodes_[0].first_child; i < nodes_[0].first_child + nodes_[0].child_count; ++i) {
             const auto &c = nodes_[i];
-            if (c.proven == Proven::Loss) {
+            if (c.proven == child_proven) {
               const double v = -static_cast<double>(c.terminal_value);
               if (v > best_v + 1e-9 || (std::abs(v - best_v) <= 1e-9 && (c.visits > nodes_[best_root_child].visits ||
                                                                          (c.visits == nodes_[best_root_child].visits &&
@@ -904,13 +904,13 @@ namespace islay {
               }
             }
           }
+        };
+        if (nodes_[0].proven == Proven::Win) {
+          pick_proven_child(Proven::Loss);
         } else if (nodes_[0].proven == Proven::Draw) {
-          for (Index i = nodes_[0].first_child; i < nodes_[0].first_child + nodes_[0].child_count; ++i) {
-            if (nodes_[i].proven == Proven::Draw) {
-              best_root_child = i;
-              break;
-            }
-          }
+          pick_proven_child(Proven::Draw);
+        } else if (nodes_[0].proven == Proven::Loss) {
+          pick_proven_child(Proven::Win);
         } else if (all_root_terminal) {
           best_root_child = nodes_[0].first_child;
           double best_q   = nodes_[best_root_child].value_sum / static_cast<double>(nodes_[best_root_child].visits);

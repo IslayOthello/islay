@@ -450,6 +450,24 @@ namespace islay {
           return false;
       }
 
+      // Q-aware early stop defaults on, and proven-loss roots pick the smallest proven loss margin
+      {
+        if (!MctsLimits{}.q_aware_early_stop || !Options{}.mcts_q_aware_stop)
+          return false;
+
+        const Board   forced_loss{0x03051b31103c02beULL, 0xf8f2e4ceefc3fd00ULL};
+        TestEvaluator loss_eval;
+        loss_eval.output.logits.fill(0.0f);
+        loss_eval.output.logits[6] = 20.0f; // heavily bias the worst (-20) loss so it leads in visits
+        MctsLimits loss_limits;
+        loss_limits.endgame_solver_empties = 2; // expand 3-empty children, solve grandchildren at <=2
+        loss_limits.tactical_bias          = false;
+        loss_limits.simulations            = 32;
+        const auto loss_res                = mcts_search(forced_loss, Rule::Othello, loss_eval, loss_limits);
+        if (!valid_result(forced_loss, loss_res, loss_limits) || loss_res.best_move != 0)
+          return false;
+      }
+
       return true;
     } catch (...) {
       return false;

@@ -84,7 +84,7 @@ namespace islay {
                        }},
             OptionSpec{"MctsQAwareStop",
                        "check",
-                       "false",
+                       "true",
                        {},
                        0,
                        0,

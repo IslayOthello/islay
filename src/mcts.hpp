@@ -30,7 +30,7 @@ namespace islay {
     const RootExploration                  *exploration = nullptr; // self-play only; valid for this synchronous call
     int                                     endgame_solver_empties = 14;
     int                                     batch_size             = 1;
-    bool                                    q_aware_early_stop     = false;
+    bool                                    q_aware_early_stop     = true;
     bool                                    tactical_bias          = true;
     double                                  fpu_reduction          = 0.2;
     std::function<void(const MctsResult &)> progress;
