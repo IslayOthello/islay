@@ -413,8 +413,11 @@ namespace islay {
           return false;
       }
 
-      // Tactical bias verification
+      // Tactical bias verification (defaults false so trained NN priors are used unmodified)
       {
+        if (MctsLimits{}.tactical_bias)
+          return false;
+
         TestEvaluator bias_eval;
         MctsLimits    bias_limits;
         bias_limits.simulations   = 0;

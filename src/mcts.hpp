@@ -31,7 +31,7 @@ namespace islay {
     int                                     endgame_solver_empties = 14;
     int                                     batch_size             = 1;
     bool                                    q_aware_early_stop     = true;
-    bool                                    tactical_bias          = true;
+    bool                                    tactical_bias          = false;
     double                                  fpu_reduction          = 0.2;
     std::function<void(const MctsResult &)> progress;
   };
