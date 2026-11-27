@@ -61,7 +61,7 @@ id author islay
 option name Rule type combo default Othello var Othello var Reversi
 option name EvalFile type string default <empty>
 option name MctsHash type spin default 64 min 1 max 4096
-option name MctsBatch type spin default 8 min 1 max 16
+option name MctsBatch type spin default 12 min 1 max 16
 option name MctsQAwareStop type check default true
 option name PerftHash type spin default 512 min 1 max 65536
 uciok
@@ -192,7 +192,7 @@ setoption name <name> value <value>
 | Rule | combo | Othello | Othello, Reversi |
 | EvalFile | string | `<empty>` | Compatible ONNX model path or native binary weights file (`.bin`); `<empty>` restores uniform evaluation |
 | MctsHash | spin | 64 | Tree arena MiB, 1 to 4096; independent of PerftHash |
-| MctsBatch | spin | 8 | MCTS leaf evaluations per batch, 1 to 16; larger values use virtual loss and may change playing strength |
+| MctsBatch | spin | 12 | MCTS leaf evaluations per batch, 1 to 16; larger values use virtual loss and may change playing strength |
 | MctsQAwareStop | check | true | Only early-stop timed search when the visit leader also leads runner-up Q by at least 0.05 |
 | PerftHash | spin | 512 | Integer MiB from 1 to 65536 |
 

@@ -169,7 +169,7 @@ function engine:start()
   -- Send initialization handshake
   self:send("uci")
   self:set_mcts_hash(512)
-  self:set_mcts_batch(8)
+  self:set_mcts_batch(12)
   self:set_q_aware_stop(true)
   local eval_path = find_eval_file()
   if eval_path then
@@ -200,7 +200,7 @@ function engine:set_mcts_hash(mib)
 end
 
 function engine:set_mcts_batch(batch)
-  self:send("setoption name MctsBatch value " .. tostring(batch or 8))
+  self:send("setoption name MctsBatch value " .. tostring(batch or 12))
 end
 
 function engine:set_q_aware_stop(enabled)

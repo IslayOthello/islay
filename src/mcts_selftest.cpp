@@ -380,7 +380,7 @@ namespace islay {
 
       // Batched MCTS verification
       {
-        if (Options{}.mcts_batch != 8)
+        if (Options{}.mcts_batch != 12)
           return false;
 
         TestEvaluator batch_eval;
